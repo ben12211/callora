@@ -167,8 +167,11 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
           callSid: parsed.data.CallSid,
           businessId: business.id,
         });
-        const streamUrl = `${config.publicBaseUrl.replace(/^http/, 'ws')}${MEDIA_STREAM_PATH}?token=${encodeURIComponent(token)}`;
-        response.connect().stream({ url: streamUrl });
+        const streamUrl = `${config.publicBaseUrl.replace(/^http/, 'ws')}${MEDIA_STREAM_PATH}`;
+        const stream = response.connect().stream({ url: streamUrl });
+        // Twilio deliberately drops query strings from <Stream> URLs. Custom
+        // parameters are delivered in the WebSocket start event instead.
+        stream.parameter({ name: 'token', value: token });
       } else {
         // No realtime agent configured: fall back to the static tenant greeting.
         response.say(business.greeting);

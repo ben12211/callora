@@ -264,7 +264,10 @@ describe('Callora backend', () => {
     const parsed = new URL(streamUrl!);
     expect(parsed.protocol).toBe('wss:');
     expect(parsed.pathname).toBe('/webhooks/twilio/media');
-    const claims = verifyStreamToken(config.twilioAuthToken, parsed.searchParams.get('token') ?? '');
+    expect(parsed.search).toBe('');
+    const encodedToken = /<Parameter name="token" value="([^"]+)"\/>/.exec(response.body)?.[1];
+    expect(encodedToken).toBeDefined();
+    const claims = verifyStreamToken(config.twilioAuthToken, encodedToken ?? '');
     expect(claims).toEqual(
       expect.objectContaining({ callSid: 'CAREALTIME1', businessId: firstBusinessId }),
     );
@@ -289,11 +292,11 @@ describe('Callora backend', () => {
     await app.close();
   });
 
-  it('rejects a media stream handshake without a valid token', async () => {
+  it('rejects a media stream handshake without a valid Twilio signature', async () => {
     const app = await buildApp({ config, store });
     const rejected = await app.inject({
       method: 'GET',
-      url: '/webhooks/twilio/media?token=forged',
+      url: '/webhooks/twilio/media',
       headers: { connection: 'upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' },
     });
     expect(rejected.statusCode).toBe(403);

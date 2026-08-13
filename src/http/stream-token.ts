@@ -1,10 +1,10 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
- * Twilio does not sign the Media Streams WebSocket handshake, so Callora issues a
- * short-lived, call-scoped token from the already signature-validated voice webhook and
- * validates it on the upgrade request. The token binds a stream to exactly one call and
- * one business, which keeps tenants isolated even if a stream URL leaks.
+ * In addition to Twilio's signed WebSocket handshake, Callora issues a short-lived,
+ * call-scoped token from the signature-validated voice webhook. Twilio delivers it as
+ * a custom Stream parameter in the start event. The token binds the stream to exactly
+ * one call and one business so tenants remain isolated.
  */
 const TOKEN_LABEL = 'callora:media-stream:v1';
 

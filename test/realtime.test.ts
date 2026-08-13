@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { streamClaimsFromStartMessage } from '../src/http/media-stream.js';
 import { createStreamToken, verifyStreamToken } from '../src/http/stream-token.js';
 import { MediaStreamBridge, type BridgeLogger, type MessageChannel } from '../src/realtime/bridge.js';
 import { buildSessionUpdate } from '../src/realtime/protocol.js';
@@ -94,6 +95,25 @@ describe('media stream security token', () => {
 
     const expired = createStreamToken('secret', { callSid, businessId }, 60, 0);
     expect(verifyStreamToken('secret', expired)).toBeNull();
+  });
+
+  it('authorizes only a matching token delivered in Twilio custom parameters', () => {
+    const token = createStreamToken('secret', { callSid, businessId });
+    const start = JSON.stringify({
+      event: 'start',
+      streamSid,
+      start: { streamSid, callSid, customParameters: { token } },
+    });
+    expect(streamClaimsFromStartMessage(start, 'secret')).toEqual(
+      expect.objectContaining({ callSid, businessId }),
+    );
+
+    const mismatch = JSON.stringify({
+      event: 'start',
+      start: { callSid: 'CAOTHER', customParameters: { token } },
+    });
+    expect(streamClaimsFromStartMessage(mismatch, 'secret')).toBeNull();
+    expect(streamClaimsFromStartMessage('{"event":"start","start":{}}', 'secret')).toBeNull();
   });
 });
 
