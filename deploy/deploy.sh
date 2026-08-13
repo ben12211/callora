@@ -191,7 +191,7 @@ deploy_release() {
   wait_for_healthy db 60
 
   log 'Validating the Caddy configuration.'
-  compose run --rm --no-deps caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
   log 'Running database migrations under the application migration lock.'
   for attempt in {1..15}; do
