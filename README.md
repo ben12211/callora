@@ -30,7 +30,8 @@ No paid resources are created by this repository.
 1. Copy `.env.example` to `.env`.
 2. Set `TWILIO_AUTH_TOKEN` to the Auth Token from the Twilio Console.
 3. Set `PUBLIC_BASE_URL` to the exact public origin Twilio will call, with no trailing slash. Example: `https://abc123.example-tunnel.app`.
-4. Start the stack:
+4. Set `OPENAI_API_KEY` to an OpenAI API key with Realtime access; it is used server-side for the speech-to-speech call bridge.
+5. Start the stack:
 
    ```bash
    docker compose up --build
@@ -79,6 +80,12 @@ For each Twilio phone number, configure the same endpoints using HTTP `POST`:
 - **Call status callback:** `https://your-public-host.example.com/webhooks/twilio/call-status`
 
 Add one business row per Twilio number. Phone numbers must be E.164 (for example `+14155552671`). The incoming voice route always selects the tenant using Twilio's `To` field. `From` is stored only when it is a valid E.164 number and is never used to select a business.
+
+### Realtime speech-to-speech calls
+
+When the resolved business has an enabled row in `agent_configs`, the voice webhook answers with `<Connect><Stream>` and Twilio opens a bidirectional Media Stream to `wss://<PUBLIC_BASE_URL host>/webhooks/twilio/media`. Callora then opens one OpenAI Realtime session per stream (`gpt-realtime-2.1` by default) and bridges G.711 mu-law audio in both directions without transcoding, with server VAD barge-in. Businesses without an enabled agent keep the previous static `<Say>` greeting.
+
+Twilio does not sign the WebSocket handshake, so the voice webhook issues a short-lived HMAC token bound to the `CallSid` and business, and the media endpoint rejects any handshake without a valid token. The `start` event's `CallSid` must also match the token.
 
 Twilio signatures are validated against `TWILIO_AUTH_TOKEN` and the exact URL assembled from `PUBLIC_BASE_URL` plus the request path. A mismatch returns `403`, so the configured public origin and Twilio webhook URL must match exactly, including HTTPS and any path prefix.
 
@@ -132,7 +139,7 @@ test/                     API-level tests using an in-memory store
 - Put the backend behind HTTPS and an ingress/reverse proxy suitable for your host.
 - Change the Compose database password outside local development.
 - The CRUD API is intentionally unauthenticated in Push 1; do not expose `/api` publicly before adding authentication and authorization.
-- Keep `TWILIO_AUTH_TOKEN`, `DATABASE_URL`, and all future provider credentials in environment variables or a deployment secret manager.
+- Keep `TWILIO_AUTH_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`, and all future provider credentials in environment variables or a deployment secret manager.
 - Back up PostgreSQL and monitor webhook errors before onboarding real businesses.
 
 ## Recommended Push 2

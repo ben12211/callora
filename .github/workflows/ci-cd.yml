@@ -49,6 +49,7 @@ jobs:
           TWILIO_ACCOUNT_SID: AC00000000000000000000000000000000
           TWILIO_AUTH_TOKEN: validation-only
           PUBLIC_BASE_URL: https://callora.example.invalid
+          OPENAI_API_KEY: sk-validation-only-not-a-real-key
         run: |
           pnpm validate:config
           bash -n deploy/deploy.sh deploy/bootstrap-oracle-linux.sh
@@ -148,6 +149,7 @@ jobs:
           DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           RELEASE_SHA: ${{ github.sha }}
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
@@ -166,6 +168,7 @@ jobs:
               'DOCKER_HUB_TOKEN': 'GitHub Repository Secret DOCKER_HUB_TOKEN',
               'TWILIO_ACCOUNT_SID': 'GitHub Repository Secret TWILIO_ACCOUNT_SID',
               'TWILIO_AUTH_TOKEN': 'GitHub Repository Secret TWILIO_AUTH_TOKEN',
+              'OPENAI_API_KEY': 'GitHub Repository Secret OPENAI_API_KEY',
               'DOCKER_HUB_USERNAME': 'GitHub Repository Variable DOCKER_HUB_USERNAME',
           }
           missing = [label for name, label in required.items() if not os.environ.get(name)]
@@ -196,6 +199,9 @@ jobs:
               sys.exit(1)
           if not re.fullmatch(r'[0-9a-fA-F]{32}', os.environ['TWILIO_AUTH_TOKEN']):
               print('TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.', file=sys.stderr)
+              sys.exit(1)
+          if not re.fullmatch(r'sk-[A-Za-z0-9_-]{20,}', os.environ['OPENAI_API_KEY']):
+              print('OPENAI_API_KEY is not a valid OpenAI API key.', file=sys.stderr)
               sys.exit(1)
 
           release_sha = os.environ['RELEASE_SHA']
@@ -232,6 +238,7 @@ jobs:
           DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
           SSH_DIR: ${{ runner.temp }}/callora-ssh
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -258,7 +265,7 @@ jobs:
             "${SSH[@]}" "$REMOTE" \
               "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
           "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
-          printf '%s\n%s\n' "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" | \
+          printf '%s\n%s\n%s\n' "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" | \
             "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
           if ! "${SSH[@]}" "$REMOTE" \

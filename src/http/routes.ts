@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import twilio from 'twilio';
 import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
+import { MEDIA_STREAM_PATH, registerMediaStreamRoute } from './media-stream.js';
+import { createStreamToken } from './stream-token.js';
 import {
   callStatusSchema,
   callsQuerySchema,
@@ -24,6 +26,8 @@ function validationError(reply: FastifyReply, issues: unknown): void {
 
 export async function registerRoutes(app: FastifyInstance, dependencies: RouteDependencies): Promise<void> {
   const { config, store } = dependencies;
+
+  registerMediaStreamRoute(app, dependencies);
 
   app.get('/health', async (_request, reply) => {
     try {
@@ -126,22 +130,47 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
         return;
       }
 
+      // The Twilio `To` number is the only tenant selector; `From` only identifies the caller.
       const business = await store.getBusinessByPhoneNumber(parsed.data.To);
       const response = new twilio.twiml.VoiceResponse();
 
       if (!business) {
+        app.log.warn({ callSid: parsed.data.CallSid }, 'Incoming call for an unconfigured number');
         response.say('This phone number is not configured.');
         response.hangup();
-      } else {
-        const fromNumber = e164Schema.safeParse(parsed.data.From);
-        await store.upsertCall({
+        return reply.type('text/xml; charset=utf-8').send(response.toString());
+      }
+
+      const fromNumber = e164Schema.safeParse(parsed.data.From);
+      await store.upsertCall({
+        businessId: business.id,
+        twilioCallSid: parsed.data.CallSid,
+        fromNumber: fromNumber.success ? fromNumber.data : null,
+        toNumber: parsed.data.To,
+        status: parsed.data.CallStatus,
+        direction: parsed.data.Direction ?? null,
+      });
+
+      const agent = await store.getAgentConfig(business.id);
+      app.log.info(
+        {
           businessId: business.id,
-          twilioCallSid: parsed.data.CallSid,
-          fromNumber: fromNumber.success ? fromNumber.data : null,
-          toNumber: parsed.data.To,
-          status: parsed.data.CallStatus,
-          direction: parsed.data.Direction ?? null,
+          callSid: parsed.data.CallSid,
+          agentEnabled: Boolean(agent?.enabled),
+        },
+        'Business resolved for incoming call',
+      );
+
+      if (agent?.enabled) {
+        // <Connect><Stream> is required for bidirectional audio; <Start><Stream> is one-way.
+        const token = createStreamToken(config.twilioAuthToken, {
+          callSid: parsed.data.CallSid,
+          businessId: business.id,
         });
+        const streamUrl = `${config.publicBaseUrl.replace(/^http/, 'ws')}${MEDIA_STREAM_PATH}?token=${encodeURIComponent(token)}`;
+        response.connect().stream({ url: streamUrl });
+      } else {
+        // No realtime agent configured: fall back to the static tenant greeting.
         response.say(business.greeting);
       }
 

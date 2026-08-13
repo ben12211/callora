@@ -17,10 +17,25 @@ export interface CreateBusinessInput {
 
 export type UpdateBusinessInput = Partial<CreateBusinessInput>;
 
+/** Per-business AI agent configuration used by the realtime call path. */
+export interface AgentConfig {
+  businessId: string;
+  instructions: string;
+  greeting: string;
+  language: string;
+  voice: string;
+  realtimeModel: string;
+  enabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface CallRecord {
   id: string;
   businessId: string;
   twilioCallSid: string;
+  twilioStreamSid: string | null;
+  openaiSessionId: string | null;
   fromNumber: string | null;
   toNumber: string;
   status: string;
@@ -47,6 +62,13 @@ export interface UpdateCallStatusInput {
   toNumber: string;
   status: string;
   durationSeconds: number | null;
+}
+
+export interface AttachRealtimeSessionInput {
+  businessId: string;
+  twilioCallSid: string;
+  twilioStreamSid: string | null;
+  openaiSessionId: string | null;
 }
 
 export interface ListCallsOptions {

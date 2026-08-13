@@ -4,8 +4,16 @@ Shared record of meaningful completed Callora changes.
 
 ## Unreleased
 
+### Added
+
+- Bidirectional Twilio Media Streams (`<Connect><Stream>`) to OpenAI Realtime (`gpt-realtime-2.1`) speech-to-speech calls, bridging G.711 mu-law audio in both directions without transcoding, with server-VAD barge-in and an AI-spoken greeting.
+- Token-authenticated `/webhooks/twilio/media` WebSocket endpoint, call-scoped and business-scoped, with `CallSid` verification on the stream `start` event.
+- Per-business `agent_configs` (instructions, greeting, language, voice, realtime model, enabled) plus a Hebrew customer-service agent for the demo business.
+- `twilio_stream_sid` and `openai_session_id` on call records, structured realtime lifecycle logs, and `OPENAI_API_KEY` configuration across `.env`, Compose, and the deployment secret sync.
+
 ### Changed
 
+- The voice webhook now answers with `<Connect><Stream>` when the resolved business has an enabled agent; businesses without one keep the static `<Say>` greeting.
 - Production CI/CD now publishes private ARM64 images to Docker Hub and deploys immutable commit-SHA releases with the existing health-gated rollback flow.
 
 ### Added

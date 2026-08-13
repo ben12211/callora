@@ -54,7 +54,7 @@ If the repository is private and the raw download is unavailable, copy `deploy/b
 
 ## Production application environment on the VM
 
-The database credentials and public URL stay on the VM. Twilio credentials are synchronized from GitHub Repository Secrets during deployment. As the deployment user, create `/opt/callora/.env` with mode `0600`:
+The database credentials and public URL stay on the VM. Twilio and OpenAI credentials are synchronized from GitHub Repository Secrets during deployment. As the deployment user, create `/opt/callora/.env` with mode `0600`:
 
 ```dotenv
 NODE_ENV=production
@@ -68,6 +68,7 @@ DATABASE_URL=postgresql://callora:URL_ENCODED_PASSWORD@db:5432/callora
 TWILIO_ACCOUNT_SID=replace-with-your-account-sid
 TWILIO_AUTH_TOKEN=replace-with-your-auth-token
 PUBLIC_BASE_URL=https://calls.example.com
+OPENAI_API_KEY=replace-with-your-openai-api-key
 ```
 
 Then secure it:
@@ -94,6 +95,7 @@ Repository Secrets:
 | `USER` | SSH deployment account, normally `opc` |
 | `TWILIO_ACCOUNT_SID` | Twilio Account SID used to validate the production account configuration |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token used to validate signed webhook requests |
+| `OPENAI_API_KEY` | OpenAI API key with Realtime access, used for the speech-to-speech call bridge |
 
 Repository Variable:
 

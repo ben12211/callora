@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import type {
+  AgentConfig,
+  AttachRealtimeSessionInput,
   Business,
   CallRecord,
   CreateBusinessInput,
@@ -21,10 +23,24 @@ interface BusinessRow {
   updated_at: Date;
 }
 
+interface AgentConfigRow {
+  business_id: string;
+  instructions: string;
+  greeting: string;
+  language: string;
+  voice: string;
+  realtime_model: string;
+  enabled: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
 interface CallRow {
   id: string;
   business_id: string;
   twilio_call_sid: string;
+  twilio_stream_sid: string | null;
+  openai_session_id: string | null;
   from_number: string | null;
   to_number: string;
   status: string;
@@ -53,6 +69,8 @@ function mapCall(row: CallRow): CallRecord {
     id: row.id,
     businessId: row.business_id,
     twilioCallSid: row.twilio_call_sid,
+    twilioStreamSid: row.twilio_stream_sid,
+    openaiSessionId: row.openai_session_id,
     fromNumber: row.from_number,
     toNumber: row.to_number,
     status: row.status,
@@ -69,8 +87,28 @@ const businessColumns = `
   id, name, phone_number, greeting, active, created_at, updated_at
 `;
 
+function mapAgentConfig(row: AgentConfigRow): AgentConfig {
+  return {
+    businessId: row.business_id,
+    instructions: row.instructions,
+    greeting: row.greeting,
+    language: row.language,
+    voice: row.voice,
+    realtimeModel: row.realtime_model,
+    enabled: row.enabled,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+const agentConfigColumns = `
+  business_id, instructions, greeting, language, voice, realtime_model, enabled,
+  created_at, updated_at
+`;
+
 const callColumns = `
-  id, business_id, twilio_call_sid, from_number, to_number, status, direction,
+  id, business_id, twilio_call_sid, twilio_stream_sid, openai_session_id,
+  from_number, to_number, status, direction,
   duration_seconds, started_at, ended_at, created_at, updated_at
 `;
 
@@ -158,6 +196,27 @@ export class PostgresStore implements DataStore {
     return result.rows[0] ? mapBusiness(result.rows[0]) : null;
   }
 
+  public async getAgentConfig(businessId: string): Promise<AgentConfig | null> {
+    const result = await this.pool.query<AgentConfigRow>(
+      `SELECT ${agentConfigColumns} FROM agent_configs WHERE business_id = $1`,
+      [businessId],
+    );
+    return result.rows[0] ? mapAgentConfig(result.rows[0]) : null;
+  }
+
+  public async attachRealtimeSession(input: AttachRealtimeSessionInput): Promise<CallRecord | null> {
+    const result = await this.pool.query<CallRow>(
+      `UPDATE calls
+       SET twilio_stream_sid = COALESCE($1, twilio_stream_sid),
+           openai_session_id = COALESCE($2, openai_session_id),
+           updated_at = now()
+       WHERE twilio_call_sid = $3 AND business_id = $4
+       RETURNING ${callColumns}`,
+      [input.twilioStreamSid, input.openaiSessionId, input.twilioCallSid, input.businessId],
+    );
+    return result.rows[0] ? mapCall(result.rows[0]) : null;
+  }
+
   public async upsertCall(input: UpsertCallInput): Promise<CallRecord> {
     const result = await this.pool.query<CallRow>(
       `INSERT INTO calls (
@@ -226,6 +285,14 @@ export class PostgresStore implements DataStore {
     const result = await this.pool.query<CallRow>(
       `SELECT ${callColumns} FROM calls WHERE id = $1`,
       [id],
+    );
+    return result.rows[0] ? mapCall(result.rows[0]) : null;
+  }
+
+  public async getCallByTwilioSid(twilioCallSid: string): Promise<CallRecord | null> {
+    const result = await this.pool.query<CallRow>(
+      `SELECT ${callColumns} FROM calls WHERE twilio_call_sid = $1`,
+      [twilioCallSid],
     );
     return result.rows[0] ? mapCall(result.rows[0]) : null;
   }

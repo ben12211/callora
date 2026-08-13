@@ -34,6 +34,7 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-AC00000000000000000000000000000000}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-local-development-token}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://callora.example.invalid}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-local-development-openai-key}
     ports:
       - "3000:3000"
     depends_on:

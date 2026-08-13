@@ -2,9 +2,12 @@ import { randomUUID } from 'node:crypto';
 import twilio from 'twilio';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { verifyStreamToken } from '../src/http/stream-token.js';
 import type { AppConfig } from '../src/config.js';
 import type { DataStore } from '../src/db/store.js';
 import type {
+  AgentConfig,
+  AttachRealtimeSessionInput,
   Business,
   CallRecord,
   CreateBusinessInput,
@@ -24,7 +27,24 @@ function business(id: string, name: string, phoneNumber: string, greeting: strin
   return { id, name, phoneNumber, greeting, active: true, createdAt: now, updatedAt: now };
 }
 
+export function agentConfig(businessId: string, enabled = true): AgentConfig {
+  const now = new Date();
+  return {
+    businessId,
+    instructions: 'Be a concise Hebrew customer-service agent.',
+    greeting: 'שלום, איך אפשר לעזור?',
+    language: 'he-IL',
+    voice: 'marin',
+    realtimeModel: 'gpt-realtime-2.1',
+    enabled,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 class MemoryStore implements DataStore {
+  public agentConfigs: AgentConfig[] = [];
+
   public businesses: Business[] = [
     business(firstBusinessId, 'First Business', firstNumber, 'Hello from the first business.'),
     business(secondBusinessId, 'Second Business', secondNumber, 'Hello from the second business.'),
@@ -80,6 +100,26 @@ class MemoryStore implements DataStore {
     return this.businesses.splice(index, 1)[0] ?? null;
   }
 
+  public async getAgentConfig(businessId: string): Promise<AgentConfig | null> {
+    return this.agentConfigs.find((item) => item.businessId === businessId) ?? null;
+  }
+
+  public async attachRealtimeSession(input: AttachRealtimeSessionInput): Promise<CallRecord | null> {
+    const existing = this.calls.find(
+      (call) => call.twilioCallSid === input.twilioCallSid && call.businessId === input.businessId,
+    );
+    if (!existing) {
+      return null;
+    }
+    existing.twilioStreamSid = input.twilioStreamSid ?? existing.twilioStreamSid;
+    existing.openaiSessionId = input.openaiSessionId ?? existing.openaiSessionId;
+    return existing;
+  }
+
+  public async getCallByTwilioSid(twilioCallSid: string): Promise<CallRecord | null> {
+    return this.calls.find((call) => call.twilioCallSid === twilioCallSid) ?? null;
+  }
+
   public async upsertCall(input: UpsertCallInput): Promise<CallRecord> {
     const existing = this.calls.find((call) => call.twilioCallSid === input.twilioCallSid);
     if (existing) {
@@ -91,6 +131,8 @@ class MemoryStore implements DataStore {
     const created: CallRecord = {
       id: randomUUID(),
       ...input,
+      twilioStreamSid: null,
+      openaiSessionId: null,
       durationSeconds: null,
       startedAt: now,
       endedAt: null,
@@ -136,6 +178,8 @@ const config: AppConfig = {
   databaseUrl: 'postgresql://unused',
   twilioAuthToken: 'test-auth-token',
   publicBaseUrl: 'https://voice.example.test',
+  openaiApiKey: 'test-openai-key',
+  openaiRealtimeUrl: 'wss://api.openai.com/v1/realtime',
 };
 
 function signedHeaders(path: string, payload: Record<string, string>): Record<string, string> {
@@ -188,6 +232,71 @@ describe('Callora backend', () => {
     expect(store.calls).toHaveLength(1);
     expect(store.calls[0]?.businessId).toBe(firstBusinessId);
     expect(store.calls[0]?.toNumber).toBe(firstNumber);
+    await app.close();
+  });
+
+  it('returns a bidirectional Connect/Stream TwiML when the business has an enabled agent', async () => {
+    store.agentConfigs.push(agentConfig(firstBusinessId));
+    const app = await buildApp({ config, store });
+    const path = '/webhooks/twilio/voice';
+    const payload = {
+      To: firstNumber,
+      From: secondNumber,
+      CallSid: 'CAREALTIME1',
+      CallStatus: 'ringing',
+      Direction: 'inbound',
+    };
+    const response = await app.inject({
+      method: 'POST',
+      url: path,
+      headers: signedHeaders(path, payload),
+      payload: new URLSearchParams(payload).toString(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('<Connect>');
+    expect(response.body).toContain('<Stream');
+    expect(response.body).not.toContain('<Start>');
+    expect(response.body).not.toContain('Hello from the first business.');
+
+    const streamUrl = /url="([^"]+)"/.exec(response.body)?.[1]?.replaceAll('&amp;', '&');
+    expect(streamUrl).toBeDefined();
+    const parsed = new URL(streamUrl!);
+    expect(parsed.protocol).toBe('wss:');
+    expect(parsed.pathname).toBe('/webhooks/twilio/media');
+    const claims = verifyStreamToken(config.twilioAuthToken, parsed.searchParams.get('token') ?? '');
+    expect(claims).toEqual(
+      expect.objectContaining({ callSid: 'CAREALTIME1', businessId: firstBusinessId }),
+    );
+    expect(store.calls[0]?.businessId).toBe(firstBusinessId);
+    await app.close();
+  });
+
+  it('falls back to the static greeting when the agent is disabled', async () => {
+    store.agentConfigs.push(agentConfig(firstBusinessId, false));
+    const app = await buildApp({ config, store });
+    const path = '/webhooks/twilio/voice';
+    const payload = { To: firstNumber, From: secondNumber, CallSid: 'CADISABLED', CallStatus: 'ringing' };
+    const response = await app.inject({
+      method: 'POST',
+      url: path,
+      headers: signedHeaders(path, payload),
+      payload: new URLSearchParams(payload).toString(),
+    });
+
+    expect(response.body).toContain('Hello from the first business.');
+    expect(response.body).not.toContain('<Connect>');
+    await app.close();
+  });
+
+  it('rejects a media stream handshake without a valid token', async () => {
+    const app = await buildApp({ config, store });
+    const rejected = await app.inject({
+      method: 'GET',
+      url: '/webhooks/twilio/media?token=forged',
+      headers: { connection: 'upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' },
+    });
+    expect(rejected.statusCode).toBe(403);
     await app.close();
   });
 

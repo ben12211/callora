@@ -1,4 +1,5 @@
 import formbody from '@fastify/formbody';
+import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { AppConfig } from './config.js';
 import type { DataStore } from './db/store.js';
@@ -31,6 +32,13 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   });
 
   await app.register(formbody);
+  await app.register(websocket, {
+    options: {
+      // Twilio media frames are small JSON payloads; cap them so a rogue peer cannot
+      // exhaust memory on the shared backend.
+      maxPayload: 256 * 1024,
+    },
+  });
   await registerRoutes(app, dependencies);
 
   app.setErrorHandler((error, request, reply) => {

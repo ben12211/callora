@@ -16,6 +16,27 @@ export async function seedDatabase(pool: pg.Pool): Promise<void> {
       'Thanks for calling Callora Demo Business. How can we help you today?',
     ],
   );
+
+  await pool.query(
+    `INSERT INTO agent_configs (
+       business_id, instructions, greeting, language, voice, realtime_model, enabled
+     ) VALUES ($1, $2, $3, $4, $5, $6, true)
+     ON CONFLICT (business_id) DO NOTHING`,
+    [
+      exampleBusinessId,
+      [
+        'את/ה נציג/ת שירות לקוחות טלפוני של "קלורה דמו".',
+        'דבר/י עברית טבעית ויומיומית, בקצב רגיל ובנימה חמה ומקצועית.',
+        'ענה/י בתשובות קצרות של משפט או שניים, כמו בשיחת טלפון אמיתית.',
+        'אל תמציא/י מידע. אם אינך יודע/ת, אמור/י זאת בכנות והצע/י לברר ולחזור ללקוח.',
+        'אם הלקוח קוטע אותך, הפסק/י לדבר מיד והקשב/י.',
+      ].join(' '),
+      'שלום, הגעתם לקלורה דמו. איך אפשר לעזור?',
+      'he-IL',
+      'marin',
+      'gpt-realtime-2.1',
+    ],
+  );
 }
 
 async function main(): Promise<void> {
