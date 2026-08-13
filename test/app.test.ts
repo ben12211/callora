@@ -176,6 +176,7 @@ const config: AppConfig = {
   port: 3000,
   logLevel: 'silent',
   databaseUrl: 'postgresql://unused',
+  twilioAccountSid: 'AC00000000000000000000000000000000',
   twilioAuthToken: 'test-auth-token',
   publicBaseUrl: 'https://voice.example.test',
   openaiApiKey: 'test-openai-key',

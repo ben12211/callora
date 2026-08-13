@@ -65,7 +65,7 @@ POSTGRES_USER=callora
 POSTGRES_PASSWORD=replace-with-a-strong-password
 POSTGRES_DB=callora
 DATABASE_URL=postgresql://callora:URL_ENCODED_PASSWORD@db:5432/callora
-TWILIO_ACCOUNT_SID=replace-with-your-account-sid
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=replace-with-your-auth-token
 PUBLIC_BASE_URL=https://calls.example.com
 OPENAI_API_KEY=replace-with-your-openai-api-key
@@ -93,7 +93,7 @@ Repository Secrets:
 | `IP` | Oracle VM public IPv4 address |
 | `KEY_PEM` | Private SSH key authorized for `USER` |
 | `USER` | SSH deployment account, normally `opc` |
-| `TWILIO_ACCOUNT_SID` | Twilio Account SID used to validate the production account configuration |
+| `TWILIO_ACCOUNT_SID` | Twilio Account SID; authenticates the REST call that hangs up finished conversations |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token used to validate signed webhook requests |
 | `OPENAI_API_KEY` | OpenAI API key with Realtime access, used for the speech-to-speech call bridge |
 

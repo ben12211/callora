@@ -8,7 +8,8 @@ const configSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   DATABASE_URL: z.string().min(1),
   TWILIO_AUTH_TOKEN: z.string().min(1),
-  TWILIO_ACCOUNT_SID: z.string().min(1).optional(),
+  // Required: the REST client that hangs calls up is authenticated per account.
+  TWILIO_ACCOUNT_SID: z.string().regex(/^AC[0-9a-fA-F]{32}$/, 'TWILIO_ACCOUNT_SID must be a Twilio Account SID'),
   PUBLIC_BASE_URL: z.url().transform((value) => value.replace(/\/$/, '')),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_REALTIME_URL: z.string().min(1).default('wss://api.openai.com/v1/realtime'),
@@ -21,7 +22,7 @@ export interface AppConfig {
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
   databaseUrl: string;
   twilioAuthToken: string;
-  twilioAccountSid?: string;
+  twilioAccountSid: string;
   publicBaseUrl: string;
   openaiApiKey: string;
   openaiRealtimeUrl: string;

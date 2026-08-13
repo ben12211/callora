@@ -1,4 +1,5 @@
 import type { AgentConfig } from '../domain/models.js';
+import { composeAgentInstructions } from './policy.js';
 
 /**
  * Payload builders and narrow parsers for the two wire protocols that meet in the
@@ -17,17 +18,40 @@ export interface RealtimeSessionOptions {
   callerNumber?: string | null;
 }
 
-function sessionInstructions(agent: AgentConfig, callerNumber?: string | null): string {
-  const lines = [
-    agent.instructions,
-    `Always speak in ${agent.language}.`,
-    'Keep answers short and natural for a phone conversation.',
-  ];
-  if (callerNumber) {
-    lines.push(`The caller is phoning from ${callerNumber}.`);
-  }
-  return lines.join('\n');
-}
+export const END_CALL_TOOL_NAME = 'end_call' as const;
+
+/** Reasons the model may report; the server never accepts a call identifier from it. */
+export const END_CALL_REASONS = [
+  'caller_said_goodbye',
+  'request_completed',
+  'caller_requested_hangup',
+  'off_topic_abuse',
+  'caller_silent',
+] as const;
+
+/**
+ * The only way the model can hang up. It deliberately has no `callSid` parameter: the
+ * server terminates the call it authorized for this stream, so a hallucinated or
+ * caller-supplied identifier can never reach the Twilio REST API.
+ */
+export const END_CALL_TOOL = {
+  type: 'function',
+  name: END_CALL_TOOL_NAME,
+  description:
+    'End the phone call after saying a short goodbye. Use when the caller says goodbye or thanks you and needs nothing else, asks to hang up, when their request is complete, or after repeated unrelated or abusive turns.',
+  parameters: {
+    type: 'object',
+    properties: {
+      reason: {
+        type: 'string',
+        enum: [...END_CALL_REASONS],
+        description: 'Why the call is ending.',
+      },
+    },
+    required: ['reason'],
+    additionalProperties: false,
+  },
+} as const;
 
 /** `session.update` for a speech-to-speech telephony session. */
 export function buildSessionUpdate(options: RealtimeSessionOptions): Record<string, unknown> {
@@ -37,8 +61,10 @@ export function buildSessionUpdate(options: RealtimeSessionOptions): Record<stri
     session: {
       type: 'realtime',
       model: agent.realtimeModel,
-      instructions: sessionInstructions(agent, callerNumber),
+      instructions: composeAgentInstructions({ agent, callerNumber }),
       output_modalities: ['audio'],
+      tools: [END_CALL_TOOL],
+      tool_choice: 'auto',
       audio: {
         input: {
           format: { type: TWILIO_AUDIO_FORMAT },
@@ -65,6 +91,44 @@ export function buildGreetingResponse(agent: AgentConfig): Record<string, unknow
     type: 'response.create',
     response: {
       instructions: `Greet the caller now by saying exactly: "${agent.greeting}". Then stop and wait.`,
+    },
+  };
+}
+
+/** Answers an `end_call` tool call so the model's conversation state stays consistent. */
+export function buildEndCallToolOutput(callId: string, alreadyEnding: boolean): Record<string, unknown> {
+  return {
+    type: 'conversation.item.create',
+    item: {
+      type: 'function_call_output',
+      call_id: callId,
+      output: JSON.stringify(
+        alreadyEnding
+          ? { status: 'already_ending', instruction: 'The call is already ending. Say nothing further.' }
+          : { status: 'ending', instruction: 'Say one short goodbye, then stop talking.' },
+      ),
+    },
+  };
+}
+
+/** Final spoken turn before the call is terminated. */
+export function buildFarewellResponse(): Record<string, unknown> {
+  return {
+    type: 'response.create',
+    response: {
+      instructions:
+        'Say one short, warm goodbye sentence and nothing else. Do not ask a question and do not add any other information.',
+    },
+  };
+}
+
+/** First long silence: check once whether the caller is still on the line. */
+export function buildStillThereResponse(): Record<string, unknown> {
+  return {
+    type: 'response.create',
+    response: {
+      instructions:
+        'The caller has been silent for a while. Ask once, in one short sentence, whether they are still on the line. Do not repeat anything you said before.',
     },
   };
 }
@@ -108,6 +172,16 @@ export function parseJsonObject(raw: string): Record<string, unknown> | null {
 export function readString(source: Record<string, unknown>, key: string): string | undefined {
   const value = source[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+export function readObjectArray(source: Record<string, unknown>, key: string): Record<string, unknown>[] {
+  const value = source[key];
+  return Array.isArray(value)
+    ? value.filter(
+        (entry): entry is Record<string, unknown> =>
+          typeof entry === 'object' && entry !== null && !Array.isArray(entry),
+      )
+    : [];
 }
 
 export function readObject(source: Record<string, unknown>, key: string): Record<string, unknown> | undefined {

@@ -4,10 +4,13 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AppConfig } from './config.js';
 import type { DataStore } from './db/store.js';
 import { registerRoutes } from './http/routes.js';
+import type { CallTerminator } from './telephony/call-terminator.js';
 
 interface AppDependencies {
   config: AppConfig;
   store: DataStore;
+  /** Overridable so tests never reach the Twilio REST API. */
+  callTerminator?: CallTerminator;
 }
 
 function databaseErrorCode(error: unknown): string | undefined {

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import twilio from 'twilio';
 import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
+import type { CallTerminator } from '../telephony/call-terminator.js';
 import { MEDIA_STREAM_PATH, registerMediaStreamRoute } from './media-stream.js';
 import { createStreamToken } from './stream-token.js';
 import {
@@ -18,6 +19,8 @@ import { twilioSignatureGuard } from './twilio-signature.js';
 interface RouteDependencies {
   config: AppConfig;
   store: DataStore;
+  /** Overridable so tests never reach the Twilio REST API. */
+  callTerminator?: CallTerminator;
 }
 
 function validationError(reply: FastifyReply, issues: unknown): void {

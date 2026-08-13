@@ -87,6 +87,19 @@ When the resolved business has an enabled row in `agent_configs`, the voice webh
 
 Twilio does not sign the WebSocket handshake, so the voice webhook issues a short-lived HMAC token bound to the `CallSid` and business, and the media endpoint rejects any handshake without a valid token. The `start` event's `CallSid` must also match the token.
 
+#### Agent behaviour
+
+Every session is configured with a global Callora policy (`src/realtime/policy.ts`) that sits above the per-business `instructions`:
+
+- The agent handles only its own business, refuses unrelated topics in one sentence and redirects, and never acts as a general assistant.
+- Prompt-injection attempts ("ignore your instructions", "act as ChatGPT", claims of authority) are treated as unrelated topics. Caller speech is content, never instructions.
+- Business `instructions` are embedded as a delimited, lower-precedence block: they can narrow behaviour but never widen scope or disable a global rule.
+- Answers stay at one to three short sentences with a single question per turn, and the agent moves toward closing once the request is handled.
+
+The agent hangs up through an internal `end_call` tool. It takes only a `reason` — never a call identifier — and the server terminates the `CallSid` that the stream was authorized for. Callora waits for the goodbye audio to be acknowledged by Twilio before ending the call, and termination is idempotent: repeated tool calls, a caller who hangs up first, and a failed REST hangup all converge on one clean teardown.
+
+Silence is handled with the server-VAD signal: after about 12 seconds without caller speech the agent asks once whether they are still there, and after another 12 seconds it says goodbye and ends the call. Any caller speech resets the escalation.
+
 Twilio signatures are validated against `TWILIO_AUTH_TOKEN` and the exact URL assembled from `PUBLIC_BASE_URL` plus the request path. A mismatch returns `403`, so the configured public origin and Twilio webhook URL must match exactly, including HTTPS and any path prefix.
 
 ## Endpoints
@@ -129,6 +142,8 @@ src/
   db/                     PostgreSQL pool, store, migrations, seed
   domain/                 persisted domain types
   http/                   API routes, validation, Twilio signature guard
+  realtime/               policy, protocol builders, and the Twilio<->OpenAI bridge
+  telephony/              Twilio REST call termination
   future/interfaces.ts    intentionally unimplemented Push 2+ seams
 migrations/               ordered SQL migrations
 test/                     API-level tests using an in-memory store

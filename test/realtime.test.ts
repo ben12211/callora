@@ -1,84 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { streamClaimsFromStartMessage } from '../src/http/media-stream.js';
 import { createStreamToken, verifyStreamToken } from '../src/http/stream-token.js';
-import { MediaStreamBridge, type BridgeLogger, type MessageChannel } from '../src/realtime/bridge.js';
+import { MediaStreamBridge } from '../src/realtime/bridge.js';
 import { buildSessionUpdate } from '../src/realtime/protocol.js';
-import type { AgentConfig } from '../src/domain/models.js';
-
-const businessId = '00000000-0000-4000-8000-000000000001';
-const callSid = 'CABRIDGE1';
-const streamSid = 'MZ0000000000000000000000000000';
-
-const agent: AgentConfig = {
+import {
+  FakeChannel,
+  agent,
   businessId,
-  instructions: 'Be concise.',
-  greeting: 'שלום, איך אפשר לעזור?',
-  language: 'he-IL',
-  voice: 'marin',
-  realtimeModel: 'gpt-realtime-2.1',
-  enabled: true,
-  createdAt: new Date(),
-  updatedAt: new Date(),
-};
-
-const silentLogger: BridgeLogger = { info: () => {}, warn: () => {}, error: () => {} };
-
-class FakeChannel implements MessageChannel {
-  public readonly sent: Record<string, unknown>[] = [];
-  public closed = false;
-  private messageHandler: ((raw: string) => void) | null = null;
-  private closeHandler: (() => void) | null = null;
-
-  public send(payload: string): void {
-    this.sent.push(JSON.parse(payload) as Record<string, unknown>);
-  }
-
-  public close(): void {
-    this.closed = true;
-  }
-
-  public onMessage(handler: (raw: string) => void): void {
-    this.messageHandler = handler;
-  }
-
-  public onClose(handler: () => void): void {
-    this.closeHandler = handler;
-  }
-
-  public onError(): void {}
-
-  public emit(message: Record<string, unknown>): void {
-    this.messageHandler?.(JSON.stringify(message));
-  }
-
-  public emitClose(): void {
-    this.closeHandler?.();
-  }
-
-  public types(): string[] {
-    return this.sent.map((message) => String(message['type'] ?? message['event']));
-  }
-}
-
-function startBridge(): { twilio: FakeChannel; openai: FakeChannel; bridge: MediaStreamBridge } {
-  const twilio = new FakeChannel();
-  const openai = new FakeChannel();
-  const bridge = new MediaStreamBridge({
-    twilio,
-    openai,
-    agent,
-    businessId,
-    callSid,
-    logger: silentLogger,
-  });
-  bridge.start();
-  return { twilio, openai, bridge };
-}
-
-function openStream(twilio: FakeChannel, openai: FakeChannel): void {
-  twilio.emit({ event: 'start', streamSid, start: { streamSid, callSid, accountSid: 'AC1' } });
-  openai.emit({ type: 'session.created', session: { id: 'sess_123' } });
-}
+  callSid,
+  openStream,
+  silentLogger,
+  startBridge,
+  streamSid,
+} from './support/realtime-harness.js';
 
 describe('media stream security token', () => {
   it('round-trips call-scoped claims', () => {

@@ -8,7 +8,9 @@ Callora is a multi-tenant phone customer-service backend. One service handles ma
 
 Inbound calls now run as real speech-to-speech AI conversations: the voice webhook resolves the business, loads its `agent_configs` row, and returns `<Connect><Stream>` TwiML pointing at `/webhooks/twilio/media`. Each Twilio Media Stream is paired with exactly one OpenAI Realtime session (`gpt-realtime-2.1`), bridging `audio/pcmu` in both directions without transcoding, with server-VAD turn detection, barge-in (truncate + Twilio `clear`), an AI-spoken greeting, and persisted `StreamSid`/session identifiers. Businesses without an enabled agent fall back to the static `<Say>` greeting.
 
-Tool execution, CRM/order/appointment integrations, WhatsApp, voice cloning, transcripts, an agent builder/versioning, and authenticated administration are intentionally not implemented.
+Agent behaviour is governed by a global Callora policy that outranks per-business `instructions`: the agent stays strictly within its own business, refuses unrelated topics in one sentence and redirects, ignores prompt-injection attempts, and keeps turns to one to three sentences with a single question. Tenant instructions are embedded as a delimited, lower-precedence block. The agent ends calls itself through an internal `end_call` tool that carries only a reason — the server hangs up the `CallSid` the stream was authorized for, after the goodbye audio is acknowledged by Twilio, idempotently and with a media-stream-close fallback. Long silences escalate from one "are you still there?" check to a goodbye and hangup, resetting whenever the caller speaks.
+
+Business tool execution, CRM/order/appointment integrations, WhatsApp, voice cloning, transcripts, an agent builder/versioning, and authenticated administration are intentionally not implemented.
 
 ## Stack and architecture
 
@@ -16,7 +18,8 @@ Tool execution, CRM/order/appointment integrations, WhatsApp, voice cloning, tra
 - PostgreSQL 16 with SQL migrations and an idempotent example seed
 - Single backend with a PostgreSQL data store; no microservices or queues
 - Vitest API tests, ESLint, strict TypeScript build
-- Realtime call path in `src/realtime/` (protocol builders, bridge, OpenAI connection) and `src/http/media-stream.ts`
+- Realtime call path in `src/realtime/` (global policy, protocol builders, bridge, OpenAI connection), `src/http/media-stream.ts`, and `src/telephony/call-terminator.ts`
+- `TWILIO_ACCOUNT_SID` is required at startup: the REST client that hangs calls up is authenticated per account
 - Media Stream handshakes are authorized by a short-lived HMAC token minted by the signature-validated voice webhook
 - Future integration boundaries live in `src/future/interfaces.ts`
 

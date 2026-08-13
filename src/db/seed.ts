@@ -24,12 +24,14 @@ export async function seedDatabase(pool: pg.Pool): Promise<void> {
      ON CONFLICT (business_id) DO NOTHING`,
     [
       exampleBusinessId,
+      // Business-specific context only: tone, scope, and what this business offers.
+      // Phone style, business-only scope, and hangup rules come from the global Callora
+      // policy in src/realtime/policy.ts and cannot be overridden from here.
       [
-        'את/ה נציג/ת שירות לקוחות טלפוני של "קלורה דמו".',
-        'דבר/י עברית טבעית ויומיומית, בקצב רגיל ובנימה חמה ומקצועית.',
-        'ענה/י בתשובות קצרות של משפט או שניים, כמו בשיחת טלפון אמיתית.',
-        'אל תמציא/י מידע. אם אינך יודע/ת, אמור/י זאת בכנות והצע/י לברר ולחזור ללקוח.',
-        'אם הלקוח קוטע אותך, הפסק/י לדבר מיד והקשב/י.',
+        'העסק הוא "קלורה דמו", שירות הדגמה של מערכת מענה טלפוני חכם.',
+        'דבר/י עברית טבעית ויומיומית, בנימה חמה ומקצועית.',
+        'נושאים שבתחומך: מה המערכת עושה, איך מתחילים להשתמש בה, ותיאום שיחת המשך עם נציג.',
+        'אל תמציא/י מידע על מחירים, מלאי או מועדים. אם אינך יודע/ת, אמור/י זאת והצע/י שנציג יחזור ללקוח.',
       ].join(' '),
       'שלום, הגעתם לקלורה דמו. איך אפשר לעזור?',
       'he-IL',

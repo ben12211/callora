@@ -7,6 +7,7 @@ import { MediaStreamBridge, type MessageChannel } from '../realtime/bridge.js';
 import { connectOpenAiRealtime } from '../realtime/openai-connection.js';
 import { parseJsonObject, readObject, readString } from '../realtime/protocol.js';
 import { websocketChannel } from '../realtime/websocket-channel.js';
+import { createCallTerminator, type CallTerminator } from '../telephony/call-terminator.js';
 import { verifyStreamToken, type StreamTokenPayload } from './stream-token.js';
 
 export const MEDIA_STREAM_PATH = '/webhooks/twilio/media';
@@ -18,6 +19,8 @@ const STREAM_AUTH_TIMEOUT_MS = 5_000;
 interface MediaStreamDependencies {
   config: AppConfig;
   store: DataStore;
+  /** Overridable so tests never reach the Twilio REST API. */
+  callTerminator?: CallTerminator;
 }
 
 function validWebSocketSignature(request: FastifyRequest, config: AppConfig): boolean {
@@ -112,6 +115,10 @@ async function authorizeTwilioStream(
 
 export function registerMediaStreamRoute(app: FastifyInstance, dependencies: MediaStreamDependencies): void {
   const { config } = dependencies;
+  const resolved: Required<Pick<MediaStreamDependencies, 'callTerminator'>> & MediaStreamDependencies = {
+    ...dependencies,
+    callTerminator: dependencies.callTerminator ?? createCallTerminator(config),
+  };
 
   app.get(
     MEDIA_STREAM_PATH,
@@ -125,7 +132,7 @@ export function registerMediaStreamRoute(app: FastifyInstance, dependencies: Med
       },
     },
     (socket: WebSocket, request) => {
-      void startAuthorizedBridge(app, dependencies, socket, request);
+      void startAuthorizedBridge(app, resolved, socket, request);
     },
   );
 }
@@ -213,6 +220,12 @@ async function openBridge(
     callSid,
     callerNumber: call?.fromNumber ?? null,
     logger: app.log,
+    // The CallSid is the one this stream was authorized for; the model never supplies it.
+    endCall: dependencies.callTerminator
+      ? async (): Promise<void> => {
+          await dependencies.callTerminator!.endCall(callSid);
+        }
+      : undefined,
     onIdentifiers: ({ streamSid, openaiSessionId }) => {
       if (streamSid === persistedStreamSid && openaiSessionId === persistedSessionId) {
         return;

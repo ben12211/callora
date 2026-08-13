@@ -6,6 +6,18 @@ Shared record of meaningful completed Callora changes.
 
 ### Added
 
+- Global Callora agent policy applied to every realtime session: business-only scope with one-sentence refusal and redirect, prompt-injection resistance, and short phone turns with one question at a time. Per-business `instructions` are embedded as a delimited, lower-precedence block that cannot widen scope or disable a global rule.
+- Internal `end_call` realtime tool. The model supplies only a reason; the server hangs up the `CallSid` the media stream was authorized for, after waiting for the goodbye audio to be acknowledged by Twilio. Termination is idempotent and falls back to closing the media stream if the Twilio REST call fails.
+- Silence handling on top of server VAD: one "are you still there?" check after a long silence, then a goodbye and hangup after a second one, reset whenever the caller speaks.
+- `src/telephony/call-terminator.ts`, an idempotent Twilio call terminator that treats already-completed calls as success.
+
+### Changed
+
+- `TWILIO_ACCOUNT_SID` is now required at startup and must be a well-formed Account SID; it authenticates the REST hangup. Every deployment path already required it.
+- The demo seed agent now carries only business-specific context; phone style and scope rules come from the global policy.
+
+### Added
+
 - Bidirectional Twilio Media Streams (`<Connect><Stream>`) to OpenAI Realtime (`gpt-realtime-2.1`) speech-to-speech calls, bridging G.711 mu-law audio in both directions without transcoding, with server-VAD barge-in and an AI-spoken greeting.
 - Token-authenticated `/webhooks/twilio/media` WebSocket endpoint, call-scoped and business-scoped, with `CallSid` verification on the stream `start` event.
 - Per-business `agent_configs` (instructions, greeting, language, voice, realtime model, enabled) plus a Hebrew customer-service agent for the demo business.
