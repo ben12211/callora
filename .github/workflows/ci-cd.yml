@@ -200,11 +200,9 @@ jobs:
           if not re.fullmatch(r'[0-9a-fA-F]{32}', os.environ['TWILIO_AUTH_TOKEN']):
               print('TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.', file=sys.stderr)
               sys.exit(1)
-          openai_api_key = os.environ['OPENAI_API_KEY']
-          if openai_api_key != openai_api_key.strip() or any(
-              character in openai_api_key for character in ('\r', '\n', '\0')
-          ):
-              print('OPENAI_API_KEY must be a non-empty, single-line secret without surrounding whitespace.', file=sys.stderr)
+          openai_api_key = os.environ['OPENAI_API_KEY'].strip()
+          if not openai_api_key or any(character in openai_api_key for character in ('\r', '\n', '\0')):
+              print('OPENAI_API_KEY must contain a single-line credential.', file=sys.stderr)
               sys.exit(1)
 
           release_sha = os.environ['RELEASE_SHA']
@@ -256,6 +254,14 @@ jobs:
               "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker logout >/dev/null 2>&1 || true; rm -rf -- '$REMOTE_DOCKER_CONFIG'" || true
           }
           trap cleanup EXIT
+
+          OPENAI_API_KEY="$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.stdout.write(os.environ['OPENAI_API_KEY'].strip())
+          PY
+          )"
 
           "${SSH[@]}" "$REMOTE" 'install -d -m 700 /opt/callora/incoming'
           "${SCP[@]}" \
