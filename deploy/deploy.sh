@@ -42,6 +42,55 @@ wait_for_healthy() {
   return 1
 }
 
+wait_for_public_health() {
+  local attempts="${1:-30}"
+  local caddy_id public_base_url
+
+  caddy_id="$(compose ps -q caddy)"
+  [[ -n "$caddy_id" ]] || {
+    log 'Caddy is not running; cannot check the public health endpoint.'
+    return 1
+  }
+
+  public_base_url="$(
+    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$caddy_id" |
+      sed -n 's/^PUBLIC_BASE_URL=//p' |
+      head -n 1
+  )"
+  [[ "$public_base_url" == https://* ]] || {
+    log 'Caddy does not have a valid HTTPS PUBLIC_BASE_URL.'
+    return 1
+  }
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if curl --fail --silent --show-error --max-time 5 -- "${public_base_url%/}/health" >/dev/null; then
+      return 0
+    fi
+    sleep 5
+  done
+
+  log 'The public health endpoint did not become ready.'
+  return 1
+}
+
+prepare_incoming_env() {
+  local new_image="$1"
+
+  [[ "$new_image" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/callora:[0-9a-f]{40}$ ]] || {
+    log 'The image must be a Docker Hub Callora image with an immutable commit-SHA tag.'
+    return 1
+  }
+
+  [[ -f "$ENV_FILE" ]] || {
+    log "$ENV_FILE is missing; create the production application environment before deploying."
+    return 1
+  }
+
+  awk '!/^[[:space:]]*CALLORA_IMAGE[[:space:]]*=/' "$ENV_FILE" > "$INCOMING_DIR/callora.env"
+  printf 'CALLORA_IMAGE="%s"\n' "$new_image" >> "$INCOMING_DIR/callora.env"
+  chmod 0600 "$INCOMING_DIR/callora.env"
+}
+
 validate_incoming() {
   local new_image="$1"
   local next_compose=(docker compose
@@ -54,11 +103,6 @@ validate_incoming() {
       return 1
     }
   done
-
-  [[ "$new_image" =~ ^ghcr\.io/ben12211/callora:[0-9a-f]{40}$ ]] || {
-    log 'The image must use the immutable Callora commit-SHA tag.'
-    return 1
-  }
 
   "${next_compose[@]}" config -q
   "${next_compose[@]}" config --images | grep -Fqx "$new_image"
@@ -73,11 +117,15 @@ backup_current() {
     install -m 0644 "$COMPOSE_FILE" "$ROLLBACK_DIR/docker-compose.prod.yml"
     install -m 0644 "$CADDY_FILE" "$ROLLBACK_DIR/Caddyfile"
     : > "$ROLLBACK_DIR/previous-release"
+  elif [[ -f "$ENV_FILE" && ! -e "$COMPOSE_FILE" && ! -e "$CADDY_FILE" ]]; then
+    install -m 0600 "$ENV_FILE" "$ROLLBACK_DIR/.env"
+    : > "$ROLLBACK_DIR/first-deploy"
   elif [[ -e "$ENV_FILE" || -e "$COMPOSE_FILE" || -e "$CADDY_FILE" ]]; then
     log 'Production configuration is incomplete; refusing to overwrite it.'
     return 1
   else
-    : > "$ROLLBACK_DIR/first-deploy"
+    log "$ENV_FILE is missing; refusing to deploy without application configuration."
+    return 1
   fi
 }
 
@@ -93,21 +141,22 @@ perform_rollback() {
   log 'Rolling back application configuration and backend image.'
 
   if [[ -f "$ROLLBACK_DIR/previous-release" ]]; then
-    install -m 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE"
-    install -m 0644 "$ROLLBACK_DIR/docker-compose.prod.yml" "$COMPOSE_FILE"
-    install -m 0644 "$ROLLBACK_DIR/Caddyfile" "$CADDY_FILE"
-    compose up -d db
-    wait_for_healthy db 60
-    compose up -d --no-deps backend
-    wait_for_healthy backend 60
-    compose up -d --no-deps caddy
-    wait_for_healthy caddy 60
+    install -m 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE" || return 1
+    install -m 0644 "$ROLLBACK_DIR/docker-compose.prod.yml" "$COMPOSE_FILE" || return 1
+    install -m 0644 "$ROLLBACK_DIR/Caddyfile" "$CADDY_FILE" || return 1
+    compose up -d db || return 1
+    wait_for_healthy db 60 || return 1
+    compose up -d --no-deps backend || return 1
+    wait_for_healthy backend 60 || return 1
+    compose up -d --no-deps caddy || return 1
+    wait_for_healthy caddy 60 || return 1
     log 'Previous application release restored. Database migrations were not reversed.'
     return 0
   fi
 
   if [[ -f "$ROLLBACK_DIR/first-deploy" && -f "$ENV_FILE" && -f "$COMPOSE_FILE" ]]; then
     compose stop backend caddy 2>/dev/null || true
+    install -m 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE" || return 1
     log 'First deployment stopped; PostgreSQL and its named volume were preserved.'
     return 0
   fi
@@ -120,6 +169,7 @@ deploy_release() {
   local new_image="$1"
   local migrated=false
 
+  prepare_incoming_env "$new_image"
   validate_incoming "$new_image"
   backup_current
   install_incoming
@@ -166,8 +216,11 @@ deploy_release() {
   compose exec -T backend node -e \
     "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
+  log 'Checking the public HTTPS health endpoint.'
+  wait_for_public_health 30
+
   trap - ERR
-  log 'Internal health checks passed; awaiting external health confirmation.'
+  log 'Database, backend, Caddy, internal, and public health checks passed.'
 }
 
 confirm_release() {
@@ -176,7 +229,9 @@ confirm_release() {
     return 1
   }
 
-  compose config --images | grep '^ghcr.io/ben12211/callora:' | head -n 1 > "$APP_DIR/.last-successful-image"
+  compose config --images |
+    grep -E '^[a-z0-9]+([._-][a-z0-9]+)*/callora:[0-9a-f]{40}$' |
+    head -n 1 > "$APP_DIR/.last-successful-image"
   chmod 0600 "$APP_DIR/.last-successful-image"
   rm -rf -- "$ROLLBACK_DIR"
   log 'Deployment confirmed.'
