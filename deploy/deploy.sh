@@ -104,8 +104,23 @@ validate_incoming() {
     }
   done
 
-  "${next_compose[@]}" config -q
-  "${next_compose[@]}" config --images | grep -Fqx "$new_image"
+  # Each check reports what failed: a bare `grep -q` under `set -e` aborts the whole
+  # deployment with no output at all, which is unusable to debug from CI logs.
+  "${next_compose[@]}" config -q || {
+    log 'The incoming Compose configuration failed validation.'
+    return 1
+  }
+
+  local images
+  images="$("${next_compose[@]}" config --images)" || {
+    log 'Could not resolve the images from the incoming Compose configuration.'
+    return 1
+  }
+  grep -Fqx "$new_image" <<<"$images" || {
+    log "The incoming configuration does not reference $new_image."
+    log "Resolved images: $(tr '\n' ' ' <<<"$images")"
+    return 1
+  }
 }
 
 backup_current() {
@@ -310,6 +325,10 @@ main() {
     log 'Another deployment is already running.'
     exit 1
   }
+
+  # Baseline reporting so no command can abort the script without saying where.
+  # deploy_release installs its own ERR trap once a rollback becomes possible.
+  trap 'log "deploy.sh failed at line $LINENO with exit $?."' ERR
 
   case "${1:-}" in
     deploy)
