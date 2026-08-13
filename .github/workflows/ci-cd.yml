@@ -200,8 +200,11 @@ jobs:
           if not re.fullmatch(r'[0-9a-fA-F]{32}', os.environ['TWILIO_AUTH_TOKEN']):
               print('TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.', file=sys.stderr)
               sys.exit(1)
-          if not re.fullmatch(r'sk-[A-Za-z0-9_-]{20,}', os.environ['OPENAI_API_KEY']):
-              print('OPENAI_API_KEY is not a valid OpenAI API key.', file=sys.stderr)
+          openai_api_key = os.environ['OPENAI_API_KEY']
+          if openai_api_key != openai_api_key.strip() or any(
+              character in openai_api_key for character in ('\r', '\n', '\0')
+          ):
+              print('OPENAI_API_KEY must be a non-empty, single-line secret without surrounding whitespace.', file=sys.stderr)
               sys.exit(1)
 
           release_sha = os.environ['RELEASE_SHA']

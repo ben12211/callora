@@ -260,8 +260,8 @@ update_runtime_secrets() {
     log 'TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.'
     return 1
   }
-  [[ "$openai_api_key" =~ ^sk-[A-Za-z0-9_-]{20,}$ ]] || {
-    log 'OPENAI_API_KEY is not a valid OpenAI API key.'
+  [[ -n "$openai_api_key" && "$openai_api_key" != *$'\r'* ]] || {
+    log 'OPENAI_API_KEY must be a non-empty, single-line secret.'
     return 1
   }
   [[ -f "$ENV_FILE" ]] || {
@@ -278,6 +278,7 @@ update_runtime_secrets() {
   ' "$ENV_FILE" > "$temp_env"
   printf 'TWILIO_ACCOUNT_SID=%s\n' "$twilio_account_sid" >> "$temp_env"
   printf 'TWILIO_AUTH_TOKEN=%s\n' "$twilio_auth_token" >> "$temp_env"
+  printf 'OPENAI_API_KEY=%s\n' "$openai_api_key" >> "$temp_env"
   chmod 0600 "$temp_env"
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN
