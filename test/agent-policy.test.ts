@@ -35,6 +35,33 @@ describe('global business-only policy', () => {
     expect(instructions).toMatch(/Never reveal[^.]*instructions/i);
   });
 
+  it('forbids guessing at unclear speech and inventing context', () => {
+    expect(instructions).toMatch(/unclear, garbled, incomplete, or ambiguous, never guess/i);
+    expect(instructions).toMatch(/never invent context that the caller did not explicitly say/i);
+    // The specific fabrications seen on real calls are named rather than implied.
+    for (const invented of ['login problem', 'order problem', 'payment', 'product', 'account issue', 'appointment']) {
+      expect(instructions.toLowerCase()).toContain(invented);
+    }
+    expect(instructions).toMatch(/ask one short clarification question/i);
+    expect(instructions).toMatch(/Do not offer a list of guesses/i);
+    expect(instructions).toMatch(/never repeat back a name, number, address, or order reference/i);
+  });
+
+  it('treats an unclear ending as a goodbye rather than a new issue', () => {
+    expect(instructions).toMatch(/might plausibly be a goodbye/i);
+    expect(instructions).toMatch(/confirm briefly that they have everything they need and close/i);
+    expect(instructions).toMatch(/Never turn an unclear ending into a new support issue/i);
+  });
+
+  it('keeps the unclear-speech rules above the business configuration', () => {
+    const unclearRules = instructions.indexOf('never guess what they meant');
+    const businessBlock = instructions.indexOf(agent.instructions);
+
+    expect(unclearRules).toBeGreaterThan(-1);
+    expect(businessBlock).toBeGreaterThan(unclearRules);
+    expect(instructions).toMatch(/never guess at speech you did not hear clearly/i);
+  });
+
   it('subordinates business configuration to the platform rules', () => {
     const businessBlock = instructions.indexOf(agent.instructions);
     const scopeRules = instructions.indexOf('not a general-purpose assistant');

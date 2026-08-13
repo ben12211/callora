@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { MAX_LOGGED_TRANSCRIPT_CHARS, truncateTranscript } from '../src/realtime/bridge.js';
 import {
   DEFAULT_TRANSCRIPTION_MODEL,
+  INPUT_NOISE_REDUCTION,
   buildSessionUpdate,
   transcriptionLanguage,
+  transcriptionPrompt,
 } from '../src/realtime/protocol.js';
 import {
   RecordingLogger,
@@ -19,30 +21,40 @@ const callId = '11111111-1111-4111-8111-111111111111';
 
 interface SessionAudioInput {
   session: {
-    audio: { input: { transcription?: { model: string; language?: string } } };
+    audio: {
+      input: {
+        transcription?: { model: string; language?: string; prompt?: string };
+        noise_reduction?: { type: string };
+      };
+    };
   };
 }
 
 describe('input audio transcription configuration', () => {
-  it('enables transcription with a Hebrew hint for a he-IL agent', () => {
+  it('defaults to gpt-4o-transcribe with a Hebrew hint and prompt for a he-IL agent', () => {
     const update = buildSessionUpdate({ agent }) as unknown as SessionAudioInput;
+    const transcription = update.session.audio.input.transcription;
 
-    expect(update.session.audio.input.transcription).toEqual({
-      model: DEFAULT_TRANSCRIPTION_MODEL,
-      language: 'he',
-    });
+    expect(DEFAULT_TRANSCRIPTION_MODEL).toBe('gpt-4o-transcribe');
+    expect(transcription?.model).toBe('gpt-4o-transcribe');
+    expect(transcription?.language).toBe('he');
+    // A Hebrew call gets a Hebrew prompt that tells the transcriber not to invent words.
+    expect(transcription?.prompt).toMatch(/שירות לקוחות/);
+    expect(transcription?.prompt).toMatch(/אל תשלים ואל תנחש/);
   });
 
   it('accepts an override model and derives the language from the locale', () => {
     const update = buildSessionUpdate({
       agent: { ...agent, language: 'en-US' },
-      transcriptionModel: 'gpt-4o-transcribe',
+      transcriptionModel: 'gpt-4o-mini-transcribe',
     }) as unknown as SessionAudioInput;
 
     expect(update.session.audio.input.transcription).toEqual({
-      model: 'gpt-4o-transcribe',
+      model: 'gpt-4o-mini-transcribe',
       language: 'en',
+      prompt: transcriptionPrompt('en-US'),
     });
+    expect(transcriptionPrompt('en-US')).toMatch(/Do not complete or guess/i);
   });
 
   it('omits the language hint rather than guessing when the locale is unusable', () => {
@@ -54,7 +66,16 @@ describe('input audio transcription configuration', () => {
     const update = buildSessionUpdate({
       agent: { ...agent, language: 'klingon' },
     }) as unknown as SessionAudioInput;
-    expect(update.session.audio.input.transcription).toEqual({ model: DEFAULT_TRANSCRIPTION_MODEL });
+    const transcription = update.session.audio.input.transcription;
+    expect(transcription?.model).toBe(DEFAULT_TRANSCRIPTION_MODEL);
+    expect(transcription?.language).toBeUndefined();
+  });
+
+  it('enables near-field noise reduction for handset audio', () => {
+    const update = buildSessionUpdate({ agent }) as unknown as SessionAudioInput;
+
+    expect(INPUT_NOISE_REDUCTION).toBe('near_field');
+    expect(update.session.audio.input.noise_reduction).toEqual({ type: 'near_field' });
   });
 
   it('leaves the audio bridge itself untouched', () => {
@@ -67,9 +88,11 @@ describe('input audio transcription configuration', () => {
       };
     };
 
+    // Noise reduction and transcription must not have introduced any transcoding.
     expect(update.session.audio.input.format.type).toBe('audio/pcmu');
     expect(update.session.audio.output.format.type).toBe('audio/pcmu');
     expect(update.session.audio.input.turn_detection.type).toBe('server_vad');
+    expect(JSON.stringify(update.session.audio)).not.toMatch(/pcm16|g711_alaw|sample_rate|resample/i);
   });
 });
 

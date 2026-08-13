@@ -16,7 +16,24 @@ export const ASSISTANT_AUDIO_MARK = 'callora-assistant-audio' as const;
  * Transcription of the caller's audio. It is not used to drive the conversation — the
  * model still hears the audio directly — only to make live calls observable in the logs.
  */
-export const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe' as const;
+export const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-transcribe' as const;
+
+/**
+ * Telephony noise profile. Callers are on a handset close to their mouth over a narrow
+ * 8 kHz channel, which is exactly what `near_field` is meant for; it cleans the audio
+ * ahead of turn detection without altering the pcmu bridge or adding any transcoding.
+ */
+export const INPUT_NOISE_REDUCTION = 'near_field' as const;
+
+/**
+ * Short domain hint for the transcriber. It biases spelling and vocabulary toward
+ * customer-service phone speech; it is never shown to the caller or the agent.
+ */
+export function transcriptionPrompt(locale: string): string {
+  return transcriptionLanguage(locale) === 'he'
+    ? 'שיחת טלפון של שירות לקוחות בעברית. תמלל דיבור טבעי, כולל מילים באנגלית שנאמרות בעברית, מספרי הזמנה, כתובות אימייל ומספרי טלפון. אל תשלים ואל תנחש מילים שלא נאמרו.'
+    : 'A customer-service phone call. Transcribe natural speech, including order numbers, email addresses, and phone numbers. Do not complete or guess words that were not said.';
+}
 
 export interface RealtimeSessionOptions {
   agent: AgentConfig;
@@ -37,7 +54,8 @@ export function transcriptionLanguage(locale: string): string | undefined {
 
 function transcriptionConfig(agent: AgentConfig, model: string): Record<string, unknown> {
   const language = transcriptionLanguage(agent.language);
-  return language ? { model, language } : { model };
+  const prompt = transcriptionPrompt(agent.language);
+  return language ? { model, language, prompt } : { model, prompt };
 }
 
 export const END_CALL_TOOL_NAME = 'end_call' as const;
@@ -91,6 +109,7 @@ export function buildSessionUpdate(options: RealtimeSessionOptions): Record<stri
         input: {
           format: { type: TWILIO_AUDIO_FORMAT },
           transcription: transcriptionConfig(agent, transcriptionModel),
+          noise_reduction: { type: INPUT_NOISE_REDUCTION },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.5,
