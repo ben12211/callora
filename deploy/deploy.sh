@@ -245,6 +245,39 @@ rollback_release() {
   perform_rollback
 }
 
+update_runtime_secrets() {
+  local twilio_account_sid twilio_auth_token temp_env
+
+  IFS= read -r twilio_account_sid
+  IFS= read -r twilio_auth_token
+
+  [[ "$twilio_account_sid" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
+    log 'TWILIO_ACCOUNT_SID is not a valid Twilio Account SID.'
+    return 1
+  }
+  [[ "$twilio_auth_token" =~ ^[0-9a-fA-F]{32}$ ]] || {
+    log 'TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.'
+    return 1
+  }
+  [[ -f "$ENV_FILE" ]] || {
+    log "$ENV_FILE is missing; create the production application environment before deploying."
+    return 1
+  }
+
+  temp_env="$(mktemp "$APP_DIR/.env.XXXXXX")"
+  trap 'rm -f -- "$temp_env"' RETURN
+  awk '
+    !/^[[:space:]]*TWILIO_ACCOUNT_SID[[:space:]]*=/ &&
+    !/^[[:space:]]*TWILIO_AUTH_TOKEN[[:space:]]*=/
+  ' "$ENV_FILE" > "$temp_env"
+  printf 'TWILIO_ACCOUNT_SID=%s\n' "$twilio_account_sid" >> "$temp_env"
+  printf 'TWILIO_AUTH_TOKEN=%s\n' "$twilio_auth_token" >> "$temp_env"
+  chmod 0600 "$temp_env"
+  mv -f -- "$temp_env" "$ENV_FILE"
+  trap - RETURN
+  log 'Twilio runtime credentials updated.'
+}
+
 main() {
   [[ -d "$APP_DIR" ]] || {
     log "$APP_DIR does not exist; run the bootstrap script first."
@@ -270,8 +303,12 @@ main() {
       [[ $# -eq 1 ]] || { log 'Usage: deploy.sh rollback'; exit 2; }
       rollback_release
       ;;
+    update-secrets)
+      [[ $# -eq 1 ]] || { log 'Usage: deploy.sh update-secrets'; exit 2; }
+      update_runtime_secrets
+      ;;
     *)
-      log 'Usage: deploy.sh {deploy IMAGE|confirm|rollback}'
+      log 'Usage: deploy.sh {deploy IMAGE|confirm|rollback|update-secrets}'
       exit 2
       ;;
   esac

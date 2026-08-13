@@ -54,7 +54,7 @@ If the repository is private and the raw download is unavailable, copy `deploy/b
 
 ## Production application environment on the VM
 
-The database and Twilio credentials stay on the VM; they are not GitHub settings. As the deployment user, create `/opt/callora/.env` with mode `0600`:
+The database credentials and public URL stay on the VM. Twilio credentials are synchronized from GitHub Repository Secrets during deployment. As the deployment user, create `/opt/callora/.env` with mode `0600`:
 
 ```dotenv
 NODE_ENV=production
@@ -92,6 +92,8 @@ Repository Secrets:
 | `IP` | Oracle VM public IPv4 address |
 | `KEY_PEM` | Private SSH key authorized for `USER` |
 | `USER` | SSH deployment account, normally `opc` |
+| `TWILIO_ACCOUNT_SID` | Twilio Account SID used to validate the production account configuration |
+| `TWILIO_AUTH_TOKEN` | Twilio Auth Token used to validate signed webhook requests |
 
 Repository Variable:
 
@@ -99,7 +101,7 @@ Repository Variable:
 | --- | --- |
 | `DOCKER_HUB_USERNAME` | Docker Hub account or organization that owns the private `callora` repository |
 
-No GHCR credentials, `GITHUB_TOKEN` package permissions, GitHub environment secrets, database secrets, or Twilio secrets are used by the workflow. The deploy job continues to target the existing `production` environment so any protection rules or required reviewers remain in force; its credentials still come only from the Repository Secrets above.
+No GHCR credentials, `GITHUB_TOKEN` package permissions, GitHub environment secrets, or database secrets are used by the workflow. The deploy job continues to target the existing `production` environment so any protection rules or required reviewers remain in force; its credentials still come only from the Repository Secrets above. Twilio credentials are sent to the VM over the existing SSH connection through standard input and are never printed or included in a remote command line.
 
 The workflow obtains the VM's current SSH host key with `ssh-keyscan`, stores it only in the ephemeral runner, and then enables strict host-key checking for SSH and SCP. Because the requested GitHub configuration does not include a separately trusted host-key fingerprint, that initial scan is not independently authenticated. The VM address and private key remain masked GitHub Secrets, and credentials are never printed or passed as command-line passwords.
 

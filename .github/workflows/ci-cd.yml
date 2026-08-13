@@ -146,6 +146,8 @@ jobs:
           SERVER_SSH_KEY: ${{ secrets.KEY_PEM }}
           DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
           DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           RELEASE_SHA: ${{ github.sha }}
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
@@ -162,6 +164,8 @@ jobs:
               'SERVER_USER': 'GitHub Repository Secret USER',
               'SERVER_SSH_KEY': 'GitHub Repository Secret KEY_PEM',
               'DOCKER_HUB_TOKEN': 'GitHub Repository Secret DOCKER_HUB_TOKEN',
+              'TWILIO_ACCOUNT_SID': 'GitHub Repository Secret TWILIO_ACCOUNT_SID',
+              'TWILIO_AUTH_TOKEN': 'GitHub Repository Secret TWILIO_AUTH_TOKEN',
               'DOCKER_HUB_USERNAME': 'GitHub Repository Variable DOCKER_HUB_USERNAME',
           }
           missing = [label for name, label in required.items() if not os.environ.get(name)]
@@ -185,6 +189,13 @@ jobs:
           username = os.environ['DOCKER_HUB_USERNAME']
           if not re.fullmatch(r'[a-z0-9]+(?:[._-][a-z0-9]+)*', username):
               print('DOCKER_HUB_USERNAME is not a valid Docker image namespace.', file=sys.stderr)
+              sys.exit(1)
+
+          if not re.fullmatch(r'AC[0-9a-fA-F]{32}', os.environ['TWILIO_ACCOUNT_SID']):
+              print('TWILIO_ACCOUNT_SID is not a valid Twilio Account SID.', file=sys.stderr)
+              sys.exit(1)
+          if not re.fullmatch(r'[0-9a-fA-F]{32}', os.environ['TWILIO_AUTH_TOKEN']):
+              print('TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.', file=sys.stderr)
               sys.exit(1)
 
           release_sha = os.environ['RELEASE_SHA']
@@ -219,6 +230,8 @@ jobs:
           SERVER_USER: ${{ secrets.USER }}
           DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
           DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
           SSH_DIR: ${{ runner.temp }}/callora-ssh
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -245,6 +258,8 @@ jobs:
             "${SSH[@]}" "$REMOTE" \
               "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
           "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
+          printf '%s\n%s\n' "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" | \
+            "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
           if ! "${SSH[@]}" "$REMOTE" \
             "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh deploy '$CALLORA_IMAGE'"; then
