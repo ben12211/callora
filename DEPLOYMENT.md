@@ -69,7 +69,10 @@ TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=replace-with-your-auth-token
 PUBLIC_BASE_URL=https://calls.example.com
 OPENAI_API_KEY=replace-with-your-openai-api-key
+ALLOW_LIST=
 ```
+
+`ALLOW_LIST` is optional and is overwritten from the GitHub secret on every deployment, exactly like the Twilio and OpenAI credentials. Set the secret to a comma-separated list of E.164 numbers to restrict who can reach the agent; clear it to allow every caller again. A malformed value fails the deployment rather than silently blocking calls.
 
 Then secure it:
 
@@ -96,6 +99,7 @@ Repository Secrets:
 | `TWILIO_ACCOUNT_SID` | Twilio Account SID; authenticates the REST call that hangs up finished conversations |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token used to validate signed webhook requests |
 | `OPENAI_API_KEY` | OpenAI API key with Realtime access, used for the speech-to-speech call bridge |
+| `ALLOW_LIST` | Optional. Comma-separated E.164 numbers allowed to reach the agent; leave unset or empty to allow every caller |
 
 Repository Variable:
 

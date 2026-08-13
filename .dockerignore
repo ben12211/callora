@@ -10,3 +10,4 @@ deploy
 README.md
 DEPLOYMENT.md
 docker-compose*.yml
+allowlist.local.js

@@ -6,6 +6,16 @@ Shared record of meaningful completed Callora changes.
 
 ### Added
 
+- Caller allowlist. Numbers come from the `ALLOW_LIST` environment variable — stored as a GitHub repository secret and synced into the server environment on every deployment — or, when it is unset, from a gitignored `allowlist.local.js` at the project root documented by `allowlist.example.js`. Callers not on the list are answered with a hangup before any business lookup or stream token, so no Realtime session is opened. An empty variable, empty list, missing file, or malformed file allows every caller. `From` is used for this check only; tenant routing still uses `To` exclusively.
+- Global policy rules against guessing at unclear caller speech: the agent may not invent a login, order, product, payment, account, or appointment context the caller never stated, must ask one short clarification question instead, and must treat an unclear possible goodbye as a closing rather than a new support issue.
+- `near_field` input noise reduction for handset audio on the realtime session. The pcmu bridge is unchanged and no transcoding is introduced.
+
+### Changed
+
+- Debug transcription now defaults to `gpt-4o-transcribe` (still configurable via `OPENAI_TRANSCRIBE_MODEL`) and sends a short customer-service prompt alongside the language hint, in Hebrew for Hebrew agents.
+
+### Added
+
 - Realtime conversation debug logging: caller audio transcription is enabled per session (`OPENAI_TRANSCRIBE_MODEL`, default `gpt-4o-mini-transcribe`, language hint derived from the agent locale), and each completed turn logs one `[conversation] USER: …` / `[conversation] AI: …` line tagged with `callId`, `businessId`, `callSid`, and `streamSid`. Audio payloads and credentials are never logged; transcripts are not persisted.
 - The fully composed agent instructions are logged once per call at `debug` level only, for verifying the policy the model received.
 

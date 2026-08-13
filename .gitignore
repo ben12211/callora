@@ -5,3 +5,6 @@ coverage/
 !.env.example
 *.log
 .DS_Store
+
+# Development-only caller allowlist; see allowlist.example.js
+allowlist.local.js

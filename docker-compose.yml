@@ -35,6 +35,8 @@ services:
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-local-development-token}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://callora.example.invalid}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-local-development-openai-key}
+      # Optional caller allowlist; empty or unset allows every caller.
+      ALLOW_LIST: ${ALLOW_LIST:-}
     ports:
       - "3000:3000"
     depends_on:

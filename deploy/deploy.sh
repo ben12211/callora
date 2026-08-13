@@ -246,11 +246,14 @@ rollback_release() {
 }
 
 update_runtime_secrets() {
-  local twilio_account_sid twilio_auth_token openai_api_key temp_env
+  local twilio_account_sid twilio_auth_token openai_api_key allow_list temp_env
 
   IFS= read -r twilio_account_sid
   IFS= read -r twilio_auth_token
   IFS= read -r openai_api_key
+  # Optional, and absent when an older workflow sends only three lines.
+  allow_list=''
+  IFS= read -r allow_list || true
 
   [[ "$twilio_account_sid" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
     log 'TWILIO_ACCOUNT_SID is not a valid Twilio Account SID.'
@@ -264,6 +267,11 @@ update_runtime_secrets() {
     log 'OPENAI_API_KEY must be a non-empty, single-line secret.'
     return 1
   }
+  # Empty means "no allowlist"; anything else must be E.164 numbers separated by commas.
+  [[ -z "$allow_list" || "$allow_list" =~ ^[[:space:]]*\+[1-9][0-9]{7,14}([[:space:]]*,[[:space:]]*\+[1-9][0-9]{7,14})*[[:space:]]*$ ]] || {
+    log 'ALLOW_LIST must be empty or a comma-separated list of E.164 numbers.'
+    return 1
+  }
   [[ -f "$ENV_FILE" ]] || {
     log "$ENV_FILE is missing; create the production application environment before deploying."
     return 1
@@ -274,15 +282,21 @@ update_runtime_secrets() {
   awk '
     !/^[[:space:]]*TWILIO_ACCOUNT_SID[[:space:]]*=/ &&
     !/^[[:space:]]*TWILIO_AUTH_TOKEN[[:space:]]*=/ &&
-    !/^[[:space:]]*OPENAI_API_KEY[[:space:]]*=/
+    !/^[[:space:]]*OPENAI_API_KEY[[:space:]]*=/ &&
+    !/^[[:space:]]*ALLOW_LIST[[:space:]]*=/
   ' "$ENV_FILE" > "$temp_env"
   printf 'TWILIO_ACCOUNT_SID=%s\n' "$twilio_account_sid" >> "$temp_env"
   printf 'TWILIO_AUTH_TOKEN=%s\n' "$twilio_auth_token" >> "$temp_env"
   printf 'OPENAI_API_KEY=%s\n' "$openai_api_key" >> "$temp_env"
+  printf 'ALLOW_LIST=%s\n' "$allow_list" >> "$temp_env"
   chmod 0600 "$temp_env"
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN
-  log 'Twilio and OpenAI runtime credentials updated.'
+  if [[ -n "$allow_list" ]]; then
+    log 'Twilio and OpenAI runtime credentials updated; caller allowlist is active.'
+  else
+    log 'Twilio and OpenAI runtime credentials updated; no caller allowlist.'
+  fi
 }
 
 main() {

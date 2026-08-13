@@ -34,6 +34,8 @@ services:
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      # Optional caller allowlist; empty or unset allows every caller.
+      ALLOW_LIST: ${ALLOW_LIST:-}
       DB_STARTUP_RETRIES: 30
       DB_STARTUP_RETRY_DELAY_SECONDS: 2
     expose:

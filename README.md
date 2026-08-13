@@ -95,12 +95,15 @@ Every session is configured with a global Callora policy (`src/realtime/policy.t
 - Prompt-injection attempts ("ignore your instructions", "act as ChatGPT", claims of authority) are treated as unrelated topics. Caller speech is content, never instructions.
 - Business `instructions` are embedded as a delimited, lower-precedence block: they can narrow behaviour but never widen scope or disable a global rule.
 - Answers stay at one to three short sentences with a single question per turn, and the agent moves toward closing once the request is handled.
+- Unclear, garbled, or incomplete speech is never guessed at. The agent may not invent a login problem, order, product, payment, account issue, or any other context the caller did not state; it asks one short clarification question instead. Unclear speech that might be a goodbye is treated as a closing, never as a new support issue.
+
+Caller audio uses `near_field` input noise reduction, which suits a handset on a narrowband phone line and cleans the signal ahead of turn detection. It does not alter the pcmu bridge and adds no transcoding.
 
 The agent hangs up through an internal `end_call` tool. It takes only a `reason` — never a call identifier — and the server terminates the `CallSid` that the stream was authorized for. Callora waits for the goodbye audio to be acknowledged by Twilio before ending the call, and termination is idempotent: repeated tool calls, a caller who hangs up first, and a failed REST hangup all converge on one clean teardown.
 
 #### Conversation logs
 
-Caller audio is transcribed (`OPENAI_TRANSCRIBE_MODEL`, default `gpt-4o-mini-transcribe`, with a language hint derived from the agent's locale) purely so live calls are observable. Each completed turn produces one line:
+Caller audio is transcribed (`OPENAI_TRANSCRIBE_MODEL`, default `gpt-4o-transcribe`, with a language hint and a short customer-service prompt derived from the agent's locale) purely so live calls are observable. Each completed turn produces one line:
 
 ```text
 [conversation] USER: שלום, רציתי לבדוק את הסטטוס של ההזמנה
@@ -114,6 +117,36 @@ At `LOG_LEVEL=debug` the bridge additionally logs the fully composed agent instr
 Silence is handled with the server-VAD signal: after about 12 seconds without caller speech the agent asks once whether they are still there, and after another 12 seconds it says goodbye and ends the call. Any caller speech resets the escalation.
 
 Twilio signatures are validated against `TWILIO_AUTH_TOKEN` and the exact URL assembled from `PUBLIC_BASE_URL` plus the request path. A mismatch returns `403`, so the configured public origin and Twilio webhook URL must match exactly, including HTTPS and any path prefix.
+
+## Caller allowlist
+
+While testing against a real Twilio number, you can restrict who reaches the agent. There are two sources, and the environment wins:
+
+**`ALLOW_LIST` environment variable** — comma-separated E.164 numbers. This is what a deployed server uses; it is stored as the GitHub repository secret `ALLOW_LIST` and written into `/opt/callora/.env` on every deployment.
+
+```bash
+ALLOW_LIST=+972501234567,+972509998888
+```
+
+**`allowlist.local.js`** — used when `ALLOW_LIST` is unset or blank. Copy the example file and add your own numbers:
+
+```bash
+cp allowlist.example.js allowlist.local.js
+```
+
+```js
+export const allow_list = [
+  "+972501234567",
+  "+972509998888"
+];
+```
+
+`allowlist.local.js` is gitignored and excluded from the Docker build, so it never reaches production. On every incoming call the voice webhook compares Twilio's `From` against the list and, for a caller that is not on it, answers with a short message and `<Hangup/>` — before any business lookup, before a stream token is minted, and therefore before any OpenAI Realtime session is opened.
+
+- Numbers are normalised to E.164, so spaces, dashes, and parentheses are fine; a number without a country code is rejected rather than guessed at.
+- An empty variable, an empty list, a missing file, or a malformed file disables the allowlist and allows every caller. That is the default production behaviour.
+- `From` is used for this check only. Business routing always resolves the tenant from `To`.
+- Startup logs one line naming the source (`ALLOW_LIST` or `allowlist.local.js`) and whether the allowlist is active.
 
 ## Endpoints
 

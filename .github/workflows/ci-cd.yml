@@ -150,6 +150,7 @@ jobs:
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
           RELEASE_SHA: ${{ github.sha }}
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
@@ -205,6 +206,14 @@ jobs:
               print('OPENAI_API_KEY must contain a single-line credential.', file=sys.stderr)
               sys.exit(1)
 
+          # Optional. Empty disables the caller allowlist and allows every caller.
+          allow_list = os.environ.get('ALLOW_LIST', '').strip()
+          if allow_list:
+              entries = [entry.strip() for entry in allow_list.split(',') if entry.strip()]
+              if not all(re.fullmatch(r'\+[1-9][0-9]{7,14}', entry) for entry in entries):
+                  print('ALLOW_LIST must be a comma-separated list of E.164 numbers.', file=sys.stderr)
+                  sys.exit(1)
+
           release_sha = os.environ['RELEASE_SHA']
           if not re.fullmatch(r'[0-9a-f]{40}', release_sha):
               print('The release identifier must be a full commit SHA.', file=sys.stderr)
@@ -240,6 +249,7 @@ jobs:
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
           SSH_DIR: ${{ runner.temp }}/callora-ssh
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -262,6 +272,15 @@ jobs:
           sys.stdout.write(os.environ['OPENAI_API_KEY'].strip())
           PY
           )"
+          ALLOW_LIST="$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.stdout.write(','.join(
+              entry.strip() for entry in os.environ.get('ALLOW_LIST', '').split(',') if entry.strip()
+          ))
+          PY
+          )"
 
           "${SSH[@]}" "$REMOTE" 'install -d -m 700 /opt/callora/incoming'
           "${SCP[@]}" \
@@ -274,7 +293,7 @@ jobs:
             "${SSH[@]}" "$REMOTE" \
               "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
           "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
-          printf '%s\n%s\n%s\n' "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" | \
+          printf '%s\n%s\n%s\n%s\n' "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" "$ALLOW_LIST" | \
             "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
           if ! "${SSH[@]}" "$REMOTE" \

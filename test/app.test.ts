@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import twilio from 'twilio';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { createCallerAllowlist } from '../src/dev/caller-allowlist.js';
 import { verifyStreamToken } from '../src/http/stream-token.js';
 import type { AppConfig } from '../src/config.js';
 import type { DataStore } from '../src/db/store.js';
@@ -274,6 +275,76 @@ describe('Callora backend', () => {
       expect.objectContaining({ callSid: 'CAREALTIME1', businessId: firstBusinessId }),
     );
     expect(store.calls[0]?.businessId).toBe(firstBusinessId);
+    await app.close();
+  });
+
+  it('rejects a caller that is not on the development allowlist, before any stream token', async () => {
+    store.agentConfigs.push(agentConfig(firstBusinessId));
+    const { allowlist } = createCallerAllowlist([secondNumber]);
+    const app = await buildApp({ config, store, callerAllowlist: allowlist });
+    const path = '/webhooks/twilio/voice';
+    const payload = {
+      To: firstNumber,
+      From: '+15550009999',
+      CallSid: 'CABLOCKED',
+      CallStatus: 'ringing',
+    };
+    const response = await app.inject({
+      method: 'POST',
+      url: path,
+      headers: signedHeaders(path, payload),
+      payload: new URLSearchParams(payload).toString(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('<Hangup');
+    expect(response.body).not.toContain('<Connect>');
+    expect(response.body).not.toContain('<Parameter');
+    // No token was minted, so the media stream and OpenAI session are unreachable.
+    expect(response.body).not.toContain('token');
+    expect(store.calls).toHaveLength(0);
+    await app.close();
+  });
+
+  it('lets an allowlisted caller through and still routes on To alone', async () => {
+    store.agentConfigs.push(agentConfig(firstBusinessId));
+    const { allowlist } = createCallerAllowlist([`${secondNumber}`]);
+    const app = await buildApp({ config, store, callerAllowlist: allowlist });
+    const path = '/webhooks/twilio/voice';
+    const payload = {
+      To: firstNumber,
+      From: secondNumber,
+      CallSid: 'CAALLOWED',
+      CallStatus: 'ringing',
+    };
+    const response = await app.inject({
+      method: 'POST',
+      url: path,
+      headers: signedHeaders(path, payload),
+      payload: new URLSearchParams(payload).toString(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('<Connect>');
+    // secondNumber is also a business number, but From must never select the tenant.
+    expect(store.calls[0]?.businessId).toBe(firstBusinessId);
+    await app.close();
+  });
+
+  it('allows every caller when no allowlist is configured', async () => {
+    store.agentConfigs.push(agentConfig(firstBusinessId));
+    const { allowlist } = createCallerAllowlist([]);
+    const app = await buildApp({ config, store, callerAllowlist: allowlist });
+    const path = '/webhooks/twilio/voice';
+    const payload = { To: firstNumber, From: '+15550009999', CallSid: 'CAOPEN', CallStatus: 'ringing' };
+    const response = await app.inject({
+      method: 'POST',
+      url: path,
+      headers: signedHeaders(path, payload),
+      payload: new URLSearchParams(payload).toString(),
+    });
+
+    expect(response.body).toContain('<Connect>');
     await app.close();
   });
 
