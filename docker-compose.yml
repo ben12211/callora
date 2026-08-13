@@ -1,10 +1,13 @@
+name: callora-dev
+
 services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-continue}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-continue}
-      POSTGRES_DB: ${POSTGRES_DB:-continue}
+      POSTGRES_USER: ${POSTGRES_USER:-callora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-callora}
+      POSTGRES_DB: ${POSTGRES_DB:-callora}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
     ports:
       - "5432:5432"
     volumes:
@@ -13,26 +16,40 @@ services:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 5s
     restart: unless-stopped
+    stop_grace_period: 1m
 
   backend:
     build:
       context: .
+      target: production
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3000
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-continue}:${POSTGRES_PASSWORD:-continue}@db:5432/${POSTGRES_DB:-continue}
-      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-callora}:${POSTGRES_PASSWORD:-callora}@db:5432/${POSTGRES_DB:-callora}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-AC00000000000000000000000000000000}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-local-development-token}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://callora.example.invalid}
     ports:
       - "3000:3000"
     depends_on:
       db:
         condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    init: true
     restart: unless-stopped
+    stop_grace_period: 30s
 
 volumes:
   postgres_data:
+    name: callora_dev_postgres_data

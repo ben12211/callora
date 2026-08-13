@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+readonly APP_DIR=/opt/callora
+readonly INCOMING_DIR="$APP_DIR/incoming"
+readonly COMPOSE_FILE="$APP_DIR/docker-compose.prod.yml"
+readonly ENV_FILE="$APP_DIR/.env"
+readonly CADDY_FILE="$APP_DIR/Caddyfile"
+readonly ROLLBACK_DIR="$APP_DIR/.rollback"
+readonly LOCK_FILE=/tmp/callora-deploy.lock
+
+log() {
+  printf '[callora-deploy] %s\n' "$*"
+}
+
+compose() {
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+}
+
+wait_for_healthy() {
+  local service="$1"
+  local attempts="${2:-60}"
+  local container_id status
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    container_id="$(compose ps -q "$service")"
+    if [[ -n "$container_id" ]]; then
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")"
+      if [[ "$status" == healthy || "$status" == running ]]; then
+        return 0
+      fi
+      if [[ "$status" == exited || "$status" == dead ]]; then
+        compose logs --tail=100 "$service" || true
+        return 1
+      fi
+    fi
+    sleep 2
+  done
+
+  compose logs --tail=100 "$service" || true
+  return 1
+}
+
+validate_incoming() {
+  local new_image="$1"
+  local next_compose=(docker compose
+    --env-file "$INCOMING_DIR/callora.env"
+    -f "$INCOMING_DIR/docker-compose.prod.yml")
+
+  for file in callora.env docker-compose.prod.yml Caddyfile deploy.sh; do
+    [[ -f "$INCOMING_DIR/$file" ]] || {
+      log "Missing deployment file: $file"
+      return 1
+    }
+  done
+
+  [[ "$new_image" =~ ^ghcr\.io/ben12211/callora:[0-9a-f]{40}$ ]] || {
+    log 'The image must use the immutable Callora commit-SHA tag.'
+    return 1
+  }
+
+  "${next_compose[@]}" config -q
+  "${next_compose[@]}" config --images | grep -Fqx "$new_image"
+}
+
+backup_current() {
+  rm -rf -- "$ROLLBACK_DIR"
+  install -d -m 0700 "$ROLLBACK_DIR"
+
+  if [[ -f "$ENV_FILE" && -f "$COMPOSE_FILE" && -f "$CADDY_FILE" ]]; then
+    install -m 0600 "$ENV_FILE" "$ROLLBACK_DIR/.env"
+    install -m 0644 "$COMPOSE_FILE" "$ROLLBACK_DIR/docker-compose.prod.yml"
+    install -m 0644 "$CADDY_FILE" "$ROLLBACK_DIR/Caddyfile"
+    : > "$ROLLBACK_DIR/previous-release"
+  elif [[ -e "$ENV_FILE" || -e "$COMPOSE_FILE" || -e "$CADDY_FILE" ]]; then
+    log 'Production configuration is incomplete; refusing to overwrite it.'
+    return 1
+  else
+    : > "$ROLLBACK_DIR/first-deploy"
+  fi
+}
+
+install_incoming() {
+  install -m 0600 "$INCOMING_DIR/callora.env" "$ENV_FILE"
+  install -m 0644 "$INCOMING_DIR/docker-compose.prod.yml" "$COMPOSE_FILE"
+  install -m 0644 "$INCOMING_DIR/Caddyfile" "$CADDY_FILE"
+  install -m 0755 "$INCOMING_DIR/deploy.sh" "$APP_DIR/deploy.sh"
+}
+
+perform_rollback() {
+  trap - ERR
+  log 'Rolling back application configuration and backend image.'
+
+  if [[ -f "$ROLLBACK_DIR/previous-release" ]]; then
+    install -m 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE"
+    install -m 0644 "$ROLLBACK_DIR/docker-compose.prod.yml" "$COMPOSE_FILE"
+    install -m 0644 "$ROLLBACK_DIR/Caddyfile" "$CADDY_FILE"
+    compose up -d db
+    wait_for_healthy db 60
+    compose up -d --no-deps backend
+    wait_for_healthy backend 60
+    compose up -d --no-deps caddy
+    wait_for_healthy caddy 60
+    log 'Previous application release restored. Database migrations were not reversed.'
+    return 0
+  fi
+
+  if [[ -f "$ROLLBACK_DIR/first-deploy" && -f "$ENV_FILE" && -f "$COMPOSE_FILE" ]]; then
+    compose stop backend caddy 2>/dev/null || true
+    log 'First deployment stopped; PostgreSQL and its named volume were preserved.'
+    return 0
+  fi
+
+  log 'No rollback release is available.'
+  return 1
+}
+
+deploy_release() {
+  local new_image="$1"
+  local migrated=false
+
+  validate_incoming "$new_image"
+  backup_current
+  install_incoming
+
+  on_error() {
+    local exit_code=$?
+    local line="$1"
+    log "Deployment failed near line $line."
+    perform_rollback || log 'Automatic rollback could not restore a previous release.'
+    exit "$exit_code"
+  }
+  trap 'on_error $LINENO' ERR
+
+  log 'Pulling immutable backend and supporting images.'
+  compose pull backend db caddy
+
+  log 'Starting PostgreSQL without replacing its named volume.'
+  compose up -d db
+  wait_for_healthy db 60
+
+  log 'Validating the Caddy configuration.'
+  compose run --rm --no-deps caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  log 'Running database migrations under the application migration lock.'
+  for attempt in {1..15}; do
+    if compose run --rm --no-deps backend node dist/db/migrate.js; then
+      migrated=true
+      break
+    fi
+    log "Migration attempt $attempt failed; retrying."
+    sleep 2
+  done
+  [[ "$migrated" == true ]]
+  compose run --rm --no-deps backend node dist/db/seed.js
+
+  log 'Replacing the backend only after migrations succeed.'
+  compose up -d --no-deps backend
+  wait_for_healthy backend 60
+
+  log 'Starting or refreshing the HTTPS reverse proxy.'
+  compose up -d --no-deps caddy
+  wait_for_healthy caddy 60
+
+  compose exec -T backend node -e \
+    "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+
+  trap - ERR
+  log 'Internal health checks passed; awaiting external health confirmation.'
+}
+
+confirm_release() {
+  [[ -d "$ROLLBACK_DIR" ]] || {
+    log 'No pending release is awaiting confirmation.'
+    return 1
+  }
+
+  compose config --images | grep '^ghcr.io/ben12211/callora:' | head -n 1 > "$APP_DIR/.last-successful-image"
+  chmod 0600 "$APP_DIR/.last-successful-image"
+  rm -rf -- "$ROLLBACK_DIR"
+  log 'Deployment confirmed.'
+}
+
+rollback_release() {
+  [[ -d "$ROLLBACK_DIR" ]] || {
+    log 'No pending rollback is available.'
+    return 1
+  }
+  perform_rollback
+}
+
+main() {
+  [[ -d "$APP_DIR" ]] || {
+    log "$APP_DIR does not exist; run the bootstrap script first."
+    exit 1
+  }
+
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || {
+    log 'Another deployment is already running.'
+    exit 1
+  }
+
+  case "${1:-}" in
+    deploy)
+      [[ $# -eq 2 ]] || { log 'Usage: deploy.sh deploy IMAGE'; exit 2; }
+      deploy_release "$2"
+      ;;
+    confirm)
+      [[ $# -eq 1 ]] || { log 'Usage: deploy.sh confirm'; exit 2; }
+      confirm_release
+      ;;
+    rollback)
+      [[ $# -eq 1 ]] || { log 'Usage: deploy.sh rollback'; exit 2; }
+      rollback_release
+      ;;
+    *)
+      log 'Usage: deploy.sh {deploy IMAGE|confirm|rollback}'
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

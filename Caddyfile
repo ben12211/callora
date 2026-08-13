@@ -1,0 +1,14 @@
+{$PUBLIC_BASE_URL} {
+	encode zstd gzip
+
+	reverse_proxy backend:3000 {
+		health_uri /health
+		health_interval 10s
+		health_timeout 3s
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

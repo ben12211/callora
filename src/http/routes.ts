@@ -159,7 +159,7 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
         return;
       }
 
-      const business = await store.getBusinessByPhoneNumber(parsed.data.To);
+      const business = await store.getBusinessByPhoneNumber(parsed.data.To, false);
       if (business) {
         await store.updateCallStatus({
           businessId: business.id,

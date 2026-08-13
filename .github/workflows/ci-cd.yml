@@ -1,0 +1,260 @@
+name: Callora CI/CD
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: callora-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_NAME: ghcr.io/ben12211/callora
+
+jobs:
+  quality:
+    name: Lint, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate deployment configuration
+        env:
+          CALLORA_IMAGE: ghcr.io/ben12211/callora:0000000000000000000000000000000000000000
+          POSTGRES_USER: callora
+          POSTGRES_PASSWORD: validation-only
+          POSTGRES_DB: callora
+          DATABASE_URL: postgresql://callora:validation-only@db:5432/callora
+          TWILIO_ACCOUNT_SID: AC00000000000000000000000000000000
+          TWILIO_AUTH_TOKEN: validation-only
+          PUBLIC_BASE_URL: https://callora.example.invalid
+        run: |
+          pnpm validate:config
+          bash -n deploy/deploy.sh deploy/bootstrap-oracle-linux.sh
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.prod.yml config -q
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  image:
+    name: Publish ARM64 image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ARM64 image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+  deploy:
+    name: Deploy production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate deployment secrets and create bundle
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          SERVER_SSH_KNOWN_HOSTS: ${{ secrets.SERVER_SSH_KNOWN_HOSTS }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
+          CALLORA_IMAGE: ghcr.io/ben12211/callora:${{ github.sha }}
+        run: |
+          python3 <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+          from urllib.parse import urlsplit
+
+          required = [
+              'SERVER_HOST', 'SERVER_USER', 'SERVER_SSH_KEY', 'SERVER_SSH_PORT',
+              'SERVER_SSH_KNOWN_HOSTS', 'DATABASE_URL', 'POSTGRES_USER',
+              'POSTGRES_PASSWORD', 'POSTGRES_DB', 'TWILIO_ACCOUNT_SID',
+              'TWILIO_AUTH_TOKEN', 'PUBLIC_BASE_URL',
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              print(f"Missing required GitHub Secrets: {', '.join(missing)}", file=sys.stderr)
+              sys.exit(1)
+
+          if not os.environ['SERVER_SSH_PORT'].isdigit():
+              print('SERVER_SSH_PORT must be numeric.', file=sys.stderr)
+              sys.exit(1)
+
+          for name in ('POSTGRES_USER', 'POSTGRES_DB'):
+              if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', os.environ[name]):
+                  print(f'{name} must be a PostgreSQL identifier.', file=sys.stderr)
+                  sys.exit(1)
+
+          database_url = urlsplit(os.environ['DATABASE_URL'])
+          if database_url.scheme not in ('postgres', 'postgresql') or database_url.hostname != 'db':
+              print('DATABASE_URL must be a postgres URL using the Compose hostname db.', file=sys.stderr)
+              sys.exit(1)
+
+          public_url = urlsplit(os.environ['PUBLIC_BASE_URL'])
+          if public_url.scheme != 'https' or not public_url.hostname or public_url.path not in ('', '/') or public_url.query or public_url.fragment:
+              print('PUBLIC_BASE_URL must be an HTTPS origin with no path, query, or fragment.', file=sys.stderr)
+              sys.exit(1)
+
+          def compose_quote(value: str) -> str:
+              if '\n' in value or '\r' in value or '\0' in value:
+                  raise ValueError('Deployment secret values must be single-line strings.')
+              escaped = value.replace('\\', '\\\\').replace('"', '\\"').replace('$', '$$')
+              return f'"{escaped}"'
+
+          values = {
+              'NODE_ENV': 'production',
+              'HOST': '0.0.0.0',
+              'PORT': '3000',
+              'LOG_LEVEL': 'info',
+              'CALLORA_IMAGE': os.environ['CALLORA_IMAGE'],
+              'DATABASE_URL': os.environ['DATABASE_URL'],
+              'POSTGRES_USER': os.environ['POSTGRES_USER'],
+              'POSTGRES_PASSWORD': os.environ['POSTGRES_PASSWORD'],
+              'POSTGRES_DB': os.environ['POSTGRES_DB'],
+              'TWILIO_ACCOUNT_SID': os.environ['TWILIO_ACCOUNT_SID'],
+              'TWILIO_AUTH_TOKEN': os.environ['TWILIO_AUTH_TOKEN'],
+              'PUBLIC_BASE_URL': os.environ['PUBLIC_BASE_URL'].rstrip('/'),
+          }
+
+          bundle = pathlib.Path(os.environ['DEPLOY_BUNDLE_DIR'])
+          bundle.mkdir(mode=0o700, parents=True, exist_ok=True)
+          (bundle / 'callora.env').write_text(
+              ''.join(f'{key}={compose_quote(value)}\n' for key, value in values.items()),
+              encoding='utf-8',
+          )
+          PY
+          chmod 600 "$DEPLOY_BUNDLE_DIR/callora.env"
+          cp docker-compose.prod.yml Caddyfile deploy/deploy.sh "$DEPLOY_BUNDLE_DIR/"
+
+      - name: Configure SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_SSH_KNOWN_HOSTS: ${{ secrets.SERVER_SSH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" > "$HOME/.ssh/callora_deploy"
+          printf '%s\n' "$SERVER_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/callora_deploy" "$HOME/.ssh/known_hosts"
+
+      - name: Upload and deploy
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
+          CALLORA_IMAGE: ghcr.io/ben12211/callora:${{ github.sha }}
+        run: |
+          SSH=(ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$HOME/.ssh/callora_deploy" -p "$SERVER_SSH_PORT")
+          SCP=(scp -o BatchMode=yes -o IdentitiesOnly=yes -i "$HOME/.ssh/callora_deploy" -P "$SERVER_SSH_PORT")
+          REMOTE="$SERVER_USER@$SERVER_HOST"
+
+          cleanup() {
+            "${SSH[@]}" "$REMOTE" 'docker logout ghcr.io >/dev/null 2>&1 || true' || true
+          }
+          trap cleanup EXIT
+
+          "${SSH[@]}" "$REMOTE" 'install -d -m 700 /opt/callora/incoming'
+          "${SCP[@]}" "$DEPLOY_BUNDLE_DIR"/* "$REMOTE:/opt/callora/incoming/"
+          printf '%s' "$GHCR_TOKEN" | "${SSH[@]}" "$REMOTE" "docker login ghcr.io --username '$GHCR_USER' --password-stdin >/dev/null"
+          "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
+
+          if ! "${SSH[@]}" "$REMOTE" "bash /opt/callora/deploy.sh deploy '$CALLORA_IMAGE'"; then
+            "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh rollback' || true
+            exit 1
+          fi
+
+          healthy=false
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error --max-time 5 "${PUBLIC_BASE_URL%/}/health" >/dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 5
+          done
+
+          if [[ "$healthy" != true ]]; then
+            echo 'Public /health check failed; rolling back.' >&2
+            "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh rollback'
+            exit 1
+          fi
+
+          "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh confirm'

@@ -8,12 +8,12 @@ export async function seedDatabase(pool: pg.Pool): Promise<void> {
   await pool.query(
     `INSERT INTO businesses (id, name, phone_number, greeting, active)
      VALUES ($1, $2, $3, $4, true)
-     ON CONFLICT (id) DO NOTHING`,
+     ON CONFLICT DO NOTHING`,
     [
       exampleBusinessId,
-      'Continue Demo Business',
+      'Callora Demo Business',
       '+15551234567',
-      'Thanks for calling Continue Demo Business. How can we help you today?',
+      'Thanks for calling Callora Demo Business. How can we help you today?',
     ],
   );
 }

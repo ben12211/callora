@@ -16,6 +16,13 @@ function databaseErrorCode(error: unknown): string | undefined {
   return typeof error.code === 'string' ? error.code : undefined;
 }
 
+function httpErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('statusCode' in error)) {
+    return undefined;
+  }
+  return typeof error.statusCode === 'number' ? error.statusCode : undefined;
+}
+
 export async function buildApp(dependencies: AppDependencies): Promise<FastifyInstance> {
   const { config } = dependencies;
   const app = Fastify({
@@ -34,6 +41,13 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
     }
     if (code === '23503') {
       void reply.code(409).send({ error: 'The record is referenced by another resource' });
+      return;
+    }
+
+    const statusCode = httpErrorStatus(error);
+    if (statusCode && statusCode >= 400 && statusCode < 500) {
+      const message = error instanceof Error ? error.message : 'Invalid request';
+      void reply.code(statusCode).send({ error: message });
       return;
     }
 

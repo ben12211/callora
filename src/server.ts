@@ -7,16 +7,20 @@ const config = loadConfig();
 const pool = createPool(config.databaseUrl);
 const store = new PostgresStore(pool);
 const app = await buildApp({ config, store });
+let shuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
   app.log.info({ signal }, 'Shutting down');
   await app.close();
   await pool.end();
-  process.exit(0);
 }
 
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
-process.on('SIGINT', () => void shutdown('SIGINT'));
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+process.once('SIGINT', () => void shutdown('SIGINT'));
 
 try {
   await app.listen({ host: config.host, port: config.port });

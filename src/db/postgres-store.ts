@@ -96,10 +96,12 @@ export class PostgresStore implements DataStore {
     return result.rows[0] ? mapBusiness(result.rows[0]) : null;
   }
 
-  public async getBusinessByPhoneNumber(phoneNumber: string): Promise<Business | null> {
+  public async getBusinessByPhoneNumber(phoneNumber: string, activeOnly = true): Promise<Business | null> {
     const result = await this.pool.query<BusinessRow>(
-      `SELECT ${businessColumns} FROM businesses WHERE phone_number = $1 AND active = true`,
-      [phoneNumber],
+      `SELECT ${businessColumns}
+       FROM businesses
+       WHERE phone_number = $1 AND ($2::boolean = false OR active = true)`,
+      [phoneNumber, activeOnly],
     );
     return result.rows[0] ? mapBusiness(result.rows[0]) : null;
   }

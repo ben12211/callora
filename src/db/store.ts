@@ -12,7 +12,7 @@ export interface DataStore {
   ping(): Promise<void>;
   listBusinesses(): Promise<Business[]>;
   getBusinessById(id: string): Promise<Business | null>;
-  getBusinessByPhoneNumber(phoneNumber: string): Promise<Business | null>;
+  getBusinessByPhoneNumber(phoneNumber: string, activeOnly?: boolean): Promise<Business | null>;
   createBusiness(input: CreateBusinessInput): Promise<Business>;
   updateBusiness(id: string, input: UpdateBusinessInput): Promise<Business | null>;
   deleteBusiness(id: string): Promise<Business | null>;
