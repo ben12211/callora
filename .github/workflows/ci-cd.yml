@@ -207,11 +207,33 @@ jobs:
               sys.exit(1)
 
           # Optional. Empty disables the caller allowlist and allows every caller.
-          allow_list = os.environ.get('ALLOW_LIST', '').strip()
-          if allow_list:
-              entries = [entry.strip() for entry in allow_list.split(',') if entry.strip()]
-              if not all(re.fullmatch(r'\+[1-9][0-9]{7,14}', entry) for entry in entries):
-                  print('ALLOW_LIST must be a comma-separated list of E.164 numbers.', file=sys.stderr)
+          # A bracketed or quoted list is accepted too, matching what the app parses.
+          def normalise_allow_list(raw):
+              text = raw.strip().strip('[').strip(']')
+              text = text.replace(';', ',').replace(chr(10), ',').replace(chr(13), ',')
+              entries = []
+              for entry in text.split(','):
+                  entry = entry.strip().strip('"').strip("'").strip()
+                  for junk in (' ', '-', '(', ')', '.'):
+                      entry = entry.replace(junk, '')
+                  if entry:
+                      entries.append(entry)
+              return entries
+
+          def is_e164(value):
+              digits = value[1:]
+              return (
+                  value.startswith('+')
+                  and digits.isdigit()
+                  and not digits.startswith('0')
+                  and 8 <= len(digits) <= 15
+              )
+
+          raw_allow_list = os.environ.get('ALLOW_LIST', '').strip()
+          if raw_allow_list:
+              allow_list_entries = normalise_allow_list(raw_allow_list)
+              if not allow_list_entries or not all(is_e164(e) for e in allow_list_entries):
+                  print('ALLOW_LIST must be E.164 numbers, e.g. +972501234567,+972509998888.', file=sys.stderr)
                   sys.exit(1)
 
           release_sha = os.environ['RELEASE_SHA']
@@ -276,9 +298,28 @@ jobs:
           import os
           import sys
 
-          sys.stdout.write(','.join(
-              entry.strip() for entry in os.environ.get('ALLOW_LIST', '').split(',') if entry.strip()
-          ))
+          def normalise_allow_list(raw):
+              text = raw.strip().strip('[').strip(']')
+              text = text.replace(';', ',').replace(chr(10), ',').replace(chr(13), ',')
+              entries = []
+              for entry in text.split(','):
+                  entry = entry.strip().strip('"').strip("'").strip()
+                  for junk in (' ', '-', '(', ')', '.'):
+                      entry = entry.replace(junk, '')
+                  if entry:
+                      entries.append(entry)
+              return entries
+
+          def is_e164(value):
+              digits = value[1:]
+              return (
+                  value.startswith('+')
+                  and digits.isdigit()
+                  and not digits.startswith('0')
+                  and 8 <= len(digits) <= 15
+              )
+
+          sys.stdout.write(','.join(normalise_allow_list(os.environ.get('ALLOW_LIST', ''))))
           PY
           )"
 
