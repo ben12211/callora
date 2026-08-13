@@ -98,6 +98,19 @@ Every session is configured with a global Callora policy (`src/realtime/policy.t
 
 The agent hangs up through an internal `end_call` tool. It takes only a `reason` — never a call identifier — and the server terminates the `CallSid` that the stream was authorized for. Callora waits for the goodbye audio to be acknowledged by Twilio before ending the call, and termination is idempotent: repeated tool calls, a caller who hangs up first, and a failed REST hangup all converge on one clean teardown.
 
+#### Conversation logs
+
+Caller audio is transcribed (`OPENAI_TRANSCRIBE_MODEL`, default `gpt-4o-mini-transcribe`, with a language hint derived from the agent's locale) purely so live calls are observable. Each completed turn produces one line:
+
+```text
+[conversation] USER: שלום, רציתי לבדוק את הסטטוס של ההזמנה
+[conversation] AI: בשמחה, מה מספר ההזמנה?
+```
+
+Every line carries `callId`, `businessId`, `callSid`, and `streamSid` as structured fields. Audio payloads, credentials, and raw events are never logged, and transcripts are collapsed to a single line and capped at 500 characters. Transcripts are not persisted to PostgreSQL.
+
+At `LOG_LEVEL=debug` the bridge additionally logs the fully composed agent instructions once per call, so the policy the model actually received can be verified. This is deliberately excluded from the default `info` level.
+
 Silence is handled with the server-VAD signal: after about 12 seconds without caller speech the agent asks once whether they are still there, and after another 12 seconds it says goodbye and ends the call. Any caller speech resets the escalation.
 
 Twilio signatures are validated against `TWILIO_AUTH_TOKEN` and the exact URL assembled from `PUBLIC_BASE_URL` plus the request path. A mismatch returns `403`, so the configured public origin and Twilio webhook URL must match exactly, including HTTPS and any path prefix.

@@ -23,7 +23,43 @@ export const agent: AgentConfig = {
   updatedAt: new Date(),
 };
 
-export const silentLogger: BridgeLogger = { info: () => {}, warn: () => {}, error: () => {} };
+export const silentLogger: BridgeLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
+export interface LogLine {
+  level: 'debug' | 'info' | 'warn' | 'error';
+  details: Record<string, unknown>;
+  message: string;
+}
+
+/** Captures what the bridge logged, so log content can be asserted directly. */
+export class RecordingLogger implements BridgeLogger {
+  public readonly lines: LogLine[] = [];
+
+  public debug(details: Record<string, unknown>, message: string): void {
+    this.lines.push({ level: 'debug', details, message });
+  }
+
+  public info(details: Record<string, unknown>, message: string): void {
+    this.lines.push({ level: 'info', details, message });
+  }
+
+  public warn(details: Record<string, unknown>, message: string): void {
+    this.lines.push({ level: 'warn', details, message });
+  }
+
+  public error(details: Record<string, unknown>, message: string): void {
+    this.lines.push({ level: 'error', details, message });
+  }
+
+  public messages(prefix = ''): string[] {
+    return this.lines.map((line) => line.message).filter((message) => message.startsWith(prefix));
+  }
+}
 
 /** In-memory stand-in for either end of the bridge. */
 export class FakeChannel implements MessageChannel {

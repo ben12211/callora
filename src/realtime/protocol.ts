@@ -12,10 +12,32 @@ import { composeAgentInstructions } from './policy.js';
 export const TWILIO_AUDIO_FORMAT = 'audio/pcmu' as const;
 export const ASSISTANT_AUDIO_MARK = 'callora-assistant-audio' as const;
 
+/**
+ * Transcription of the caller's audio. It is not used to drive the conversation — the
+ * model still hears the audio directly — only to make live calls observable in the logs.
+ */
+export const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe' as const;
+
 export interface RealtimeSessionOptions {
   agent: AgentConfig;
   /** Caller number in E.164, used only as conversation context. */
   callerNumber?: string | null;
+  transcriptionModel?: string;
+}
+
+/**
+ * Whisper-style language hint: the bare ISO-639-1 code from the agent's locale, so
+ * `he-IL` becomes `he`. Anything unrecognised is omitted rather than guessed, which
+ * leaves the transcriber in auto-detect mode.
+ */
+export function transcriptionLanguage(locale: string): string | undefined {
+  const code = locale.trim().toLowerCase().split(/[-_]/)[0];
+  return code && /^[a-z]{2}$/.test(code) ? code : undefined;
+}
+
+function transcriptionConfig(agent: AgentConfig, model: string): Record<string, unknown> {
+  const language = transcriptionLanguage(agent.language);
+  return language ? { model, language } : { model };
 }
 
 export const END_CALL_TOOL_NAME = 'end_call' as const;
@@ -55,7 +77,7 @@ export const END_CALL_TOOL = {
 
 /** `session.update` for a speech-to-speech telephony session. */
 export function buildSessionUpdate(options: RealtimeSessionOptions): Record<string, unknown> {
-  const { agent, callerNumber } = options;
+  const { agent, callerNumber, transcriptionModel = DEFAULT_TRANSCRIPTION_MODEL } = options;
   return {
     type: 'session.update',
     session: {
@@ -68,6 +90,7 @@ export function buildSessionUpdate(options: RealtimeSessionOptions): Record<stri
       audio: {
         input: {
           format: { type: TWILIO_AUDIO_FORMAT },
+          transcription: transcriptionConfig(agent, transcriptionModel),
           turn_detection: {
             type: 'server_vad',
             threshold: 0.5,

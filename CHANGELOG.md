@@ -6,6 +6,11 @@ Shared record of meaningful completed Callora changes.
 
 ### Added
 
+- Realtime conversation debug logging: caller audio transcription is enabled per session (`OPENAI_TRANSCRIBE_MODEL`, default `gpt-4o-mini-transcribe`, language hint derived from the agent locale), and each completed turn logs one `[conversation] USER: …` / `[conversation] AI: …` line tagged with `callId`, `businessId`, `callSid`, and `streamSid`. Audio payloads and credentials are never logged; transcripts are not persisted.
+- The fully composed agent instructions are logged once per call at `debug` level only, for verifying the policy the model received.
+
+### Added
+
 - Global Callora agent policy applied to every realtime session: business-only scope with one-sentence refusal and redirect, prompt-injection resistance, and short phone turns with one question at a time. Per-business `instructions` are embedded as a delimited, lower-precedence block that cannot widen scope or disable a global rule.
 - Internal `end_call` realtime tool. The model supplies only a reason; the server hangs up the `CallSid` the media stream was authorized for, after waiting for the goodbye audio to be acknowledged by Twilio. Termination is idempotent and falls back to closing the media stream if the Twilio REST call fails.
 - Silence handling on top of server VAD: one "are you still there?" check after a long silence, then a goodbye and hangup after a second one, reset whenever the caller speaks.

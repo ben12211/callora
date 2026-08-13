@@ -218,7 +218,9 @@ async function openBridge(
     agent,
     businessId,
     callSid,
+    callId: call?.id ?? null,
     callerNumber: call?.fromNumber ?? null,
+    transcriptionModel: config.openaiTranscribeModel,
     logger: app.log,
     // The CallSid is the one this stream was authorized for; the model never supplies it.
     endCall: dependencies.callTerminator

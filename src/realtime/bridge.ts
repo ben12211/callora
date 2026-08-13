@@ -1,4 +1,5 @@
 import type { AgentConfig } from '../domain/models.js';
+import { composeAgentInstructions } from './policy.js';
 import {
   END_CALL_TOOL_NAME,
   buildAudioAppend,
@@ -44,9 +45,18 @@ export interface MessageChannel {
 }
 
 export interface BridgeLogger {
+  debug(details: Record<string, unknown>, message: string): void;
   info(details: Record<string, unknown>, message: string): void;
   warn(details: Record<string, unknown>, message: string): void;
   error(details: Record<string, unknown>, message: string): void;
+}
+
+/** Keeps one conversation line readable in a log tail. */
+export const MAX_LOGGED_TRANSCRIPT_CHARS = 500;
+
+export function truncateTranscript(text: string, limit = MAX_LOGGED_TRANSCRIPT_CHARS): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  return collapsed.length > limit ? `${collapsed.slice(0, limit)}…` : collapsed;
 }
 
 export interface BridgeOptions {
@@ -55,7 +65,11 @@ export interface BridgeOptions {
   agent: AgentConfig;
   businessId: string;
   callSid: string;
+  /** Callora's own call record id, when the call row already exists. */
+  callId?: string | null;
   callerNumber?: string | null;
+  /** Transcription model for caller audio; logging only. */
+  transcriptionModel?: string;
   logger: BridgeLogger;
   /** Called once the Twilio stream and, when known, the OpenAI session are identified. */
   onIdentifiers?: (identifiers: { streamSid: string | null; openaiSessionId: string | null }) => void;
@@ -128,7 +142,33 @@ export class MediaStreamBridge {
       this.close('openai-error');
     });
 
-    openai.send(JSON.stringify(buildSessionUpdate({ agent, callerNumber })));
+    const sessionUpdate = buildSessionUpdate({
+      agent,
+      callerNumber,
+      transcriptionModel: this.options.transcriptionModel,
+    });
+
+    // Debug level only: the composed policy is long and is meant for verifying locally
+    // what the model actually received, not for production log volume.
+    logger.debug(
+      {
+        ...this.logContext(),
+        instructions: composeAgentInstructions({ agent, callerNumber }),
+      },
+      'Composed realtime agent instructions',
+    );
+
+    openai.send(JSON.stringify(sessionUpdate));
+  }
+
+  /** Identifiers attached to every conversation log line. */
+  private logContext(): Record<string, unknown> {
+    return {
+      callId: this.options.callId ?? undefined,
+      businessId: this.options.businessId,
+      callSid: this.options.callSid,
+      streamSid: this.streamSid ?? undefined,
+    };
   }
 
   public close(reason: string): void {
@@ -263,6 +303,19 @@ export class MediaStreamBridge {
         this.pendingMarks += 1;
         return;
       }
+      case 'conversation.item.input_audio_transcription.completed': {
+        this.logTranscript('USER', readString(message, 'transcript'));
+        return;
+      }
+      case 'conversation.item.input_audio_transcription.failed': {
+        this.options.logger.warn(this.logContext(), 'Caller audio transcription failed');
+        return;
+      }
+      case 'response.output_audio_transcript.done':
+      case 'response.audio_transcript.done': {
+        this.logTranscript('AI', readString(message, 'transcript'));
+        return;
+      }
       case 'input_audio_buffer.speech_started': {
         // The caller is talking, so the silence escalation starts over from scratch.
         this.silenceStage = 0;
@@ -345,6 +398,18 @@ export class MediaStreamBridge {
     this.pendingMarks = 0;
     this.lastAssistantItemId = null;
     this.responseStartTimestamp = null;
+  }
+
+  /**
+   * One line per completed turn. Only the transcript text is logged: never audio
+   * payloads, credentials, or the raw event.
+   */
+  private logTranscript(speaker: 'USER' | 'AI', transcript: string | undefined): void {
+    const text = truncateTranscript(transcript ?? '');
+    if (!text) {
+      return;
+    }
+    this.options.logger.info(this.logContext(), `[conversation] ${speaker}: ${text}`);
   }
 
   private handleFunctionCall(

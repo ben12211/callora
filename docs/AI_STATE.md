@@ -10,6 +10,8 @@ Inbound calls now run as real speech-to-speech AI conversations: the voice webho
 
 Agent behaviour is governed by a global Callora policy that outranks per-business `instructions`: the agent stays strictly within its own business, refuses unrelated topics in one sentence and redirects, ignores prompt-injection attempts, and keeps turns to one to three sentences with a single question. Tenant instructions are embedded as a delimited, lower-precedence block. The agent ends calls itself through an internal `end_call` tool that carries only a reason — the server hangs up the `CallSid` the stream was authorized for, after the goodbye audio is acknowledged by Twilio, idempotently and with a media-stream-close fallback. Long silences escalate from one "are you still there?" check to a goodbye and hangup, resetting whenever the caller speaks.
 
+Live calls are observable in the logs: caller audio transcription is enabled for logging only, and each completed turn emits one `[conversation] USER:` / `[conversation] AI:` line tagged with `callId`, `businessId`, `callSid`, and `streamSid`. Transcripts are logged, never persisted. At `debug` level the composed agent instructions are logged once per call.
+
 Business tool execution, CRM/order/appointment integrations, WhatsApp, voice cloning, transcripts, an agent builder/versioning, and authenticated administration are intentionally not implemented.
 
 ## Stack and architecture
@@ -34,6 +36,6 @@ Business tool execution, CRM/order/appointment integrations, WhatsApp, voice clo
 ## Next major milestones
 
 1. Add authenticated, tenant-scoped administration.
-2. Persist call transcripts and add reconnect/degradation handling for the realtime path.
+2. Persist call transcripts (currently logs only) and add reconnect/degradation handling for the realtime path.
 3. Add one narrow mocked tool-call workflow on top of the existing agent configuration.
 4. Integrate real business tools later; keep WhatsApp and voice cloning as separate future milestones.

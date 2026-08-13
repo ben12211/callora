@@ -181,6 +181,7 @@ const config: AppConfig = {
   publicBaseUrl: 'https://voice.example.test',
   openaiApiKey: 'test-openai-key',
   openaiRealtimeUrl: 'wss://api.openai.com/v1/realtime',
+  openaiTranscribeModel: 'gpt-4o-mini-transcribe',
 };
 
 function signedHeaders(path: string, payload: Record<string, string>): Record<string, string> {

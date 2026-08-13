@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { z } from 'zod';
+import { DEFAULT_TRANSCRIPTION_MODEL } from './realtime/protocol.js';
 
 const configSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -13,6 +14,8 @@ const configSchema = z.object({
   PUBLIC_BASE_URL: z.url().transform((value) => value.replace(/\/$/, '')),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_REALTIME_URL: z.string().min(1).default('wss://api.openai.com/v1/realtime'),
+  // Transcribes caller audio for conversation logging only; it never drives the reply.
+  OPENAI_TRANSCRIBE_MODEL: z.string().min(1).default(DEFAULT_TRANSCRIPTION_MODEL),
 });
 
 export interface AppConfig {
@@ -26,6 +29,7 @@ export interface AppConfig {
   publicBaseUrl: string;
   openaiApiKey: string;
   openaiRealtimeUrl: string;
+  openaiTranscribeModel: string;
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -42,5 +46,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     publicBaseUrl: parsed.PUBLIC_BASE_URL,
     openaiApiKey: parsed.OPENAI_API_KEY,
     openaiRealtimeUrl: parsed.OPENAI_REALTIME_URL,
+    openaiTranscribeModel: parsed.OPENAI_TRANSCRIBE_MODEL,
   };
 }
