@@ -26,19 +26,49 @@ export const SIGNED_URL_PATH = '/v1/convai/conversation/get-signed-url' as const
  * dashboard: an override for a field that is not enabled is rejected with an error
  * rather than ignored.
  */
+export interface ConversationOverrides {
+  /** Bare ISO-639-1 code, e.g. `he` for a `he-IL` agent; absent when the locale is unusable. */
+  language: string | undefined;
+  /** The tenant greeting, verbatim. Empty means the tenant has not configured one. */
+  firstMessage: string;
+  prompt: string;
+}
+
+/**
+ * Resolves what Callora will override for this call.
+ *
+ * Split out from the payload builder so the bridge can log exactly the values it sends:
+ * anything derived twice would eventually disagree, and the whole point of the log line
+ * is to be able to trust it when a call comes out in the wrong language.
+ *
+ * ElevenLabs expects a bare language code, so a `he-IL` agent is narrowed to `he`.
+ */
+export function resolveConversationOverrides(options: {
+  agent: AgentConfig;
+  callerNumber?: string | null;
+}): ConversationOverrides {
+  const { agent, callerNumber } = options;
+  return {
+    language: languageCode(agent.language),
+    firstMessage: agent.greeting.trim(),
+    prompt: composeAgentInstructions({ agent, callerNumber }),
+  };
+}
+
 export function buildConversationInitiation(options: {
   agent: AgentConfig;
   callerNumber?: string | null;
 }): Record<string, unknown> {
-  const { agent, callerNumber } = options;
-  const language = languageCode(agent.language);
+  const { language, firstMessage, prompt } = resolveConversationOverrides(options);
 
   return {
     type: 'conversation_initiation_client_data',
     conversation_config_override: {
       agent: {
-        prompt: { prompt: composeAgentInstructions({ agent, callerNumber }) },
-        first_message: agent.greeting,
+        prompt: { prompt },
+        // Always sent when the tenant has a greeting, so the agent can never open with
+        // the English first message configured on the ElevenLabs side.
+        ...(firstMessage ? { first_message: firstMessage } : {}),
         ...(language ? { language } : {}),
       },
     },

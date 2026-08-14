@@ -7,6 +7,7 @@ import {
   buildConversationInitiation,
   buildPong,
   buildUserAudioChunk,
+  resolveConversationOverrides,
 } from './elevenlabs-protocol.js';
 import {
   buildTwilioClear,
@@ -95,11 +96,35 @@ export class ElevenLabsBridge {
       this.close('elevenlabs-error');
     });
 
+    const overrides = resolveConversationOverrides({ agent, callerNumber });
+
+    // The language and greeting are tenant configuration, not secrets, and they are the
+    // two values worth seeing on every call: if a Hebrew agent answers in English, this
+    // line says whether Callora sent the wrong override or ElevenLabs ignored the right one.
+    logger.info(
+      {
+        ...this.logContext(),
+        language: overrides.language ?? null,
+        agentLanguage: agent.language,
+        firstMessage: overrides.firstMessage,
+      },
+      'Sending ElevenLabs conversation overrides',
+    );
+
+    // Without a greeting there is no first_message to override, so the agent would open
+    // with whatever is configured on the ElevenLabs side — in practice its English default.
+    if (!overrides.firstMessage) {
+      logger.warn(
+        this.logContext(),
+        'The business has no greeting configured; ElevenLabs will use its own first message',
+      );
+    }
+
     // Debug level only: the composed policy is long and is meant for verifying locally
     // what the agent actually received, not for production log volume.
-    const initiation = buildConversationInitiation({ agent, callerNumber });
-    logger.debug({ ...this.logContext() }, 'Sending ElevenLabs conversation overrides');
-    elevenlabs.send(JSON.stringify(initiation));
+    logger.debug({ ...this.logContext(), instructions: overrides.prompt }, 'Composed realtime agent instructions');
+
+    elevenlabs.send(JSON.stringify(buildConversationInitiation({ agent, callerNumber })));
   }
 
   /** Identifiers attached to every conversation log line. */
@@ -277,8 +302,31 @@ export class ElevenLabsBridge {
         );
         return;
       }
-      default:
+      case 'error':
+      case 'conversation_initiation_client_data_error': {
+        // ElevenLabs refuses an override whose field is not enabled under the agent's
+        // Security tab, which leaves the agent speaking its own configured first message
+        // and language. Swallowing that made a Hebrew agent silently answer in English.
+        const error = readObject(message, 'error');
+        this.options.logger.error(
+          {
+            ...this.logContext(),
+            code: error ? readString(error, 'code') : undefined,
+            reason: (error ? readString(error, 'message') : undefined) ?? readString(message, 'message'),
+          },
+          'ElevenLabs rejected the conversation configuration; check that the prompt, first message, and language overrides are enabled on the agent',
+        );
         return;
+      }
+      default: {
+        // Never drop an event silently again: the type alone is enough to notice a
+        // rejection or a protocol change, and it carries no payload or credential.
+        this.options.logger.debug(
+          { ...this.logContext(), event: readString(message, 'type') },
+          'Ignoring an unhandled ElevenLabs event',
+        );
+        return;
+      }
     }
   }
 

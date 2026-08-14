@@ -6,6 +6,7 @@ import {
   ELEVENLABS_AUDIO_FORMAT,
   buildClientToolResult,
   buildConversationInitiation,
+  resolveConversationOverrides,
   buildPong,
   buildUserAudioChunk,
 } from '../src/realtime/elevenlabs-protocol.js';
@@ -186,6 +187,43 @@ describe('elevenlabs conversation overrides', () => {
     expect(prompt).toContain(agent.instructions);
   });
 
+  it('narrows every Hebrew locale spelling to the bare code ElevenLabs expects', () => {
+    for (const locale of ['he-IL', 'he', 'he_IL', 'HE-il']) {
+      const built = buildConversationInitiation({ agent: { ...agent, language: locale } }) as {
+        conversation_config_override: { agent: { language?: string } };
+      };
+      expect(built.conversation_config_override.agent.language).toBe('he');
+    }
+  });
+
+  it('sends the tenant greeting so ElevenLabs never uses its own first message', () => {
+    const hebrewGreeting = 'שלום, הגעתם לקפה נוף. איך אפשר לעזור?';
+    const built = buildConversationInitiation({
+      agent: { ...agent, greeting: `  ${hebrewGreeting}  `, language: 'he-IL' },
+    }) as { conversation_config_override: { agent: { first_message?: string; language?: string } } };
+
+    expect(built.conversation_config_override.agent.first_message).toBe(hebrewGreeting);
+    expect(built.conversation_config_override.agent.language).toBe('he');
+  });
+
+  it('omits first_message only when the tenant has no greeting at all', () => {
+    const blank = buildConversationInitiation({ agent: { ...agent, greeting: '   ' } }) as {
+      conversation_config_override: { agent: Record<string, unknown> };
+    };
+    expect(blank.conversation_config_override.agent).not.toHaveProperty('first_message');
+  });
+
+  it('resolves the same values it sends', () => {
+    const resolved = resolveConversationOverrides({ agent });
+    const built = buildConversationInitiation({ agent }) as {
+      conversation_config_override: { agent: { first_message: string; language: string; prompt: { prompt: string } } };
+    };
+
+    expect(built.conversation_config_override.agent.first_message).toBe(resolved.firstMessage);
+    expect(built.conversation_config_override.agent.language).toBe(resolved.language);
+    expect(built.conversation_config_override.agent.prompt.prompt).toBe(resolved.prompt);
+  });
+
   it('omits the language override when the locale is not a plain code', () => {
     const initiationWithoutLanguage = buildConversationInitiation({
       agent: { ...agent, language: 'not-a-locale-code' },
@@ -302,6 +340,64 @@ describe('elevenlabs media bridge', () => {
 
     elevenlabs.emit({ type: 'interruption', interruption_event: { event_id: 1 } });
     expect(twilio.sent).toHaveLength(0);
+  });
+
+  it('logs the language and greeting it actually sent, without the API key', () => {
+    const logger = new RecordingLogger();
+    const { elevenlabs } = startElevenLabsBridge({ logger });
+
+    const line = logger.lines.find((entry) => entry.message.includes('conversation overrides'));
+    expect(line?.level).toBe('info');
+    expect(line?.details).toEqual(
+      expect.objectContaining({ language: 'he', agentLanguage: agent.language, firstMessage: agent.greeting }),
+    );
+
+    // The logged values are the ones on the wire, not a re-derivation.
+    const sent = elevenlabs.sent[0] as {
+      conversation_config_override: { agent: { first_message: string; language: string } };
+    };
+    expect(sent.conversation_config_override.agent.language).toBe(line?.details['language']);
+    expect(sent.conversation_config_override.agent.first_message).toBe(line?.details['firstMessage']);
+  });
+
+  it('warns when the business has no greeting to override with', () => {
+    const logger = new RecordingLogger();
+    startElevenLabsBridge({ logger, agent: { ...agent, greeting: '' } });
+
+    expect(logger.lines.some((line) => line.level === 'warn' && /no greeting configured/i.test(line.message))).toBe(
+      true,
+    );
+  });
+
+  it('surfaces a rejected override instead of silently answering in the wrong language', () => {
+    const logger = new RecordingLogger();
+    const { twilio, elevenlabs } = startElevenLabsBridge({ logger });
+    openElevenLabsStream(twilio, elevenlabs);
+
+    elevenlabs.emit({
+      type: 'error',
+      error: { code: 'override_not_allowed', message: 'first_message override is not enabled' },
+    });
+
+    const error = logger.lines.find((line) => line.level === 'error');
+    expect(error?.message).toMatch(/overrides are enabled/i);
+    expect(error?.details).toEqual(
+      expect.objectContaining({ code: 'override_not_allowed', reason: 'first_message override is not enabled' }),
+    );
+  });
+
+  it('records an unhandled event type rather than dropping it silently', () => {
+    const logger = new RecordingLogger();
+    const { twilio, elevenlabs } = startElevenLabsBridge({ logger });
+    openElevenLabsStream(twilio, elevenlabs);
+
+    elevenlabs.emit({ type: 'agent_response_correction', whatever: 'ignored' });
+
+    expect(
+      logger.lines.some(
+        (line) => line.level === 'debug' && line.details['event'] === 'agent_response_correction',
+      ),
+    ).toBe(true);
   });
 
   it('answers keepalive pings so the session stays open', () => {
