@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import twilio from 'twilio';
 import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
-import type { CallerAllowlist } from '../dev/caller-allowlist.js';
+import { normalizeE164, type CallerAllowlist } from '../dev/caller-allowlist.js';
 import type { CallTerminator } from '../telephony/call-terminator.js';
 import { MEDIA_STREAM_PATH, registerMediaStreamRoute } from './media-stream.js';
 import { createStreamToken } from './stream-token.js';
@@ -142,7 +142,13 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
       // lookup, so no stream token is issued and no Realtime session is ever opened.
       if (allowlist.enabled && !allowlist.allows(parsed.data.From)) {
         app.log.warn(
-          { callSid: parsed.data.CallSid, to: parsed.data.To },
+          {
+            callSid: parsed.data.CallSid,
+            from: parsed.data.From,
+            normalizedFrom: normalizeE164(parsed.data.From),
+            to: parsed.data.To,
+            matched: false,
+          },
           'Rejected a caller that is not on the development allowlist',
         );
         const rejected = new twilio.twiml.VoiceResponse();
