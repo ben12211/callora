@@ -113,7 +113,7 @@ Repository Variables:
 | Variable | Value |
 | --- | --- |
 | `DOCKER_HUB_USERNAME` | Docker Hub account or organization that owns the private `callora` repository |
-| `VOICE_PROVIDER` | Optional. `openai` (default) or `elevenlabs`. Not a secret, so it is a variable rather than a secret |
+| `VOICE_PROVIDER` | Optional. `openai` (default) or `elevenlabs`. A Repository Secret of the same name is also accepted, but a Variable is preferred: GitHub masks secret values in workflow logs, so storing it as a secret hides the selected provider from the deployment log |
 
 No GHCR credentials, `GITHUB_TOKEN` package permissions, GitHub environment secrets, or database secrets are used by the workflow. The deploy job continues to target the existing `production` environment so any protection rules or required reviewers remain in force; its credentials still come only from the Repository Secrets above. Twilio credentials are sent to the VM over the existing SSH connection through standard input and are never printed or included in a remote command line.
 

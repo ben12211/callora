@@ -155,7 +155,9 @@ jobs:
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          VOICE_PROVIDER: ${{ vars.VOICE_PROVIDER }}
+          # Accepted as either a Repository Variable or a Repository Secret, so the
+          # provider is honoured wherever it was configured. Unset in both means openai.
+          VOICE_PROVIDER: ${{ vars.VOICE_PROVIDER || secrets.VOICE_PROVIDER }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
@@ -214,6 +216,11 @@ jobs:
           if voice_provider not in ('openai', 'elevenlabs'):
               print('VOICE_PROVIDER must be either openai or elevenlabs.', file=sys.stderr)
               sys.exit(1)
+
+          # Reported with an underscored token rather than the raw value: when
+          # VOICE_PROVIDER is stored as a Secret, GitHub masks its literal value in the
+          # log, which would otherwise hide the very setting being confirmed here.
+          print(f"Voice provider selected: {'ELEVEN_LABS' if voice_provider == 'elevenlabs' else 'OPEN_AI'}")
 
           def require_single_line(name):
               value = (os.environ.get(name) or '').strip()
@@ -295,7 +302,9 @@ jobs:
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          VOICE_PROVIDER: ${{ vars.VOICE_PROVIDER }}
+          # Accepted as either a Repository Variable or a Repository Secret, so the
+          # provider is honoured wherever it was configured. Unset in both means openai.
+          VOICE_PROVIDER: ${{ vars.VOICE_PROVIDER || secrets.VOICE_PROVIDER }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
