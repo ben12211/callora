@@ -330,21 +330,36 @@ describe('elevenlabs media bridge', () => {
     expect(elevenlabs.closed).toBe(true);
   });
 
-  it('closes the call rather than transcoding a non mu-law session', () => {
+  // Either format being wrong is enough: Twilio only speaks mu-law, and this bridge
+  // never transcodes, so a mismatched session can only produce noise.
+  const mismatchedFormats = [
+    { agent_output_audio_format: 'pcm_16000', user_input_audio_format: ELEVENLABS_AUDIO_FORMAT },
+    { agent_output_audio_format: ELEVENLABS_AUDIO_FORMAT, user_input_audio_format: 'pcm_16000' },
+    { agent_output_audio_format: 'pcm_16000', user_input_audio_format: 'pcm_16000' },
+  ];
+
+  it.each(mismatchedFormats)('closes the call rather than transcoding %o', (formats) => {
     const logger = new RecordingLogger();
     const { twilio, elevenlabs } = startElevenLabsBridge({ logger });
     twilio.emit({ event: 'start', streamSid, start: { streamSid, callSid } });
     elevenlabs.emit({
       type: 'conversation_initiation_metadata',
-      conversation_initiation_metadata_event: {
-        conversation_id: 'conv_123',
-        agent_output_audio_format: 'pcm_16000',
-        user_input_audio_format: 'pcm_16000',
-      },
+      conversation_initiation_metadata_event: { conversation_id: 'conv_123', ...formats },
     });
 
     expect(twilio.closed).toBe(true);
-    expect(logger.lines.some((line) => line.level === 'error')).toBe(true);
+    expect(elevenlabs.closed).toBe(true);
+
+    const error = logger.lines.find((line) => line.level === 'error');
+    expect(error?.message).toMatch(/mu-law 8 kHz/i);
+    // The log names what was actually negotiated, so the misconfiguration is obvious.
+    expect(error?.details).toEqual(expect.objectContaining({ expected: ELEVENLABS_AUDIO_FORMAT }));
+
+    // Nothing reached the caller, before or after the mismatch was detected.
+    const before = twilio.sent.length;
+    elevenlabs.emit({ type: 'audio', audio_event: { audio_base_64: 'YQ==', event_id: 1 } });
+    expect(twilio.sent).toHaveLength(before);
+    expect(twilio.sent.filter((message) => message['event'] === 'media')).toHaveLength(0);
   });
 
   it('closes both sides exactly once when either end disconnects', () => {

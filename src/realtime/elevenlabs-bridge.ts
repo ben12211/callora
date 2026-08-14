@@ -136,6 +136,9 @@ export class ElevenLabsBridge {
   }
 
   private handleTwilioMessage(raw: string): void {
+    if (this.closed) {
+      return;
+    }
     const message = parseJsonObject(raw);
     if (!message) {
       return;
@@ -188,6 +191,12 @@ export class ElevenLabsBridge {
   }
 
   private handleElevenLabsMessage(raw: string): void {
+    // Closing a WebSocket is asynchronous, so frames already in flight still arrive
+    // afterwards. Once the bridge is closed — in particular after refusing a session
+    // whose audio format Twilio cannot play — none of them may reach the caller.
+    if (this.closed) {
+      return;
+    }
     const message = parseJsonObject(raw);
     if (!message) {
       return;

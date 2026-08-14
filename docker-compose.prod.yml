@@ -40,6 +40,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID:-}
+      # Optional; the application defaults to the public API origin when this is empty.
+      ELEVENLABS_API_BASE_URL: ${ELEVENLABS_API_BASE_URL:-https://api.elevenlabs.io}
       # Optional caller allowlist; empty or unset allows every caller.
       ALLOW_LIST: ${ALLOW_LIST:-}
       DB_STARTUP_RETRIES: 30
