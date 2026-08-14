@@ -129,6 +129,73 @@ describe('media stream bridge', () => {
     expect(twilio.sent).toHaveLength(0);
   });
 
+  it('cancels the in-flight response the instant the caller speaks', () => {
+    const { twilio, openai } = startBridge();
+    openStream(twilio, openai);
+
+    openai.emit({ type: 'response.created' });
+    twilio.emit({ event: 'media', media: { timestamp: '1000', payload: 'YQ==' } });
+    openai.emit({ type: 'response.output_audio.delta', delta: 'Yg==', item_id: 'item_1' });
+    openai.emit({ type: 'input_audio_buffer.speech_started' });
+
+    // Generation is stopped before the item is rewound, so no further audio is produced.
+    expect(openai.types()).toContain('response.cancel');
+    const cancelIndex = openai.types().indexOf('response.cancel');
+    const truncateIndex = openai.types().indexOf('conversation.item.truncate');
+    expect(cancelIndex).toBeLessThan(truncateIndex);
+    expect(twilio.sent.at(-1)).toEqual({ event: 'clear', streamSid });
+  });
+
+  it('stops a response that has not yet queued any audio with Twilio', () => {
+    const { twilio, openai } = startBridge();
+    openStream(twilio, openai);
+
+    // The caller cuts in during the gap between response.created and the first delta,
+    // so there are no pending marks to wait on.
+    openai.emit({ type: 'response.created' });
+    openai.emit({ type: 'input_audio_buffer.speech_started' });
+
+    expect(openai.types()).toContain('response.cancel');
+    expect(twilio.sent.at(-1)).toEqual({ event: 'clear', streamSid });
+  });
+
+  it('cancels a barged-in response only once', () => {
+    const { twilio, openai } = startBridge();
+    openStream(twilio, openai);
+
+    openai.emit({ type: 'response.created' });
+    openai.emit({ type: 'response.output_audio.delta', delta: 'Yg==', item_id: 'item_1' });
+    openai.emit({ type: 'input_audio_buffer.speech_started' });
+    openai.emit({ type: 'input_audio_buffer.speech_started' });
+
+    expect(openai.types().filter((type) => type === 'response.cancel')).toHaveLength(1);
+  });
+
+  it('cancels the next response after the barged-in one completes', () => {
+    const { twilio, openai } = startBridge();
+    openStream(twilio, openai);
+
+    openai.emit({ type: 'response.created' });
+    openai.emit({ type: 'response.output_audio.delta', delta: 'Yg==', item_id: 'item_1' });
+    openai.emit({ type: 'input_audio_buffer.speech_started' });
+    openai.emit({ type: 'response.done', response: { output: [] } });
+
+    openai.emit({ type: 'response.created' });
+    openai.emit({ type: 'response.output_audio.delta', delta: 'Yg==', item_id: 'item_2' });
+    openai.emit({ type: 'input_audio_buffer.speech_started' });
+
+    expect(openai.types().filter((type) => type === 'response.cancel')).toHaveLength(2);
+  });
+
+  it('keeps server VAD interrupting responses', () => {
+    const update = buildSessionUpdate({ agent }) as {
+      session: { audio: { input: { turn_detection: { type: string; interrupt_response: boolean } } } };
+    };
+
+    expect(update.session.audio.input.turn_detection.type).toBe('server_vad');
+    expect(update.session.audio.input.turn_detection.interrupt_response).toBe(true);
+  });
+
   it('refuses a stream whose CallSid does not match the authorized call', () => {
     const { twilio, openai } = startBridge();
     twilio.emit({ event: 'start', streamSid, start: { streamSid, callSid: 'CAOTHER' } });

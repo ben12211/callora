@@ -6,6 +6,7 @@ import {
   buildEndCallToolOutput,
   buildFarewellResponse,
   buildGreetingResponse,
+  buildResponseCancel,
   buildSessionUpdate,
   buildStillThereResponse,
   buildTruncate,
@@ -105,6 +106,8 @@ export class MediaStreamBridge {
   private endReason: string | null = null;
   /** True between `response.created` and `response.done`; a second response.create would be rejected. */
   private responseActive = false;
+  /** True once this response has been cancelled by a barge-in, so it is cancelled only once. */
+  private responseCancelled = false;
   /** Whether the in-flight response has produced any audio for the caller. */
   private assistantAudioInResponse = false;
   /** True once a goodbye has been asked for and is still being generated. */
@@ -284,6 +287,7 @@ export class MediaStreamBridge {
       }
       case 'response.created': {
         this.responseActive = true;
+        this.responseCancelled = false;
         this.assistantAudioInResponse = false;
         return;
       }
@@ -335,6 +339,7 @@ export class MediaStreamBridge {
         this.responseStartTimestamp = null;
         this.lastAssistantItemId = null;
         this.responseActive = false;
+        this.responseCancelled = false;
         const spokeInResponse = this.assistantAudioInResponse;
         this.assistantAudioInResponse = false;
 
@@ -385,14 +390,29 @@ export class MediaStreamBridge {
       this.terminate('interrupted-farewell');
       return;
     }
-    if (this.pendingMarks === 0 || this.responseStartTimestamp === null || !this.streamSid) {
+    // An active response counts as speaking even before its first audio reaches Twilio:
+    // waiting for queued marks is what used to let the agent finish a whole sentence
+    // over the caller.
+    if (!this.streamSid || (!this.responseActive && this.pendingMarks === 0)) {
       return;
     }
 
-    if (this.lastAssistantItemId) {
+    // Stop generating first, so no further audio is produced for a turn the caller
+    // has already talked over.
+    if (this.responseActive && !this.responseCancelled) {
+      this.responseCancelled = true;
+      this.options.openai.send(JSON.stringify(buildResponseCancel()));
+    }
+
+    // Rewind the model's own record of what the caller actually heard, so the rest of
+    // the conversation stays consistent with the truncated audio.
+    if (this.lastAssistantItemId && this.responseStartTimestamp !== null) {
       const elapsedMs = this.latestMediaTimestamp - this.responseStartTimestamp;
       this.options.openai.send(JSON.stringify(buildTruncate(this.lastAssistantItemId, elapsedMs)));
     }
+
+    // Drop whatever Twilio still has buffered; without this the caller keeps hearing
+    // audio that the model has already stopped producing.
     this.options.twilio.send(JSON.stringify(buildTwilioClear(this.streamSid)));
 
     this.pendingMarks = 0;

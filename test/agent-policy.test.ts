@@ -21,7 +21,7 @@ describe('global business-only policy', () => {
 
   it('states the platform rules and keeps phone answers short', () => {
     expect(instructions).toMatch(/not a general-purpose assistant/i);
-    expect(instructions).toMatch(/one to three short sentences/i);
+    expect(instructions).toMatch(/default to one short sentence/i);
     expect(instructions).toMatch(/at most one question per turn/i);
     expect(instructions).toMatch(/Refuse in one short sentence and immediately redirect/i);
     expect(instructions).toMatch(/move toward ending the call/i);
@@ -60,6 +60,41 @@ describe('global business-only policy', () => {
     expect(unclearRules).toBeGreaterThan(-1);
     expect(businessBlock).toBeGreaterThan(unclearRules);
     expect(instructions).toMatch(/never guess at speech you did not hear clearly/i);
+  });
+
+  it('pins the answer length to one short sentence', () => {
+    expect(instructions).toMatch(/eight to twelve words/i);
+    expect(instructions).toMatch(/never past three short sentences/i);
+    expect(instructions).toMatch(/never give long explanations/i);
+    expect(instructions).toMatch(/if the answer fits in three words/i);
+    expect(instructions).toMatch(/not a chatbot and not a written FAQ/i);
+  });
+
+  it('forbids echoing the caller and opening with filler', () => {
+    expect(instructions).toMatch(/never repeat or rephrase the caller's question/i);
+    expect(instructions).toMatch(/do not open a turn with filler or eager agreement/i);
+  });
+
+  it('keeps a clarification question to a few spoken words', () => {
+    expect(instructions).toMatch(/keep it to two or three words/i);
+    expect(instructions).toMatch(/do not use a long formal apology/i);
+  });
+
+  it('adds spoken-Hebrew register notes for a Hebrew agent only', () => {
+    expect(instructions).toContain('SPOKEN HEBREW:');
+    // The short natural forms are given, and the stiff one is named as a counter-example.
+    expect(instructions).toContain('מה אמרת?');
+    expect(instructions).toContain('לא שמעתי, מה אמרת?');
+    expect(instructions).toContain('לא שמעתי אותך טוב, תוכל לחזור על זה?');
+    for (const filler of ['בשמחה', 'בהחלט', 'כמובן']) {
+      expect(instructions).toContain(filler);
+    }
+
+    const english = composeAgentInstructions({ agent: { ...agent, language: 'en-US' } });
+    expect(english).not.toContain('SPOKEN HEBREW:');
+    expect(english).not.toContain('מה אמרת?');
+    // The language-independent brevity rules still apply.
+    expect(english).toMatch(/eight to twelve words/i);
   });
 
   it('subordinates business configuration to the platform rules', () => {

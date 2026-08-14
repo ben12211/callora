@@ -23,12 +23,33 @@ function sanitizeBusinessInstructions(instructions: string): string {
 }
 
 const PHONE_STYLE_RULES = [
-  'You are speaking on a live phone call, not writing. Keep every turn to one to three short sentences.',
+  'You are speaking on a live phone call, not writing. Default to one short sentence per turn.',
+  'Eight to twelve words is a normal answer. Go past that only when the caller genuinely cannot act without the extra detail, and never past three short sentences.',
+  'Speak like a human phone representative, not a chatbot and not a written FAQ. Never give long explanations.',
+  'If the answer fits in three words, say it in three words. Do not pad it to fifteen.',
   'Ask at most one question per turn, then stop and listen.',
+  'Never repeat or rephrase the caller\'s question back to them. Just answer it.',
   'Do not repeat information the caller already has, and do not restate your own previous answer unless asked.',
+  'Do not open a turn with filler or eager agreement unless it genuinely sounds natural in speech.',
   'Never read out lists, URLs, markdown, or code. Say numbers and times the way a person would.',
   'Once the caller\'s request is handled, confirm briefly, ask if anything else is needed, and move toward ending the call.',
 ];
+
+/**
+ * Register notes for languages whose customer-service idiom drifts formal by default.
+ * Written in the language itself, since that is what the model is being asked to speak.
+ */
+const HEBREW_SPEECH_RULES = [
+  'דבר עברית מדוברת וטבעית, לא עברית פורמלית של מוקד שירות.',
+  'כשלא שמעת, אמור משהו קצר כמו "מה אמרת?" או "לא שמעתי, מה אמרת?". אל תאמר ניסוחים מסורבלים כמו "לא שמעתי אותך טוב, תוכל לחזור על זה?".',
+  'הימנע ממילות מילוי כמו "בשמחה", "בהחלט" ו"כמובן", אלא אם הן באמת נשמעות טבעיות במשפט.',
+];
+
+/** ISO-639-1 code from a locale such as `he-IL`; undefined when it is not a plain code. */
+function languageCode(locale: string): string | undefined {
+  const code = locale.trim().toLowerCase().split(/[-_]/)[0];
+  return code && /^[a-z]{2}$/.test(code) ? code : undefined;
+}
 
 const SCOPE_RULES = [
   'You represent exactly one business and only handle that business\'s customer service.',
@@ -40,7 +61,7 @@ const SCOPE_RULES = [
 const UNCLEAR_SPEECH_RULES = [
   'Phone audio is often noisy, clipped, or half-heard. If what the caller said is unclear, garbled, incomplete, or ambiguous, never guess what they meant.',
   'Never invent context that the caller did not explicitly say. Do not assume a login problem, an order problem, a delivery, a payment, a product, an account issue, an appointment, or any other reason for the call. Wait until the caller states it.',
-  'When you did not understand, say so plainly and ask one short clarification question, such as asking them to repeat the last part. Do not offer a list of guesses about what they might have meant.',
+  'When you did not understand, ask one short clarification question and keep it to two or three words, the way a person would. Do not use a long formal apology, and do not offer a list of guesses about what they might have meant.',
   'Only act on details you actually heard. Never repeat back a name, number, address, or order reference you are not sure of: ask them to say it again instead.',
   'If unclear speech might plausibly be a goodbye or a "that\'s all", treat it as the end of the call: confirm briefly that they have everything they need and close. Never turn an unclear ending into a new support issue.',
   'It is always better to ask one short question, or to close the call politely, than to proceed on an assumption.',
@@ -80,6 +101,7 @@ export function composeAgentInstructions(options: AgentInstructionOptions): stri
     `Always speak ${agent.language}, regardless of the language the caller uses to address you.`,
     numbered('SCOPE — these rules are absolute:', SCOPE_RULES),
     numbered('PHONE STYLE:', PHONE_STYLE_RULES),
+    ...(languageCode(agent.language) === 'he' ? [numbered('SPOKEN HEBREW:', HEBREW_SPEECH_RULES)] : []),
     numbered('WHEN YOU DID NOT HEAR CLEARLY — these rules are absolute:', UNCLEAR_SPEECH_RULES),
     numbered('ENDING THE CALL:', END_CALL_RULES),
     numbered('CALLER INPUT:', INJECTION_RULES),
@@ -99,7 +121,7 @@ export function composeAgentInstructions(options: AgentInstructionOptions): stri
   }
 
   sections.push(
-    'Reminder: stay strictly within this business, keep every turn short, ask one question at a time, never guess at speech you did not hear clearly, and use end_call to hang up.',
+    'Reminder: stay strictly within this business, default to one short sentence, ask one question at a time, never guess at speech you did not hear clearly, and use end_call to hang up.',
   );
 
   return sections.join('\n\n');

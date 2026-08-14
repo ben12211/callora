@@ -179,6 +179,17 @@ export function buildAudioAppend(payload: string): Record<string, unknown> {
   return { type: 'input_audio_buffer.append', audio: payload };
 }
 
+/**
+ * Stops the in-flight response immediately. `interrupt_response` already makes the
+ * server cancel on its own turn detection, but that decision costs a round trip during
+ * which more audio is still being generated; cancelling from here as soon as
+ * `speech_started` arrives is what stops the agent mid-word.
+ * No `response_id`: the in-progress response in the default conversation is the target.
+ */
+export function buildResponseCancel(): Record<string, unknown> {
+  return { type: 'response.cancel' };
+}
+
 export function buildTruncate(itemId: string, audioEndMs: number): Record<string, unknown> {
   return {
     type: 'conversation.item.truncate',

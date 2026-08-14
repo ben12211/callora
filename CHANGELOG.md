@@ -12,6 +12,9 @@ Shared record of meaningful completed Callora changes.
 
 ### Changed
 
+- Agent brevity policy: the default turn is now one short sentence of roughly eight to twelve words, capped at three short sentences when detail is genuinely needed. The agent may not echo the caller's question back, may not open with filler, and must keep a clarification question to two or three words. Hebrew agents additionally get spoken-register notes naming `מה אמרת?` as the short form to use and the stiff customer-service phrasing to avoid; other languages are unaffected.
+- Barge-in now stops the agent mid-word. On `speech_started` the bridge cancels the in-flight OpenAI response before truncating the item and clearing Twilio's queued audio, and it no longer waits for pending Twilio marks — a response that has not yet produced audio is cancelled too. Server VAD and `interrupt_response` are unchanged, and conversation context after an interruption is preserved by the existing truncate.
+
 - Debug transcription now defaults to `gpt-4o-transcribe` (still configurable via `OPENAI_TRANSCRIBE_MODEL`) and sends a short customer-service prompt alongside the language hint, in Hebrew for Hebrew agents.
 
 ### Added
