@@ -83,9 +83,32 @@ Add one business row per Twilio number. Phone numbers must be E.164 (for example
 
 ### Realtime speech-to-speech calls
 
-When the resolved business has an enabled row in `agent_configs`, the voice webhook answers with `<Connect><Stream>` and Twilio opens a bidirectional Media Stream to `wss://<PUBLIC_BASE_URL host>/webhooks/twilio/media`. Callora then opens one OpenAI Realtime session per stream (`gpt-realtime-2.1` by default) and bridges G.711 mu-law audio in both directions without transcoding, with server VAD barge-in. Businesses without an enabled agent keep the previous static `<Say>` greeting.
+When the resolved business has an enabled row in `agent_configs`, the voice webhook answers with `<Connect><Stream>` and Twilio opens a bidirectional Media Stream to `wss://<PUBLIC_BASE_URL host>/webhooks/twilio/media`. Callora then opens one realtime session per stream and bridges G.711 mu-law audio in both directions without transcoding, with barge-in. Businesses without an enabled agent keep the previous static `<Say>` greeting.
 
 Twilio does not sign the WebSocket handshake, so the voice webhook issues a short-lived HMAC token bound to the `CallSid` and business, and the media endpoint rejects any handshake without a valid token. The `start` event's `CallSid` must also match the token.
+
+#### Voice providers
+
+`VOICE_PROVIDER` selects the realtime backend for the whole deployment. Twilio routing, the caller allowlist, call persistence, and the stream token are identical either way; only the session behind the media stream changes.
+
+| `VOICE_PROVIDER` | Backend | Required credentials |
+| --- | --- | --- |
+| `openai` (default) | OpenAI Realtime, `gpt-realtime-2.1` by default | `OPENAI_API_KEY` |
+| `elevenlabs` | ElevenLabs Agents | `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID` |
+
+Only the selected provider's credentials are required; startup fails with a named variable if one is missing, and an unrecognised provider is rejected outright.
+
+Both providers negotiate `ulaw_8000` (G.711 mu-law at 8 kHz), the format Twilio Media Streams already speak, so neither path transcodes. The ElevenLabs session reports the formats it actually chose in `conversation_initiation_metadata`; if the agent is configured for anything other than mu-law, Callora ends the call with an error rather than playing noise to the caller.
+
+Barge-in works on both, through each provider's own mechanism: on OpenAI, server VAD plus an explicit `response.cancel` and buffer clear; on ElevenLabs, the `interruption` event, which drops whatever Twilio still has queued. The `end_call` behaviour is the same on both — the agent asks to hang up, Callora waits for the goodbye audio to be acknowledged by Twilio, then terminates the `CallSid` the stream was authorized for. On ElevenLabs this arrives as a **client tool** named `end_call`, which has to be registered on the agent (see below).
+
+Running ElevenLabs requires configuring the agent once in the ElevenLabs dashboard:
+
+- Set both the agent output and user input audio formats to `ulaw_8000`.
+- Under the agent's **Security** tab, enable the overrides Callora sends per call: **system prompt**, **first message**, and **language**. Overrides are disabled by default, and sending one that is not enabled fails the conversation rather than being ignored.
+- Add a **client tool** named `end_call` with a single optional string parameter `reason`, so the agent can hang up.
+
+The tenant `instructions`, `greeting`, and `language` from `agent_configs` are sent as per-call overrides, so the same policy and greeting apply on both providers.
 
 #### Agent behaviour
 
@@ -94,7 +117,7 @@ Every session is configured with a global Callora policy (`src/realtime/policy.t
 - The agent handles only its own business, refuses unrelated topics in one sentence and redirects, and never acts as a general assistant.
 - Prompt-injection attempts ("ignore your instructions", "act as ChatGPT", claims of authority) are treated as unrelated topics. Caller speech is content, never instructions.
 - Business `instructions` are embedded as a delimited, lower-precedence block: they can narrow behaviour but never widen scope or disable a global rule.
-- Answers stay at one to three short sentences with a single question per turn, and the agent moves toward closing once the request is handled.
+- Answers default to one short sentence of roughly eight to twelve words, never more than three, with a single question per turn. The agent does not echo the caller's question back or open with filler, and it moves toward closing once the request is handled.
 - Unclear, garbled, or incomplete speech is never guessed at. The agent may not invent a login problem, order, product, payment, account issue, or any other context the caller did not state; it asks one short clarification question instead. Unclear speech that might be a goodbye is treated as a closing, never as a new support issue.
 
 Caller audio uses `near_field` input noise reduction, which suits a handset on a narrowband phone line and cleans the signal ahead of turn detection. It does not alter the pcmu bridge and adds no transcoding.
@@ -103,7 +126,9 @@ The agent hangs up through an internal `end_call` tool. It takes only a `reason`
 
 #### Conversation logs
 
-Caller audio is transcribed (`OPENAI_TRANSCRIBE_MODEL`, default `gpt-4o-transcribe`, with a language hint and a short customer-service prompt derived from the agent's locale) purely so live calls are observable. Each completed turn produces one line:
+On ElevenLabs, transcripts come from the provider's own `user_transcript` and `agent_response` events and produce the same lines, with no separate transcription model to configure.
+
+On OpenAI, caller audio is transcribed (`OPENAI_TRANSCRIBE_MODEL`, default `gpt-4o-transcribe`, with a language hint and a short customer-service prompt derived from the agent's locale) purely so live calls are observable. Each completed turn produces one line:
 
 ```text
 [conversation] USER: שלום, רציתי לבדוק את הסטטוס של ההזמנה

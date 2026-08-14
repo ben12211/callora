@@ -33,7 +33,13 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?TWILIO_ACCOUNT_SID is required}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      # Which realtime backend answers calls: openai (default) or elevenlabs. The
+      # application requires only the selected provider's credentials, so both sets are
+      # passed through optionally and validated at startup rather than here.
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID:-}
       # Optional caller allowlist; empty or unset allows every caller.
       ALLOW_LIST: ${ALLOW_LIST:-}
       DB_STARTUP_RETRIES: 30

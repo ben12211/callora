@@ -180,6 +180,7 @@ const config: AppConfig = {
   twilioAccountSid: 'AC00000000000000000000000000000000',
   twilioAuthToken: 'test-auth-token',
   publicBaseUrl: 'https://voice.example.test',
+  voiceProvider: 'openai',
   openaiApiKey: 'test-openai-key',
   openaiRealtimeUrl: 'wss://api.openai.com/v1/realtime',
   openaiTranscribeModel: 'gpt-4o-mini-transcribe',

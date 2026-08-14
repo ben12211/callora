@@ -46,7 +46,7 @@ const HEBREW_SPEECH_RULES = [
 ];
 
 /** ISO-639-1 code from a locale such as `he-IL`; undefined when it is not a plain code. */
-function languageCode(locale: string): string | undefined {
+export function languageCode(locale: string): string | undefined {
   const code = locale.trim().toLowerCase().split(/[-_]/)[0];
   return code && /^[a-z]{2}$/.test(code) ? code : undefined;
 }

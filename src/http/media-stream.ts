@@ -4,6 +4,8 @@ import type WebSocket from 'ws';
 import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
 import { MediaStreamBridge, type MessageChannel } from '../realtime/bridge.js';
+import { ElevenLabsBridge } from '../realtime/elevenlabs-bridge.js';
+import { connectElevenLabsAgent } from '../realtime/elevenlabs-connection.js';
 import { connectOpenAiRealtime } from '../realtime/openai-connection.js';
 import { parseJsonObject, readObject, readString } from '../realtime/protocol.js';
 import { websocketChannel } from '../realtime/websocket-channel.js';
@@ -202,15 +204,83 @@ async function openBridge(
     return;
   }
 
+  let persistedStreamSid: string | null = null;
+  let persistedSessionId: string | null = null;
+
+  /**
+   * Shared by both providers. `openaiSessionId` is the existing column for the provider's
+   * own session identifier; ElevenLabs conversation ids are stored in it too rather than
+   * migrating the call table for a second provider.
+   */
+  const persistIdentifiers = (streamSid: string | null, sessionId: string | null): void => {
+    if (streamSid === persistedStreamSid && sessionId === persistedSessionId) {
+      return;
+    }
+    persistedStreamSid = streamSid ?? persistedStreamSid;
+    persistedSessionId = sessionId ?? persistedSessionId;
+    void store
+      .attachRealtimeSession({
+        businessId,
+        twilioCallSid: callSid,
+        twilioStreamSid: persistedStreamSid,
+        openaiSessionId: persistedSessionId,
+      })
+      .catch((error: unknown) => {
+        app.log.error(
+          { businessId, callSid, error: error instanceof Error ? error.message : 'unknown error' },
+          'Failed to persist realtime identifiers',
+        );
+      });
+  };
+
+  // The CallSid is the one this stream was authorized for; the model never supplies it.
+  const endCall = dependencies.callTerminator
+    ? async (): Promise<void> => {
+        await dependencies.callTerminator!.endCall(callSid);
+      }
+    : undefined;
+
+  /** One ceiling per call, cleared by whichever side disconnects first. */
+  const guardDuration = (close: () => void, providerSocket: WebSocket): void => {
+    const maxDurationTimer = setTimeout(close, MAX_CALL_DURATION_MS);
+    maxDurationTimer.unref?.();
+    socket.once('close', () => clearTimeout(maxDurationTimer));
+    providerSocket.once('close', () => clearTimeout(maxDurationTimer));
+  };
+
+  if (config.voiceProvider === 'elevenlabs') {
+    const elevenLabsSocket = await connectElevenLabsAgent({
+      apiKey: config.elevenLabsApiKey,
+      agentId: config.elevenLabsAgentId,
+      baseUrl: config.elevenLabsApiBaseUrl,
+    });
+    // The agent id is safe to log; the API key and the signed URL never are.
+    app.log.info({ businessId, callSid, agentId: config.elevenLabsAgentId }, 'ElevenLabs conversation opened');
+
+    const bridge = new ElevenLabsBridge({
+      twilio: twilioChannel,
+      elevenlabs: websocketChannel(elevenLabsSocket),
+      agent,
+      businessId,
+      callSid,
+      callId: call?.id ?? null,
+      callerNumber: call?.fromNumber ?? null,
+      logger: app.log,
+      endCall,
+      onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId),
+    });
+
+    guardDuration(() => bridge.close('max-duration'), elevenLabsSocket);
+    bridge.start();
+    return;
+  }
+
   const openaiSocket = await connectOpenAiRealtime({
     apiKey: config.openaiApiKey,
     url: config.openaiRealtimeUrl,
     model: agent.realtimeModel,
   });
   app.log.info({ businessId, callSid, model: agent.realtimeModel }, 'OpenAI realtime connection opened');
-
-  let persistedStreamSid: string | null = null;
-  let persistedSessionId: string | null = null;
 
   const bridge = new MediaStreamBridge({
     twilio: twilioChannel,
@@ -222,38 +292,10 @@ async function openBridge(
     callerNumber: call?.fromNumber ?? null,
     transcriptionModel: config.openaiTranscribeModel,
     logger: app.log,
-    // The CallSid is the one this stream was authorized for; the model never supplies it.
-    endCall: dependencies.callTerminator
-      ? async (): Promise<void> => {
-          await dependencies.callTerminator!.endCall(callSid);
-        }
-      : undefined,
-    onIdentifiers: ({ streamSid, openaiSessionId }) => {
-      if (streamSid === persistedStreamSid && openaiSessionId === persistedSessionId) {
-        return;
-      }
-      persistedStreamSid = streamSid ?? persistedStreamSid;
-      persistedSessionId = openaiSessionId ?? persistedSessionId;
-      void store
-        .attachRealtimeSession({
-          businessId,
-          twilioCallSid: callSid,
-          twilioStreamSid: persistedStreamSid,
-          openaiSessionId: persistedSessionId,
-        })
-        .catch((error: unknown) => {
-          app.log.error(
-            { businessId, callSid, error: error instanceof Error ? error.message : 'unknown error' },
-            'Failed to persist realtime identifiers',
-          );
-        });
-    },
+    endCall,
+    onIdentifiers: ({ streamSid, openaiSessionId }) => persistIdentifiers(streamSid, openaiSessionId),
   });
 
-  const maxDurationTimer = setTimeout(() => bridge.close('max-duration'), MAX_CALL_DURATION_MS);
-  maxDurationTimer.unref?.();
-  socket.once('close', () => clearTimeout(maxDurationTimer));
-  openaiSocket.once('close', () => clearTimeout(maxDurationTimer));
-
+  guardDuration(() => bridge.close('max-duration'), openaiSocket);
   bridge.start();
 }

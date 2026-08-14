@@ -262,6 +262,7 @@ rollback_release() {
 
 update_runtime_secrets() {
   local twilio_account_sid twilio_auth_token openai_api_key allow_list temp_env
+  local voice_provider elevenlabs_api_key elevenlabs_agent_id
 
   IFS= read -r twilio_account_sid
   IFS= read -r twilio_auth_token
@@ -269,6 +270,14 @@ update_runtime_secrets() {
   # Optional, and absent when an older workflow sends only three lines.
   allow_list=''
   IFS= read -r allow_list || true
+  # Optional too: an older workflow sends nothing for the provider, which means openai.
+  voice_provider=''
+  elevenlabs_api_key=''
+  elevenlabs_agent_id=''
+  IFS= read -r voice_provider || true
+  IFS= read -r elevenlabs_api_key || true
+  IFS= read -r elevenlabs_agent_id || true
+  [[ -n "$voice_provider" ]] || voice_provider=openai
 
   [[ "$twilio_account_sid" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
     log 'TWILIO_ACCOUNT_SID is not a valid Twilio Account SID.'
@@ -278,10 +287,27 @@ update_runtime_secrets() {
     log 'TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.'
     return 1
   }
-  [[ -n "$openai_api_key" && "$openai_api_key" != *$'\r'* ]] || {
-    log 'OPENAI_API_KEY must be a non-empty, single-line secret.'
+  [[ "$voice_provider" == openai || "$voice_provider" == elevenlabs ]] || {
+    log 'VOICE_PROVIDER must be either openai or elevenlabs.'
     return 1
   }
+  # Only the selected provider's credentials have to be present, so a deployment that
+  # runs on one provider never has to carry a placeholder secret for the other.
+  if [[ "$voice_provider" == openai ]]; then
+    [[ -n "$openai_api_key" && "$openai_api_key" != *$'\r'* ]] || {
+      log 'OPENAI_API_KEY must be a non-empty, single-line secret when VOICE_PROVIDER is openai.'
+      return 1
+    }
+  else
+    [[ -n "$elevenlabs_api_key" && "$elevenlabs_api_key" != *$'\r'* ]] || {
+      log 'ELEVENLABS_API_KEY must be a non-empty, single-line secret when VOICE_PROVIDER is elevenlabs.'
+      return 1
+    }
+    [[ -n "$elevenlabs_agent_id" && "$elevenlabs_agent_id" != *$'\r'* ]] || {
+      log 'ELEVENLABS_AGENT_ID must be a non-empty, single-line value when VOICE_PROVIDER is elevenlabs.'
+      return 1
+    }
+  fi
   # Empty means "no allowlist"; anything else must be E.164 numbers separated by commas.
   [[ -z "$allow_list" || "$allow_list" =~ ^[[:space:]]*\+[1-9][0-9]{7,14}([[:space:]]*,[[:space:]]*\+[1-9][0-9]{7,14})*[[:space:]]*$ ]] || {
     log 'ALLOW_LIST must be empty or a comma-separated list of E.164 numbers.'
@@ -298,19 +324,25 @@ update_runtime_secrets() {
     !/^[[:space:]]*TWILIO_ACCOUNT_SID[[:space:]]*=/ &&
     !/^[[:space:]]*TWILIO_AUTH_TOKEN[[:space:]]*=/ &&
     !/^[[:space:]]*OPENAI_API_KEY[[:space:]]*=/ &&
-    !/^[[:space:]]*ALLOW_LIST[[:space:]]*=/
+    !/^[[:space:]]*ALLOW_LIST[[:space:]]*=/ &&
+    !/^[[:space:]]*VOICE_PROVIDER[[:space:]]*=/ &&
+    !/^[[:space:]]*ELEVENLABS_API_KEY[[:space:]]*=/ &&
+    !/^[[:space:]]*ELEVENLABS_AGENT_ID[[:space:]]*=/
   ' "$ENV_FILE" > "$temp_env"
   printf 'TWILIO_ACCOUNT_SID=%s\n' "$twilio_account_sid" >> "$temp_env"
   printf 'TWILIO_AUTH_TOKEN=%s\n' "$twilio_auth_token" >> "$temp_env"
   printf 'OPENAI_API_KEY=%s\n' "$openai_api_key" >> "$temp_env"
   printf 'ALLOW_LIST=%s\n' "$allow_list" >> "$temp_env"
+  printf 'VOICE_PROVIDER=%s\n' "$voice_provider" >> "$temp_env"
+  printf 'ELEVENLABS_API_KEY=%s\n' "$elevenlabs_api_key" >> "$temp_env"
+  printf 'ELEVENLABS_AGENT_ID=%s\n' "$elevenlabs_agent_id" >> "$temp_env"
   chmod 0600 "$temp_env"
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN
   if [[ -n "$allow_list" ]]; then
-    log 'Twilio and OpenAI runtime credentials updated; caller allowlist is active.'
+    log "Runtime credentials updated for the $voice_provider voice provider; caller allowlist is active."
   else
-    log 'Twilio and OpenAI runtime credentials updated; no caller allowlist.'
+    log "Runtime credentials updated for the $voice_provider voice provider; no caller allowlist."
   fi
 }
 

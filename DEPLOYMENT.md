@@ -68,9 +68,14 @@ DATABASE_URL=postgresql://callora:URL_ENCODED_PASSWORD@db:5432/callora
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=replace-with-your-auth-token
 PUBLIC_BASE_URL=https://calls.example.com
+VOICE_PROVIDER=openai
 OPENAI_API_KEY=replace-with-your-openai-api-key
+ELEVENLABS_API_KEY=
+ELEVENLABS_AGENT_ID=
 ALLOW_LIST=
 ```
+
+`VOICE_PROVIDER` selects the realtime backend and accepts only `openai` (the default) or `elevenlabs`. Only the selected provider's credentials are required: an OpenAI deployment can leave both `ELEVENLABS_*` values empty, and an ElevenLabs deployment can leave `OPENAI_API_KEY` empty. The application refuses to start if the selected provider's credentials are missing, and the deployment fails the same check before it touches the server.
 
 `ALLOW_LIST` is optional and is overwritten from the GitHub secret on every deployment, exactly like the Twilio and OpenAI credentials. Set the secret to a comma-separated list of E.164 numbers to restrict who can reach the agent; clear it to allow every caller again. A malformed value fails the deployment rather than silently blocking calls.
 
@@ -98,14 +103,17 @@ Repository Secrets:
 | `USER` | SSH deployment account, normally `opc` |
 | `TWILIO_ACCOUNT_SID` | Twilio Account SID; authenticates the REST call that hangs up finished conversations |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token used to validate signed webhook requests |
-| `OPENAI_API_KEY` | OpenAI API key with Realtime access, used for the speech-to-speech call bridge |
+| `OPENAI_API_KEY` | OpenAI API key with Realtime access. Required only when `VOICE_PROVIDER` is `openai` |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key. Required only when `VOICE_PROVIDER` is `elevenlabs` |
+| `ELEVENLABS_AGENT_ID` | ElevenLabs agent id. Required only when `VOICE_PROVIDER` is `elevenlabs` |
 | `ALLOW_LIST` | Optional. Comma-separated E.164 numbers allowed to reach the agent; leave unset or empty to allow every caller |
 
-Repository Variable:
+Repository Variables:
 
 | Variable | Value |
 | --- | --- |
 | `DOCKER_HUB_USERNAME` | Docker Hub account or organization that owns the private `callora` repository |
+| `VOICE_PROVIDER` | Optional. `openai` (default) or `elevenlabs`. Not a secret, so it is a variable rather than a secret |
 
 No GHCR credentials, `GITHUB_TOKEN` package permissions, GitHub environment secrets, or database secrets are used by the workflow. The deploy job continues to target the existing `production` environment so any protection rules or required reviewers remain in force; its credentials still come only from the Repository Secrets above. Twilio credentials are sent to the VM over the existing SSH connection through standard input and are never printed or included in a remote command line.
 

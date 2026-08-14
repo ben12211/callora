@@ -55,6 +55,11 @@ jobs:
           bash -n deploy/deploy.sh deploy/bootstrap-oracle-linux.sh
           docker compose -f docker-compose.yml config -q
           docker compose -f docker-compose.prod.yml config -q
+          # The production stack must also resolve on the ElevenLabs provider, where no
+          # OpenAI key is set at all.
+          env -u OPENAI_API_KEY VOICE_PROVIDER=elevenlabs \
+            ELEVENLABS_API_KEY=validation-only ELEVENLABS_AGENT_ID=agent_validation \
+            docker compose -f docker-compose.prod.yml config -q
 
       - name: Lint
         run: pnpm lint
@@ -150,6 +155,9 @@ jobs:
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          VOICE_PROVIDER: ${{ vars.VOICE_PROVIDER }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
           RELEASE_SHA: ${{ github.sha }}
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -169,7 +177,6 @@ jobs:
               'DOCKER_HUB_TOKEN': 'GitHub Repository Secret DOCKER_HUB_TOKEN',
               'TWILIO_ACCOUNT_SID': 'GitHub Repository Secret TWILIO_ACCOUNT_SID',
               'TWILIO_AUTH_TOKEN': 'GitHub Repository Secret TWILIO_AUTH_TOKEN',
-              'OPENAI_API_KEY': 'GitHub Repository Secret OPENAI_API_KEY',
               'DOCKER_HUB_USERNAME': 'GitHub Repository Variable DOCKER_HUB_USERNAME',
           }
           missing = [label for name, label in required.items() if not os.environ.get(name)]
@@ -201,10 +208,27 @@ jobs:
           if not re.fullmatch(r'[0-9a-fA-F]{32}', os.environ['TWILIO_AUTH_TOKEN']):
               print('TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.', file=sys.stderr)
               sys.exit(1)
-          openai_api_key = os.environ['OPENAI_API_KEY'].strip()
-          if not openai_api_key or any(character in openai_api_key for character in ('\r', '\n', '\0')):
-              print('OPENAI_API_KEY must contain a single-line credential.', file=sys.stderr)
+          # Only the selected provider's credentials are required, matching what the
+          # application validates at startup. Unset means the default, openai.
+          voice_provider = (os.environ.get('VOICE_PROVIDER') or 'openai').strip()
+          if voice_provider not in ('openai', 'elevenlabs'):
+              print('VOICE_PROVIDER must be either openai or elevenlabs.', file=sys.stderr)
               sys.exit(1)
+
+          def require_single_line(name):
+              value = (os.environ.get(name) or '').strip()
+              if not value or any(character in value for character in ('\r', '\n', '\0')):
+                  print(
+                      f'{name} must contain a single-line credential when VOICE_PROVIDER is {voice_provider}.',
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+
+          if voice_provider == 'openai':
+              require_single_line('OPENAI_API_KEY')
+          else:
+              require_single_line('ELEVENLABS_API_KEY')
+              require_single_line('ELEVENLABS_AGENT_ID')
 
           # Optional. Empty disables the caller allowlist and allows every caller.
           # A bracketed or quoted list is accepted too, matching what the app parses.
@@ -271,6 +295,9 @@ jobs:
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          VOICE_PROVIDER: ${{ vars.VOICE_PROVIDER }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
           SSH_DIR: ${{ runner.temp }}/callora-ssh
@@ -292,6 +319,27 @@ jobs:
           import sys
 
           sys.stdout.write(os.environ['OPENAI_API_KEY'].strip())
+          PY
+          )"
+          ELEVENLABS_API_KEY="$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.stdout.write((os.environ.get('ELEVENLABS_API_KEY') or '').strip())
+          PY
+          )"
+          ELEVENLABS_AGENT_ID="$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.stdout.write((os.environ.get('ELEVENLABS_AGENT_ID') or '').strip())
+          PY
+          )"
+          VOICE_PROVIDER="$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.stdout.write((os.environ.get('VOICE_PROVIDER') or 'openai').strip())
           PY
           )"
           ALLOW_LIST="$(python3 - <<'PY'
@@ -334,7 +382,9 @@ jobs:
             "${SSH[@]}" "$REMOTE" \
               "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
           "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
-          printf '%s\n%s\n%s\n%s\n' "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" "$ALLOW_LIST" | \
+          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+            "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" "$ALLOW_LIST" \
+            "$VOICE_PROVIDER" "$ELEVENLABS_API_KEY" "$ELEVENLABS_AGENT_ID" | \
             "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
           if ! "${SSH[@]}" "$REMOTE" \
