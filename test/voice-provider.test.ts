@@ -70,9 +70,71 @@ describe('voice provider selection', () => {
     expect(config.elevenLabsApiBaseUrl).toBe('https://api.elevenlabs.io');
   });
 
+  // Compose and the deployment secret sync always define every provider variable, so
+  // the unused provider's credentials arrive as empty strings rather than being absent.
+  // Treating that as a validation failure would crash a valid single-provider server.
+  it('treats an empty credential as absent rather than invalid', () => {
+    const onElevenLabs = loadConfig({
+      ...baseEnv,
+      VOICE_PROVIDER: 'elevenlabs',
+      ELEVENLABS_API_KEY: 'xi-test',
+      ELEVENLABS_AGENT_ID: 'agent_123',
+      OPENAI_API_KEY: '',
+    });
+    expect(onElevenLabs.voiceProvider).toBe('elevenlabs');
+
+    const onOpenAi = loadConfig({
+      ...baseEnv,
+      VOICE_PROVIDER: 'openai',
+      OPENAI_API_KEY: 'sk-test',
+      ELEVENLABS_API_KEY: '',
+      ELEVENLABS_AGENT_ID: '',
+    });
+    expect(onOpenAi.voiceProvider).toBe('openai');
+  });
+
+  it('falls back to the default when optional values arrive blank', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      VOICE_PROVIDER: '',
+      OPENAI_API_KEY: 'sk-test',
+      OPENAI_REALTIME_URL: '',
+      OPENAI_TRANSCRIBE_MODEL: '',
+    });
+
+    expect(config.voiceProvider).toBe('openai');
+    if (config.voiceProvider !== 'openai') throw new Error('expected the OpenAI provider');
+    expect(config.openaiRealtimeUrl).toBe('wss://api.openai.com/v1/realtime');
+    expect(config.openaiTranscribeModel).toBeTruthy();
+
+    const elevenlabs = loadConfig({
+      ...baseEnv,
+      VOICE_PROVIDER: 'elevenlabs',
+      ELEVENLABS_API_KEY: 'xi-test',
+      ELEVENLABS_AGENT_ID: 'agent_123',
+      ELEVENLABS_API_BASE_URL: '',
+    });
+    if (elevenlabs.voiceProvider !== 'elevenlabs') throw new Error('expected the ElevenLabs provider');
+    expect(elevenlabs.elevenLabsApiBaseUrl).toBe('https://api.elevenlabs.io');
+  });
+
+  it('still rejects a blank credential the selected provider needs', () => {
+    // Blank must mean "absent", not "valid" — the required check has to still fire.
+    expect(() =>
+      loadConfig({ ...baseEnv, VOICE_PROVIDER: 'elevenlabs', ELEVENLABS_API_KEY: '', ELEVENLABS_AGENT_ID: '' }),
+    ).toThrow(/ELEVENLABS_API_KEY/);
+    expect(() => loadConfig({ ...baseEnv, VOICE_PROVIDER: 'openai', OPENAI_API_KEY: '   ' })).toThrow(
+      /OPENAI_API_KEY/,
+    );
+  });
+
   it('rejects a provider that is not openai or elevenlabs', () => {
-    expect(() => loadConfig({ ...baseEnv, VOICE_PROVIDER: 'azure', OPENAI_API_KEY: 'sk-test' })).toThrow();
-    expect(() => loadConfig({ ...baseEnv, VOICE_PROVIDER: '', OPENAI_API_KEY: 'sk-test' })).toThrow();
+    for (const provider of ['azure', 'ElevenLabs', 'openai ', 'eleven-labs']) {
+      expect(() => loadConfig({ ...baseEnv, VOICE_PROVIDER: provider, OPENAI_API_KEY: 'sk-test' })).toThrow();
+    }
+    // A blank value is not a wrong provider: compose and the secret sync both write an
+    // empty variable when nothing was configured, which means the default.
+    expect(loadConfig({ ...baseEnv, VOICE_PROVIDER: '', OPENAI_API_KEY: 'sk-test' }).voiceProvider).toBe('openai');
   });
 
   it('requires only the selected provider credentials', () => {

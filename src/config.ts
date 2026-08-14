@@ -3,6 +3,17 @@ import { z } from 'zod';
 import { DEFAULT_TRANSCRIPTION_MODEL } from './realtime/protocol.js';
 import { DEFAULT_REALTIME_PROVIDER, REALTIME_PROVIDERS, type RealtimeProvider } from './realtime/provider.js';
 
+/**
+ * Docker Compose and the deployment secret sync always define every provider variable,
+ * writing the unused provider's credentials as an empty string rather than omitting
+ * them. Zod's `.optional()` admits only `undefined`, so an empty value would otherwise
+ * fail `.min(1)` and crash the backend at startup on a perfectly valid single-provider
+ * deployment. Treat blank as absent, which is what an empty variable means here.
+ */
+function blankAsAbsent<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((value) => (typeof value === 'string' && value.trim() === '' ? undefined : value), schema);
+}
+
 const configSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -15,14 +26,14 @@ const configSchema = z
     TWILIO_ACCOUNT_SID: z.string().regex(/^AC[0-9a-fA-F]{32}$/, 'TWILIO_ACCOUNT_SID must be a Twilio Account SID'),
     PUBLIC_BASE_URL: z.url().transform((value) => value.replace(/\/$/, '')),
     // Which realtime backend answers calls. Only the selected provider's credentials are required.
-    VOICE_PROVIDER: z.enum([...REALTIME_PROVIDERS]).default(DEFAULT_REALTIME_PROVIDER),
-    OPENAI_API_KEY: z.string().min(1).optional(),
-    OPENAI_REALTIME_URL: z.string().min(1).default('wss://api.openai.com/v1/realtime'),
+    VOICE_PROVIDER: blankAsAbsent(z.enum([...REALTIME_PROVIDERS]).default(DEFAULT_REALTIME_PROVIDER)),
+    OPENAI_API_KEY: blankAsAbsent(z.string().min(1).optional()),
+    OPENAI_REALTIME_URL: blankAsAbsent(z.string().min(1).default('wss://api.openai.com/v1/realtime')),
     // Transcribes caller audio for conversation logging only; it never drives the reply.
-    OPENAI_TRANSCRIBE_MODEL: z.string().min(1).default(DEFAULT_TRANSCRIPTION_MODEL),
-    ELEVENLABS_API_KEY: z.string().min(1).optional(),
-    ELEVENLABS_AGENT_ID: z.string().min(1).optional(),
-    ELEVENLABS_API_BASE_URL: z.string().min(1).default('https://api.elevenlabs.io'),
+    OPENAI_TRANSCRIBE_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_TRANSCRIPTION_MODEL)),
+    ELEVENLABS_API_KEY: blankAsAbsent(z.string().min(1).optional()),
+    ELEVENLABS_AGENT_ID: blankAsAbsent(z.string().min(1).optional()),
+    ELEVENLABS_API_BASE_URL: blankAsAbsent(z.string().min(1).default('https://api.elevenlabs.io')),
   })
   .superRefine((value, ctx) => {
     // A deployment only needs credentials for the provider it actually uses, so an
