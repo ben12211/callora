@@ -95,12 +95,13 @@ Twilio does not sign the WebSocket handshake, so the voice webhook issues a shor
 | --- | --- | --- |
 | `openai` (default) | OpenAI Realtime, `gpt-realtime-2.1` by default | `OPENAI_API_KEY` |
 | `elevenlabs` | ElevenLabs Agents | `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID` |
+| `cartesia` | Cartesia STT -> text LLM -> Cartesia Sonic TTS | `CARTESIA_API_KEY`, `CARTESIA_VOICE_ID`, `OPENAI_API_KEY` |
 
 Only the selected provider's credentials are required; startup fails with a named variable if one is missing, and an unrecognised provider is rejected outright.
 
-Both providers negotiate `ulaw_8000` (G.711 mu-law at 8 kHz), the format Twilio Media Streams already speak, so neither path transcodes. The ElevenLabs session reports the formats it actually chose in `conversation_initiation_metadata`; if the agent is configured for anything other than mu-law, Callora ends the call with an error rather than playing noise to the caller.
+All three carry G.711 mu-law at 8 kHz — the format Twilio Media Streams already speak — so no path transcodes. The ElevenLabs session reports the formats it actually chose in `conversation_initiation_metadata`; if the agent is configured for anything other than mu-law, Callora ends the call with an error rather than playing noise to the caller.
 
-Barge-in works on both, through each provider's own mechanism: on OpenAI, server VAD plus an explicit `response.cancel` and buffer clear; on ElevenLabs, the `interruption` event, which drops whatever Twilio still has queued. The `end_call` behaviour is the same on both — the agent asks to hang up, Callora waits for the goodbye audio to be acknowledged by Twilio, then terminates the `CallSid` the stream was authorized for. On ElevenLabs this arrives as a **client tool** named `end_call`, which has to be registered on the agent (see below).
+Barge-in works on all three, through each provider's own mechanism: on OpenAI, server VAD plus an explicit `response.cancel` and buffer clear; on ElevenLabs, the `interruption` event, which drops whatever Twilio still has queued. The `end_call` behaviour is the same on both — the agent asks to hang up, Callora waits for the goodbye audio to be acknowledged by Twilio, then terminates the `CallSid` the stream was authorized for. On ElevenLabs this arrives as a **client tool** named `end_call`, which has to be registered on the agent (see below).
 
 Running ElevenLabs requires configuring the agent once in the ElevenLabs dashboard:
 
@@ -108,7 +109,22 @@ Running ElevenLabs requires configuring the agent once in the ElevenLabs dashboa
 - Under the agent's **Security** tab, enable the overrides Callora sends per call: **system prompt**, **first message**, and **language**. Overrides are disabled by default, and sending one that is not enabled fails the conversation rather than being ignored.
 - Add a **client tool** named `end_call` with a single optional string parameter `reason`, so the agent can hang up.
 
-The tenant `instructions`, `greeting`, and `language` from `agent_configs` are sent as per-call overrides, so the same policy and greeting apply on both providers.
+The tenant `instructions`, `greeting`, and `language` from `agent_configs` are sent as per-call overrides, so the same policy and greeting apply on every provider.
+
+##### Cartesia
+
+Cartesia is the only provider where Callora owns the turn loop: it is assembled from Cartesia streaming STT, a text LLM, and Cartesia Sonic streaming TTS rather than a single vendor speech-to-speech session.
+
+- STT runs on `ink-whisper` (`CARTESIA_STT_MODEL`), the multilingual model. `ink-2` is faster but English-only, so it cannot serve a Hebrew tenant.
+- TTS runs on `sonic-3.5-2026-05-04` (`CARTESIA_TTS_MODEL`). Hebrew needs the sonic-3 or sonic-3.5 family; sonic-2 and sonic-turbo do not carry it.
+- Both sockets are opened with `pcm_mulaw` at 8000 Hz, so Twilio audio crosses untranscoded. The only conversion anywhere is base64, because Twilio wraps mu-law in JSON while Cartesia STT takes raw binary frames.
+- The tenant locale is normalised to a bare code, so a `he-IL` business becomes `he`.
+- LLM output is streamed into Sonic at clause boundaries on a shared `context_id`, so speech starts long before the reply is complete.
+- Barge-in cancels the Sonic context, clears Twilio's buffer, and aborts the in-flight LLM turn. Cartesia documents `cancel` as halting only generations that have **not started**, so audio from a cancelled context keeps arriving; the bridge therefore also drops any chunk whose `context_id` is no longer active. Cancel alone does not stop the agent.
+- `end_call` is an LLM tool. The hangup waits for Sonic to report `done` **and** for Twilio to acknowledge playback, so the goodbye is never cut off.
+- The reasoning turn reuses `OPENAI_API_KEY` with a configurable text model (`TEXT_LLM_MODEL`, default `gpt-4o-mini`). It is deliberately not coupled to OpenAI Realtime audio.
+
+Set `CARTESIA_VOICE_ID` to a Sonic voice UUID that suits the tenant language.
 
 #### Agent behaviour
 

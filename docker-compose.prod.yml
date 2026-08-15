@@ -42,6 +42,16 @@ services:
       ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID:-}
       # Optional; the application defaults to the public API origin when this is empty.
       ELEVENLABS_API_BASE_URL: ${ELEVENLABS_API_BASE_URL:-https://api.elevenlabs.io}
+      CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
+      CARTESIA_VOICE_ID: ${CARTESIA_VOICE_ID:-}
+      # Model ids and the API version are the values most likely to be retired upstream,
+      # so they are overridable without shipping code.
+      CARTESIA_TTS_MODEL: ${CARTESIA_TTS_MODEL:-}
+      CARTESIA_STT_MODEL: ${CARTESIA_STT_MODEL:-}
+      CARTESIA_VERSION: ${CARTESIA_VERSION:-}
+      # Cartesia covers speech only; the reasoning turn runs on an OpenAI text model.
+      TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
+      TEXT_LLM_BASE_URL: ${TEXT_LLM_BASE_URL:-}
       # Optional caller allowlist; empty or unset allows every caller.
       ALLOW_LIST: ${ALLOW_LIST:-}
       DB_STARTUP_RETRIES: 30

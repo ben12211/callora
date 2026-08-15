@@ -32,8 +32,8 @@ const baseEnv = {
 } satisfies NodeJS.ProcessEnv;
 
 describe('voice provider selection', () => {
-  it('offers exactly the two supported providers and defaults to OpenAI', () => {
-    expect([...REALTIME_PROVIDERS]).toEqual(['openai', 'elevenlabs']);
+  it('offers the supported providers and defaults to OpenAI', () => {
+    expect([...REALTIME_PROVIDERS]).toEqual(['openai', 'elevenlabs', 'cartesia']);
     expect(DEFAULT_REALTIME_PROVIDER).toBe('openai');
 
     const config = loadConfig({ ...baseEnv, OPENAI_API_KEY: 'sk-test' });

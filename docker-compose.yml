@@ -40,6 +40,11 @@ services:
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID:-}
       ELEVENLABS_API_BASE_URL: ${ELEVENLABS_API_BASE_URL:-https://api.elevenlabs.io}
+      CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
+      CARTESIA_VOICE_ID: ${CARTESIA_VOICE_ID:-}
+      CARTESIA_TTS_MODEL: ${CARTESIA_TTS_MODEL:-}
+      CARTESIA_STT_MODEL: ${CARTESIA_STT_MODEL:-}
+      TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
       # Optional caller allowlist; empty or unset allows every caller.
       ALLOW_LIST: ${ALLOW_LIST:-}
     ports:

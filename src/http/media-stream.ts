@@ -4,6 +4,9 @@ import type WebSocket from 'ws';
 import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
 import { MediaStreamBridge, type MessageChannel } from '../realtime/bridge.js';
+import { CartesiaBridge } from '../realtime/cartesia-bridge.js';
+import { cartesiaSocket, connectCartesiaStt, connectCartesiaTts } from '../realtime/cartesia-connection.js';
+import { cartesiaLanguage } from '../realtime/cartesia-protocol.js';
 import { ElevenLabsBridge } from '../realtime/elevenlabs-bridge.js';
 import { connectElevenLabsAgent } from '../realtime/elevenlabs-connection.js';
 import { connectOpenAiRealtime } from '../realtime/openai-connection.js';
@@ -247,6 +250,55 @@ async function openBridge(
     socket.once('close', () => clearTimeout(maxDurationTimer));
     providerSocket.once('close', () => clearTimeout(maxDurationTimer));
   };
+
+  if (config.voiceProvider === 'cartesia') {
+    const language = cartesiaLanguage(agent);
+    const connectOptions = {
+      apiKey: config.cartesiaApiKey,
+      baseUrl: config.cartesiaWsBaseUrl,
+      version: config.cartesiaVersion,
+    };
+    // Both sockets are opened before any audio flows, so the first caller frame is never
+    // dropped waiting for a half-built pipeline.
+    const [sttSocket, ttsSocket] = await Promise.all([
+      connectCartesiaStt({ ...connectOptions, model: config.cartesiaSttModel, language }),
+      connectCartesiaTts(connectOptions),
+    ]);
+    // Models and the voice id are safe to log; the API key never is.
+    app.log.info(
+      {
+        businessId,
+        callSid,
+        sttModel: config.cartesiaSttModel,
+        ttsModel: config.cartesiaTtsModel,
+        llmModel: config.textLlmModel,
+        language: language ?? null,
+      },
+      'Cartesia pipeline opened',
+    );
+
+    const bridge = new CartesiaBridge({
+      twilio: twilioChannel,
+      stt: cartesiaSocket(sttSocket),
+      tts: cartesiaSocket(ttsSocket),
+      agent,
+      businessId,
+      callSid,
+      callId: call?.id ?? null,
+      callerNumber: call?.fromNumber ?? null,
+      ttsModel: config.cartesiaTtsModel,
+      voiceId: config.cartesiaVoiceId,
+      llm: { baseUrl: config.textLlmBaseUrl, apiKey: config.textLlmApiKey, model: config.textLlmModel },
+      logger: app.log,
+      endCall,
+      onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId),
+    });
+
+    guardDuration(() => bridge.close('max-duration'), sttSocket);
+    ttsSocket.once('close', () => bridge.close('tts-closed'));
+    bridge.start();
+    return;
+  }
 
   if (config.voiceProvider === 'elevenlabs') {
     const elevenLabsSocket = await connectElevenLabsAgent({

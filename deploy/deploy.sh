@@ -263,6 +263,7 @@ rollback_release() {
 update_runtime_secrets() {
   local twilio_account_sid twilio_auth_token openai_api_key allow_list temp_env
   local voice_provider elevenlabs_api_key elevenlabs_agent_id
+  local cartesia_api_key cartesia_voice_id
 
   IFS= read -r twilio_account_sid
   IFS= read -r twilio_auth_token
@@ -274,9 +275,13 @@ update_runtime_secrets() {
   voice_provider=''
   elevenlabs_api_key=''
   elevenlabs_agent_id=''
+  cartesia_api_key=''
+  cartesia_voice_id=''
   IFS= read -r voice_provider || true
   IFS= read -r elevenlabs_api_key || true
   IFS= read -r elevenlabs_agent_id || true
+  IFS= read -r cartesia_api_key || true
+  IFS= read -r cartesia_voice_id || true
   [[ -n "$voice_provider" ]] || voice_provider=openai
 
   [[ "$twilio_account_sid" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
@@ -287,27 +292,39 @@ update_runtime_secrets() {
     log 'TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.'
     return 1
   }
-  [[ "$voice_provider" == openai || "$voice_provider" == elevenlabs ]] || {
-    log 'VOICE_PROVIDER must be either openai or elevenlabs.'
-    return 1
+  case "$voice_provider" in
+    openai|elevenlabs|cartesia) ;;
+    *)
+      log 'VOICE_PROVIDER must be one of openai, elevenlabs, or cartesia.'
+      return 1
+      ;;
+  esac
+
+  require_secret() {
+    local name="$1" value="$2"
+    [[ -n "$value" && "$value" != *$'\r'* ]] || {
+      log "$name must be a non-empty, single-line value when VOICE_PROVIDER is $voice_provider."
+      return 1
+    }
   }
+
   # Only the selected provider's credentials have to be present, so a deployment that
-  # runs on one provider never has to carry a placeholder secret for the other.
-  if [[ "$voice_provider" == openai ]]; then
-    [[ -n "$openai_api_key" && "$openai_api_key" != *$'\r'* ]] || {
-      log 'OPENAI_API_KEY must be a non-empty, single-line secret when VOICE_PROVIDER is openai.'
-      return 1
-    }
-  else
-    [[ -n "$elevenlabs_api_key" && "$elevenlabs_api_key" != *$'\r'* ]] || {
-      log 'ELEVENLABS_API_KEY must be a non-empty, single-line secret when VOICE_PROVIDER is elevenlabs.'
-      return 1
-    }
-    [[ -n "$elevenlabs_agent_id" && "$elevenlabs_agent_id" != *$'\r'* ]] || {
-      log 'ELEVENLABS_AGENT_ID must be a non-empty, single-line value when VOICE_PROVIDER is elevenlabs.'
-      return 1
-    }
-  fi
+  # runs on one provider never has to carry a placeholder secret for the others.
+  case "$voice_provider" in
+    openai)
+      require_secret OPENAI_API_KEY "$openai_api_key" || return 1
+      ;;
+    elevenlabs)
+      require_secret ELEVENLABS_API_KEY "$elevenlabs_api_key" || return 1
+      require_secret ELEVENLABS_AGENT_ID "$elevenlabs_agent_id" || return 1
+      ;;
+    cartesia)
+      require_secret CARTESIA_API_KEY "$cartesia_api_key" || return 1
+      require_secret CARTESIA_VOICE_ID "$cartesia_voice_id" || return 1
+      # Cartesia covers speech only; the reasoning turn runs on the OpenAI text model.
+      require_secret OPENAI_API_KEY "$openai_api_key" || return 1
+      ;;
+  esac
   # Empty means "no allowlist"; anything else must be E.164 numbers separated by commas.
   [[ -z "$allow_list" || "$allow_list" =~ ^[[:space:]]*\+[1-9][0-9]{7,14}([[:space:]]*,[[:space:]]*\+[1-9][0-9]{7,14})*[[:space:]]*$ ]] || {
     log 'ALLOW_LIST must be empty or a comma-separated list of E.164 numbers.'
@@ -327,7 +344,9 @@ update_runtime_secrets() {
     !/^[[:space:]]*ALLOW_LIST[[:space:]]*=/ &&
     !/^[[:space:]]*VOICE_PROVIDER[[:space:]]*=/ &&
     !/^[[:space:]]*ELEVENLABS_API_KEY[[:space:]]*=/ &&
-    !/^[[:space:]]*ELEVENLABS_AGENT_ID[[:space:]]*=/
+    !/^[[:space:]]*ELEVENLABS_AGENT_ID[[:space:]]*=/ &&
+    !/^[[:space:]]*CARTESIA_API_KEY[[:space:]]*=/ &&
+    !/^[[:space:]]*CARTESIA_VOICE_ID[[:space:]]*=/
   ' "$ENV_FILE" > "$temp_env"
   printf 'TWILIO_ACCOUNT_SID=%s\n' "$twilio_account_sid" >> "$temp_env"
   printf 'TWILIO_AUTH_TOKEN=%s\n' "$twilio_auth_token" >> "$temp_env"
@@ -336,6 +355,8 @@ update_runtime_secrets() {
   printf 'VOICE_PROVIDER=%s\n' "$voice_provider" >> "$temp_env"
   printf 'ELEVENLABS_API_KEY=%s\n' "$elevenlabs_api_key" >> "$temp_env"
   printf 'ELEVENLABS_AGENT_ID=%s\n' "$elevenlabs_agent_id" >> "$temp_env"
+  printf 'CARTESIA_API_KEY=%s\n' "$cartesia_api_key" >> "$temp_env"
+  printf 'CARTESIA_VOICE_ID=%s\n' "$cartesia_voice_id" >> "$temp_env"
   chmod 0600 "$temp_env"
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN

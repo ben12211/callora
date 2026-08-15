@@ -75,7 +75,7 @@ ELEVENLABS_AGENT_ID=
 ALLOW_LIST=
 ```
 
-`VOICE_PROVIDER` selects the realtime backend and accepts only `openai` (the default) or `elevenlabs`. Only the selected provider's credentials are required: an OpenAI deployment can leave both `ELEVENLABS_*` values empty, and an ElevenLabs deployment can leave `OPENAI_API_KEY` empty. The application refuses to start if the selected provider's credentials are missing, and the deployment fails the same check before it touches the server.
+`VOICE_PROVIDER` selects the realtime backend and accepts only `openai` (the default), `elevenlabs`, or `cartesia`. Selecting `cartesia` additionally requires `OPENAI_API_KEY`, because Cartesia supplies speech but not reasoning. Only the selected provider's credentials are required: an OpenAI deployment can leave both `ELEVENLABS_*` values empty, and an ElevenLabs deployment can leave `OPENAI_API_KEY` empty. The application refuses to start if the selected provider's credentials are missing, and the deployment fails the same check before it touches the server.
 
 `ALLOW_LIST` is optional and is overwritten from the GitHub secret on every deployment, exactly like the Twilio and OpenAI credentials. Set the secret to a comma-separated list of E.164 numbers to restrict who can reach the agent; clear it to allow every caller again. A malformed value fails the deployment rather than silently blocking calls.
 
@@ -106,6 +106,7 @@ Repository Secrets:
 | `OPENAI_API_KEY` | OpenAI API key with Realtime access. Required only when `VOICE_PROVIDER` is `openai` |
 | `ELEVENLABS_API_KEY` | ElevenLabs API key. Required only when `VOICE_PROVIDER` is `elevenlabs` |
 | `ELEVENLABS_AGENT_ID` | ElevenLabs agent id. Required only when `VOICE_PROVIDER` is `elevenlabs` |
+| `CARTESIA_API_KEY` | Cartesia API key. Required only when `VOICE_PROVIDER` is `cartesia` |
 | `ALLOW_LIST` | Optional. Comma-separated E.164 numbers allowed to reach the agent; leave unset or empty to allow every caller |
 
 Repository Variables:
@@ -113,7 +114,8 @@ Repository Variables:
 | Variable | Value |
 | --- | --- |
 | `DOCKER_HUB_USERNAME` | Docker Hub account or organization that owns the private `callora` repository |
-| `VOICE_PROVIDER` | Optional. `openai` (default) or `elevenlabs`. A Repository Secret of the same name is also accepted, but a Variable is preferred: GitHub masks secret values in workflow logs, so storing it as a secret hides the selected provider from the deployment log |
+| `CARTESIA_VOICE_ID` | Sonic voice UUID. Required only when `VOICE_PROVIDER` is `cartesia`. Not sensitive, so a Variable is preferred; a Secret of the same name is also accepted |
+| `VOICE_PROVIDER` | Optional. `openai` (default), `elevenlabs`, or `cartesia`. A Repository Secret of the same name is also accepted, but a Variable is preferred: GitHub masks secret values in workflow logs, so storing it as a secret hides the selected provider from the deployment log |
 
 No GHCR credentials, `GITHUB_TOKEN` package permissions, GitHub environment secrets, or database secrets are used by the workflow. The deploy job continues to target the existing `production` environment so any protection rules or required reviewers remain in force; its credentials still come only from the Repository Secrets above. Twilio credentials are sent to the VM over the existing SSH connection through standard input and are never printed or included in a remote command line.
 
