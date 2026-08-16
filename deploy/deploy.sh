@@ -264,6 +264,7 @@ update_runtime_secrets() {
   local twilio_account_sid twilio_auth_token openai_api_key allow_list temp_env
   local voice_provider elevenlabs_api_key elevenlabs_agent_id
   local cartesia_api_key cartesia_voice_id
+  local admin_email admin_password admin_api_key
 
   IFS= read -r twilio_account_sid
   IFS= read -r twilio_auth_token
@@ -282,6 +283,14 @@ update_runtime_secrets() {
   IFS= read -r elevenlabs_agent_id || true
   IFS= read -r cartesia_api_key || true
   IFS= read -r cartesia_voice_id || true
+  # Control-plane credentials, optional so an older workflow that sends nothing here
+  # still deploys; the dashboard then keeps whatever administrator already exists.
+  admin_email=''
+  admin_password=''
+  admin_api_key=''
+  IFS= read -r admin_email || true
+  IFS= read -r admin_password || true
+  IFS= read -r admin_api_key || true
   [[ -n "$voice_provider" ]] || voice_provider=openai
 
   [[ "$twilio_account_sid" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
@@ -325,6 +334,21 @@ update_runtime_secrets() {
       require_secret OPENAI_API_KEY "$openai_api_key" || return 1
       ;;
   esac
+  # Both halves of the bootstrap administrator are needed, or neither.
+  if [[ -n "$admin_email" || -n "$admin_password" ]]; then
+    [[ "$admin_email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || {
+      log 'ADMIN_EMAIL must be a single email address when ADMIN_PASSWORD is set.'
+      return 1
+    }
+    [[ ${#admin_password} -ge 12 ]] || {
+      log 'ADMIN_PASSWORD must be at least 12 characters.'
+      return 1
+    }
+  fi
+  [[ -z "$admin_api_key" || ${#admin_api_key} -ge 16 ]] || {
+    log 'ADMIN_API_KEY must be at least 16 characters when set.'
+    return 1
+  }
   # Empty means "no allowlist"; anything else must be E.164 numbers separated by commas.
   [[ -z "$allow_list" || "$allow_list" =~ ^[[:space:]]*\+[1-9][0-9]{7,14}([[:space:]]*,[[:space:]]*\+[1-9][0-9]{7,14})*[[:space:]]*$ ]] || {
     log 'ALLOW_LIST must be empty or a comma-separated list of E.164 numbers.'
@@ -346,7 +370,10 @@ update_runtime_secrets() {
     !/^[[:space:]]*ELEVENLABS_API_KEY[[:space:]]*=/ &&
     !/^[[:space:]]*ELEVENLABS_AGENT_ID[[:space:]]*=/ &&
     !/^[[:space:]]*CARTESIA_API_KEY[[:space:]]*=/ &&
-    !/^[[:space:]]*CARTESIA_VOICE_ID[[:space:]]*=/
+    !/^[[:space:]]*CARTESIA_VOICE_ID[[:space:]]*=/ &&
+    !/^[[:space:]]*ADMIN_EMAIL[[:space:]]*=/ &&
+    !/^[[:space:]]*ADMIN_PASSWORD[[:space:]]*=/ &&
+    !/^[[:space:]]*ADMIN_API_KEY[[:space:]]*=/
   ' "$ENV_FILE" > "$temp_env"
   printf 'TWILIO_ACCOUNT_SID=%s\n' "$twilio_account_sid" >> "$temp_env"
   printf 'TWILIO_AUTH_TOKEN=%s\n' "$twilio_auth_token" >> "$temp_env"
@@ -357,6 +384,9 @@ update_runtime_secrets() {
   printf 'ELEVENLABS_AGENT_ID=%s\n' "$elevenlabs_agent_id" >> "$temp_env"
   printf 'CARTESIA_API_KEY=%s\n' "$cartesia_api_key" >> "$temp_env"
   printf 'CARTESIA_VOICE_ID=%s\n' "$cartesia_voice_id" >> "$temp_env"
+  printf 'ADMIN_EMAIL=%s\n' "$admin_email" >> "$temp_env"
+  printf 'ADMIN_PASSWORD=%s\n' "$admin_password" >> "$temp_env"
+  printf 'ADMIN_API_KEY=%s\n' "$admin_api_key" >> "$temp_env"
   chmod 0600 "$temp_env"
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN

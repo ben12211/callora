@@ -6,12 +6,15 @@ This push deliberately does **not** include AI, WebSockets, Twilio Media Streams
 
 ## What is included
 
+- Server-rendered admin control plane at `/dashboard` behind a password login
 - Fastify + TypeScript HTTP service
 - PostgreSQL schema, migration runner, and idempotent example seed
 - Multi-tenant business lookup by E.164 `To` number only
 - Signed Twilio voice webhook returning TwiML
 - Signed Twilio call-status callback
-- Business CRUD and read-only call APIs
+- Business CRUD, per-business agent configuration, and read-only call APIs, all behind authentication
+- Per-business voice provider selection across OpenAI, ElevenLabs, and Cartesia
+- Provider status reporting and an audit trail of administrative changes
 - Database-aware health endpoint
 - Docker and Docker Compose setup using ARM64-compatible official images
 - Unit/API tests, ESLint, and strict TypeScript compilation
@@ -31,13 +34,17 @@ No paid resources are created by this repository.
 2. Set `TWILIO_AUTH_TOKEN` to the Auth Token from the Twilio Console.
 3. Set `PUBLIC_BASE_URL` to the exact public origin Twilio will call, with no trailing slash. Example: `https://abc123.example-tunnel.app`.
 4. Set `OPENAI_API_KEY` to an OpenAI API key with Realtime access; it is used server-side for the speech-to-speech call bridge.
-5. Start the stack:
+5. Set `ADMIN_EMAIL` and `ADMIN_PASSWORD`; they create the dashboard administrator. The Compose defaults (`admin@callora.local` / `callora-dev-password`) are for local development only.
+6. Start the stack:
 
    ```bash
    docker compose up --build
    ```
 
-The API is available at `http://localhost:3000`. The container runs migrations and the idempotent seed before starting. PostgreSQL data is retained in the `postgres_data` volume.
+The API is available at `http://localhost:3000` and the dashboard at
+`http://localhost:3000/dashboard`. The container runs migrations and the idempotent seed
+before starting, and creates the administrator from the environment. PostgreSQL data is
+retained in the `postgres_data` volume.
 
 Check health:
 
@@ -56,8 +63,11 @@ pnpm db:seed
 pnpm dev
 ```
 
+Then open `http://localhost:3000/dashboard` and sign in with `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
+
 The example seed creates:
 
+- Administrator: `ADMIN_EMAIL`, when it and `ADMIN_PASSWORD` are set
 - Business: `Callora Demo Business`
 - Twilio number: `+15551234567` (replace it through the API with a number you own)
 - ID: `00000000-0000-4000-8000-000000000001`
@@ -189,18 +199,81 @@ export const allow_list = [
 - `From` is used for this check only. Business routing always resolves the tenant from `To`.
 - Startup logs one line naming the source (`ALLOW_LIST` or `allowlist.local.js`) and whether the allowlist is active.
 
+## Control plane
+
+The dashboard is served by the same process at `http://localhost:3000/dashboard`. It is
+plain server-rendered HTML: there is no separate frontend to build, install, or deploy.
+
+Sign in with `ADMIN_EMAIL` and `ADMIN_PASSWORD` from your environment. Those two values
+create the administrator on startup and reset its password whenever the value changes, so
+a fresh stack always has a way in. Change the password from **Settings** afterwards, which
+signs every session out; leave the environment values blank from then on, or the next
+restart resets the password back.
+
+The intended flow is:
+
+```text
+Login -> Create Business -> Configure Agent -> Choose Voice Provider/Voice -> Save -> Call the number
+```
+
+| Page | What it does |
+| --- | --- |
+| Home | Business, agent, and call counts, plus recent calls and admin changes |
+| Businesses | List, create, edit, enable, and disable businesses |
+| Business detail | Business fields, the agent configuration form, recent calls, and that business's change history |
+| Calls | Every recorded call, filterable by business, with a detail page per call |
+| Providers | Which execution providers this deployment can run, and what is missing for the ones it cannot |
+| Audit history | Administrative changes, newest first |
+| Settings | Your account, password rotation, platform configuration, and the administrator list |
+
+A business is a Callora tenant. Each one owns exactly one agent configuration:
+
+| Field | Meaning |
+| --- | --- |
+| Enabled | Off answers with the business's static greeting instead of the realtime agent |
+| Language | BCP-47 tag such as `he-IL`; the agent always answers in it |
+| Greeting | The first thing the agent says |
+| Instructions | Business context only; the Callora phone-agent policy is applied on top and cannot be overridden |
+| Voice provider | `openai`, `elevenlabs`, or `cartesia`, chosen per business |
+| Voice | OpenAI voice name, ElevenLabs voice id, or Cartesia Sonic voice UUID. Blank keeps the provider's own configured voice; OpenAI requires one |
+| Model | OpenAI realtime model, or the reasoning model for the Cartesia pipeline |
+
+Provider credentials belong to the platform and are set only through the environment.
+They are never shown in the dashboard and never editable there. An agent cannot be
+enabled on a provider this deployment holds no credentials for, and if those credentials
+disappear later the call falls back to the static greeting rather than failing.
+
+## Authentication
+
+Everything under `/api` and `/dashboard` requires authentication. Two credentials are
+accepted:
+
+- The dashboard session cookie, issued by the login form. Sessions are stored server-side,
+  only their SHA-256 is persisted, and every form post carries a per-session CSRF token.
+- `ADMIN_API_KEY`, sent as an `X-Api-Key` header. This is a machine credential for scripts
+  and deployment checks; it cannot drive the dashboard forms. Leave it unset to disable it.
+
+The Twilio webhooks are deliberately outside this: they authenticate with Twilio's own
+request signature, exactly as before.
+
 ## Endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Service and database health |
+| `GET` | `/health` | Service and database health (unauthenticated) |
+| `GET` | `/dashboard/*` | Admin control plane (session cookie) |
 | `GET` | `/api/businesses` | List businesses |
-| `POST` | `/api/businesses` | Create a business |
-| `GET` | `/api/businesses/:id` | Read a business |
+| `POST` | `/api/businesses` | Create a business, with a disabled agent row |
+| `GET` | `/api/businesses/:id` | Read a business and its agent |
 | `PATCH` | `/api/businesses/:id` | Update a business |
 | `DELETE` | `/api/businesses/:id` | Delete a business if it has no call history |
+| `GET` | `/api/businesses/:id/agent` | Read the agent configuration |
+| `PUT` | `/api/businesses/:id/agent` | Replace the agent configuration |
+| `GET` | `/api/providers` | Provider availability, without credentials |
 | `GET` | `/api/calls?businessId=&limit=&offset=` | List calls (maximum page size 100) |
 | `GET` | `/api/calls/:id` | Read a call |
+| `GET` | `/api/audit?entityType=&entityId=&limit=&offset=` | Administrative history |
+| `GET` | `/api/me` | The authenticated caller |
 | `POST` | `/webhooks/twilio/voice` | Signed incoming-call webhook; returns TwiML |
 | `POST` | `/webhooks/twilio/call-status` | Signed call lifecycle callback |
 
@@ -209,11 +282,29 @@ Example business creation:
 ```bash
 curl -X POST http://localhost:3000/api/businesses \
   -H 'content-type: application/json' \
+  -H "x-api-key: $ADMIN_API_KEY" \
   -d '{
     "name": "Acme Dental",
     "phoneNumber": "+14155552671",
     "greeting": "Thanks for calling Acme Dental. How can we help?",
     "active": true
+  }'
+```
+
+Example agent configuration:
+
+```bash
+curl -X PUT "http://localhost:3000/api/businesses/$BUSINESS_ID/agent" \
+  -H 'content-type: application/json' \
+  -H "x-api-key: $ADMIN_API_KEY" \
+  -d '{
+    "enabled": true,
+    "language": "he-IL",
+    "greeting": "Hello, how can I help?",
+    "instructions": "Answer questions about the clinic and book appointments.",
+    "voiceProvider": "openai",
+    "voice": "marin",
+    "realtimeModel": "gpt-realtime-2.1"
   }'
 ```
 
@@ -226,9 +317,11 @@ src/
   app.ts                  application factory and error handling
   server.ts               process startup and graceful shutdown
   config.ts               validated environment configuration
+  auth/                   password hashing, sessions, bootstrap administrator
   db/                     PostgreSQL pool, store, migrations, seed
   domain/                 persisted domain types
   http/                   API routes, validation, Twilio signature guard
+  http/dashboard/         server-rendered control plane pages
   realtime/               policy, protocol builders, and the Twilio<->OpenAI bridge
   telephony/              Twilio REST call termination
   future/interfaces.ts    intentionally unimplemented Push 2+ seams
@@ -240,10 +333,14 @@ test/                     API-level tests using an in-memory store
 
 - Put the backend behind HTTPS and an ingress/reverse proxy suitable for your host.
 - Change the Compose database password outside local development.
-- The CRUD API is intentionally unauthenticated in Push 1; do not expose `/api` publicly before adding authentication and authorization.
+- `/api` and `/dashboard` require authentication. Set a strong `ADMIN_PASSWORD`, and set `ADMIN_API_KEY` only if something other than a browser needs the management API.
+- Serve the dashboard over HTTPS. The session cookie is marked `Secure` only when `PUBLIC_BASE_URL` is an `https://` origin.
 - Keep `TWILIO_AUTH_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`, and all future provider credentials in environment variables or a deployment secret manager.
 - Back up PostgreSQL and monitor webhook errors before onboarding real businesses.
 
-## Recommended Push 2
+## Not in this push
 
-Push 2 should add authenticated admin access with tenant-scoped authorization, then implement the first end-to-end voice conversation path using Twilio Media Streams and OpenAI Realtime. It should include a call state machine, WebSocket lifecycle/reconnect handling, per-business prompt and voice configuration, usage/error telemetry, and integration tests. Tool calling should start with one narrow, mocked business tool before connecting any real CRM, order, or appointment system. WhatsApp and voice cloning should remain separate later pushes.
+These are deliberately absent and belong to later pushes: MCP, Google Calendar, CRM
+connectors, WhatsApp, billing, knowledge/RAG, business-facing customer accounts, and the
+full tool system. The admin model is also intentionally flat — every administrator is a
+platform administrator, and there is no per-tenant authorization yet.

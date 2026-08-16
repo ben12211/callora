@@ -43,15 +43,17 @@ describe('cartesia provider selection', () => {
 
   it('selects cartesia with its own credentials and sane defaults', () => {
     const config = loadConfig(cartesiaEnv);
+    // The platform default for new agents; each business still picks its own provider.
     expect(config.voiceProvider).toBe('cartesia');
-    if (config.voiceProvider !== 'cartesia') throw new Error('expected cartesia');
 
-    expect(config.cartesiaApiKey).toBe('sk_car_test');
-    expect(config.cartesiaVoiceId).toBe('voice-uuid');
-    expect(config.cartesiaTtsModel).toBe(DEFAULT_CARTESIA_TTS_MODEL);
-    expect(config.cartesiaSttModel).toBe(DEFAULT_CARTESIA_STT_MODEL);
+    const cartesia = config.providers.cartesia;
+    if (!cartesia) throw new Error('expected cartesia credentials');
+    expect(cartesia.apiKey).toBe('sk_car_test');
+    expect(cartesia.defaultVoiceId).toBe('voice-uuid');
+    expect(cartesia.ttsModel).toBe(DEFAULT_CARTESIA_TTS_MODEL);
+    expect(cartesia.sttModel).toBe(DEFAULT_CARTESIA_STT_MODEL);
     // Cartesia covers speech only, so the reasoning turn reuses the OpenAI key.
-    expect(config.textLlmApiKey).toBe('sk-llm');
+    expect(cartesia.textLlmApiKey).toBe('sk-llm');
   });
 
   it('requires the cartesia credentials and the LLM key, naming each', () => {

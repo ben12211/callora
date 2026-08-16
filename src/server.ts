@@ -1,4 +1,5 @@
 import { buildApp } from './app.js';
+import { ensureBootstrapAdmin } from './auth/bootstrap.js';
 import { loadConfig } from './config.js';
 import { createPool } from './db/pool.js';
 import { PostgresStore } from './db/postgres-store.js';
@@ -17,7 +18,24 @@ const callerAllowlist = await loadCallerAllowlist(process.cwd(), {
   info: startupLog('info'),
   warn: startupLog('warn'),
 });
+// The dashboard needs at least one account before anyone can sign in.
+await ensureBootstrapAdmin(store, config.auth, {
+  info: startupLog('info'),
+  warn: startupLog('warn'),
+});
 const app = await buildApp({ config, store, callerAllowlist });
+// Expired sessions are already rejected on lookup; this only keeps the table from
+// growing without bound.
+const sessionSweep = setInterval(
+  () => {
+    void store.deleteExpiredAdminSessions().catch((error: unknown) => {
+      app.log.warn({ error }, 'Failed to prune expired admin sessions');
+    });
+  },
+  60 * 60 * 1000,
+);
+sessionSweep.unref();
+
 let shuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {
@@ -25,6 +43,7 @@ async function shutdown(signal: string): Promise<void> {
     return;
   }
   shuttingDown = true;
+  clearInterval(sessionSweep);
   app.log.info({ signal }, 'Shutting down');
   await app.close();
   await pool.end();

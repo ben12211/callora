@@ -33,9 +33,9 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?TWILIO_ACCOUNT_SID is required}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
-      # Which realtime backend answers calls: openai (default) or elevenlabs. The
-      # application requires only the selected provider's credentials, so both sets are
-      # passed through optionally and validated at startup rather than here.
+      # Default provider for newly created agents; each business then picks its own in
+      # the dashboard. Credentials for every provider are passed through optionally, and
+      # a provider becomes selectable once its own credentials are present.
       VOICE_PROVIDER: ${VOICE_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
@@ -52,6 +52,15 @@ services:
       # Cartesia covers speech only; the reasoning turn runs on an OpenAI text model.
       TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
       TEXT_LLM_BASE_URL: ${TEXT_LLM_BASE_URL:-}
+      # Control plane. ADMIN_EMAIL and ADMIN_PASSWORD create the dashboard administrator
+      # and reset its password whenever the value changes; leaving both empty keeps
+      # whatever account already exists. ADMIN_API_KEY is the optional machine credential
+      # for the management API.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_NAME: ${ADMIN_NAME:-}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
       # Optional caller allowlist; empty or unset allows every caller.
       ALLOW_LIST: ${ALLOW_LIST:-}
       DB_STARTUP_RETRIES: 30

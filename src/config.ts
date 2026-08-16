@@ -50,6 +50,14 @@ const configSchema = z
     // speech-to-speech model, so the chat endpoint is configurable independently.
     TEXT_LLM_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_TEXT_LLM_MODEL)),
     TEXT_LLM_BASE_URL: blankAsAbsent(z.string().min(1).default('https://api.openai.com/v1')),
+    // Control plane. The bootstrap administrator is created (and its password reset) on
+    // every start when both values are present, so a fresh stack has a way in.
+    ADMIN_EMAIL: blankAsAbsent(z.email().optional()),
+    ADMIN_PASSWORD: blankAsAbsent(z.string().min(8).optional()),
+    ADMIN_NAME: blankAsAbsent(z.string().min(1).default('Callora Administrator')),
+    /** Optional machine credential for the management API; the dashboard never uses it. */
+    ADMIN_API_KEY: blankAsAbsent(z.string().min(16).optional()),
+    SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(12),
   })
   .superRefine((value, ctx) => {
     // A deployment only needs credentials for the provider it actually uses, so an
@@ -80,6 +88,16 @@ const configSchema = z
     }
   });
 
+export interface AdminAuthConfig {
+  /** Bootstrap administrator, applied at startup when both values are supplied. */
+  bootstrapEmail?: string;
+  bootstrapPassword?: string;
+  bootstrapName: string;
+  /** Machine credential accepted by the management API in place of a session cookie. */
+  apiKey?: string;
+  sessionTtlHours: number;
+}
+
 interface BaseConfig {
   nodeEnv: 'development' | 'test' | 'production';
   host: string;
@@ -89,46 +107,107 @@ interface BaseConfig {
   twilioAuthToken: string;
   twilioAccountSid: string;
   publicBaseUrl: string;
+  auth: AdminAuthConfig;
+  /**
+   * Credentials for every provider this deployment can execute, independent of which one
+   * a given business picked. A `null` entry means the platform has no credentials for
+   * that provider, which the provider status page reports and the call path respects.
+   */
+  providers: ProviderCredentials;
 }
 
-export interface OpenAiVoiceConfig {
-  voiceProvider: 'openai';
-  openaiApiKey: string;
-  openaiRealtimeUrl: string;
-  openaiTranscribeModel: string;
+/** Platform credentials for OpenAI Realtime. Per-call voice and model come from the agent. */
+export interface OpenAiProviderCredentials {
+  apiKey: string;
+  realtimeUrl: string;
+  transcribeModel: string;
 }
 
-export interface ElevenLabsVoiceConfig {
-  voiceProvider: 'elevenlabs';
-  elevenLabsApiKey: string;
-  elevenLabsAgentId: string;
-  elevenLabsApiBaseUrl: string;
+export interface ElevenLabsProviderCredentials {
+  apiKey: string;
+  agentId: string;
+  apiBaseUrl: string;
 }
 
-export interface CartesiaVoiceConfig {
-  voiceProvider: 'cartesia';
-  cartesiaApiKey: string;
-  cartesiaVoiceId: string;
-  cartesiaTtsModel: string;
-  cartesiaSttModel: string;
-  cartesiaVersion: string;
-  cartesiaWsBaseUrl: string;
+export interface CartesiaProviderCredentials {
+  apiKey: string;
+  /** Fallback voice id for agents that did not choose one. */
+  defaultVoiceId?: string;
+  ttsModel: string;
+  sttModel: string;
+  version: string;
+  wsBaseUrl: string;
   /** Reasoning turn; Cartesia covers speech only. */
   textLlmApiKey: string;
   textLlmModel: string;
   textLlmBaseUrl: string;
 }
 
+export interface ProviderCredentials {
+  openai: OpenAiProviderCredentials | null;
+  elevenlabs: ElevenLabsProviderCredentials | null;
+  cartesia: CartesiaProviderCredentials | null;
+}
+
 /**
- * Discriminated on `voiceProvider`, so the media layer cannot read a credential that
- * the selected provider was never required to supply.
+ * One shape for every deployment.
+ *
+ * `voiceProvider` is only the default for newly created agents: each business stores its
+ * own provider, and the call path reads the credentials for that provider out of
+ * `providers`. Credentials live in exactly one place, so there is no second copy to keep
+ * in step. The startup check in the schema still requires the default provider to be
+ * usable, so a deployment cannot come up unable to serve the provider it hands out.
  */
-export type AppConfig = BaseConfig & (OpenAiVoiceConfig | ElevenLabsVoiceConfig | CartesiaVoiceConfig);
+export type AppConfig = BaseConfig & { voiceProvider: RealtimeProvider };
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = configSchema.parse(environment);
 
+  // A provider is "configured" once its own credentials are present, regardless of which
+  // provider VOICE_PROVIDER names. Businesses pick per agent, so several can be live at
+  // once and the status page can show exactly which ones are usable.
+  const providers: ProviderCredentials = {
+    openai: parsed.OPENAI_API_KEY
+      ? {
+          apiKey: parsed.OPENAI_API_KEY,
+          realtimeUrl: parsed.OPENAI_REALTIME_URL,
+          transcribeModel: parsed.OPENAI_TRANSCRIBE_MODEL,
+        }
+      : null,
+    elevenlabs:
+      parsed.ELEVENLABS_API_KEY && parsed.ELEVENLABS_AGENT_ID
+        ? {
+            apiKey: parsed.ELEVENLABS_API_KEY,
+            agentId: parsed.ELEVENLABS_AGENT_ID,
+            apiBaseUrl: parsed.ELEVENLABS_API_BASE_URL.replace(/\/$/, ''),
+          }
+        : null,
+    // Cartesia supplies speech only, so it is unusable without the text LLM key as well.
+    cartesia:
+      parsed.CARTESIA_API_KEY && parsed.OPENAI_API_KEY
+        ? {
+            apiKey: parsed.CARTESIA_API_KEY,
+            ...(parsed.CARTESIA_VOICE_ID ? { defaultVoiceId: parsed.CARTESIA_VOICE_ID } : {}),
+            ttsModel: parsed.CARTESIA_TTS_MODEL,
+            sttModel: parsed.CARTESIA_STT_MODEL,
+            version: parsed.CARTESIA_VERSION,
+            wsBaseUrl: parsed.CARTESIA_WS_BASE_URL.replace(/\/$/, ''),
+            textLlmApiKey: parsed.OPENAI_API_KEY,
+            textLlmModel: parsed.TEXT_LLM_MODEL,
+            textLlmBaseUrl: parsed.TEXT_LLM_BASE_URL.replace(/\/$/, ''),
+          }
+        : null,
+  };
+
   const base: BaseConfig = {
+    providers,
+    auth: {
+      ...(parsed.ADMIN_EMAIL ? { bootstrapEmail: parsed.ADMIN_EMAIL.toLowerCase() } : {}),
+      ...(parsed.ADMIN_PASSWORD ? { bootstrapPassword: parsed.ADMIN_PASSWORD } : {}),
+      bootstrapName: parsed.ADMIN_NAME,
+      ...(parsed.ADMIN_API_KEY ? { apiKey: parsed.ADMIN_API_KEY } : {}),
+      sessionTtlHours: parsed.SESSION_TTL_HOURS,
+    },
     nodeEnv: parsed.NODE_ENV,
     host: parsed.HOST,
     port: parsed.PORT,
@@ -139,41 +218,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     publicBaseUrl: parsed.PUBLIC_BASE_URL,
   };
 
-  if (parsed.VOICE_PROVIDER === 'cartesia') {
-    return {
-      ...base,
-      voiceProvider: 'cartesia',
-      // Non-null: superRefine already rejected a missing value for this provider.
-      cartesiaApiKey: parsed.CARTESIA_API_KEY!,
-      cartesiaVoiceId: parsed.CARTESIA_VOICE_ID!,
-      cartesiaTtsModel: parsed.CARTESIA_TTS_MODEL,
-      cartesiaSttModel: parsed.CARTESIA_STT_MODEL,
-      cartesiaVersion: parsed.CARTESIA_VERSION,
-      cartesiaWsBaseUrl: parsed.CARTESIA_WS_BASE_URL.replace(/\/$/, ''),
-      textLlmApiKey: parsed.OPENAI_API_KEY!,
-      textLlmModel: parsed.TEXT_LLM_MODEL,
-      textLlmBaseUrl: parsed.TEXT_LLM_BASE_URL.replace(/\/$/, ''),
-    };
-  }
-
-  if (parsed.VOICE_PROVIDER === 'elevenlabs') {
-    return {
-      ...base,
-      voiceProvider: 'elevenlabs',
-      // Non-null: superRefine already rejected a missing value for this provider.
-      elevenLabsApiKey: parsed.ELEVENLABS_API_KEY!,
-      elevenLabsAgentId: parsed.ELEVENLABS_AGENT_ID!,
-      elevenLabsApiBaseUrl: parsed.ELEVENLABS_API_BASE_URL.replace(/\/$/, ''),
-    };
-  }
-
-  return {
-    ...base,
-    voiceProvider: 'openai',
-    openaiApiKey: parsed.OPENAI_API_KEY!,
-    openaiRealtimeUrl: parsed.OPENAI_REALTIME_URL,
-    openaiTranscribeModel: parsed.OPENAI_TRANSCRIBE_MODEL,
-  };
+  return { ...base, voiceProvider: parsed.VOICE_PROVIDER };
 }
 
 export type { RealtimeProvider };

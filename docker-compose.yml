@@ -34,7 +34,8 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-AC00000000000000000000000000000000}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-local-development-token}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://callora.example.invalid}
-      # openai (default) or elevenlabs; only the selected provider's credentials are required.
+      # Default provider for newly created agents. Every business picks its own provider
+      # in the dashboard; a provider is usable once its credentials are present below.
       VOICE_PROVIDER: ${VOICE_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-local-development-openai-key}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
@@ -45,6 +46,14 @@ services:
       CARTESIA_TTS_MODEL: ${CARTESIA_TTS_MODEL:-}
       CARTESIA_STT_MODEL: ${CARTESIA_STT_MODEL:-}
       TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
+      # Control plane. These create the dashboard administrator on first start and reset
+      # its password if the value changes; ADMIN_API_KEY is the optional machine
+      # credential for the management API.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@callora.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-callora-dev-password}
+      ADMIN_NAME: ${ADMIN_NAME:-Callora Administrator}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
       # Optional caller allowlist; empty or unset allows every caller.
       ALLOW_LIST: ${ALLOW_LIST:-}
     ports:

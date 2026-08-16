@@ -1,20 +1,12 @@
 import formbody from '@fastify/formbody';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
-import type { AppConfig } from './config.js';
-import type { DataStore } from './db/store.js';
-import type { CallerAllowlist } from './dev/caller-allowlist.js';
+import { AuthService } from './auth/sessions.js';
+import { AuditRecorder } from './http/audit.js';
+import type { RouteDependencies } from './http/dependencies.js';
 import { registerRoutes } from './http/routes.js';
-import type { CallTerminator } from './telephony/call-terminator.js';
 
-interface AppDependencies {
-  config: AppConfig;
-  store: DataStore;
-  /** Overridable so tests never reach the Twilio REST API. */
-  callTerminator?: CallTerminator;
-  /** Development-only caller gate; absent means every caller is allowed. */
-  callerAllowlist?: CallerAllowlist;
-}
+type AppDependencies = RouteDependencies;
 
 function databaseErrorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null || !('code' in error)) {
@@ -45,7 +37,23 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
       maxPayload: 256 * 1024,
     },
   });
-  await registerRoutes(app, dependencies);
+  // Dashboard pages carry tenant configuration behind a session cookie; a shared or
+  // browser cache holding them would outlive the session that was allowed to see them.
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (request.url.startsWith('/dashboard')) {
+      void reply.header('cache-control', 'no-store');
+      void reply.header('referrer-policy', 'same-origin');
+      void reply.header('x-content-type-options', 'nosniff');
+      void reply.header('x-frame-options', 'DENY');
+    }
+    return payload;
+  });
+
+  await registerRoutes(app, {
+    ...dependencies,
+    auth: new AuthService(dependencies.store, config.auth),
+    audit: new AuditRecorder(dependencies.store, app.log),
+  });
 
   app.setErrorHandler((error, request, reply) => {
     const code = databaseErrorCode(error);

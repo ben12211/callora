@@ -18,6 +18,7 @@ export const agent: AgentConfig = {
   language: 'he-IL',
   voice: 'marin',
   realtimeModel: 'gpt-realtime-2.1',
+  voiceProvider: 'openai',
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

@@ -1,40 +1,28 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import twilio from 'twilio';
-import type { AppConfig } from '../config.js';
-import type { DataStore } from '../db/store.js';
-import { normalizeE164, type CallerAllowlist } from '../dev/caller-allowlist.js';
-import type { CallTerminator } from '../telephony/call-terminator.js';
+import { normalizeE164 } from '../dev/caller-allowlist.js';
+import { registerApiRoutes } from './api-routes.js';
+import { registerDashboardRoutes } from './dashboard/routes.js';
+import type { ControlPlaneDependencies } from './dependencies.js';
 import { MEDIA_STREAM_PATH, registerMediaStreamRoute } from './media-stream.js';
 import { createStreamToken } from './stream-token.js';
-import {
-  callStatusSchema,
-  callsQuerySchema,
-  createBusinessSchema,
-  e164Schema,
-  idParamsSchema,
-  incomingCallSchema,
-  updateBusinessSchema,
-} from './schemas.js';
+import { callStatusSchema, e164Schema, incomingCallSchema } from './schemas.js';
 import { twilioSignatureGuard } from './twilio-signature.js';
-
-interface RouteDependencies {
-  config: AppConfig;
-  store: DataStore;
-  /** Overridable so tests never reach the Twilio REST API. */
-  callTerminator?: CallTerminator;
-  /** Development-only caller gate; absent means every caller is allowed. */
-  callerAllowlist?: CallerAllowlist;
-}
 
 function validationError(reply: FastifyReply, issues: unknown): void {
   void reply.code(400).send({ error: 'Invalid request', issues });
 }
 
-export async function registerRoutes(app: FastifyInstance, dependencies: RouteDependencies): Promise<void> {
+export async function registerRoutes(
+  app: FastifyInstance,
+  dependencies: ControlPlaneDependencies,
+): Promise<void> {
   const { config, store } = dependencies;
   const allowlist = dependencies.callerAllowlist ?? { enabled: false, allows: () => true };
 
   registerMediaStreamRoute(app, dependencies);
+  await registerApiRoutes(app, dependencies);
+  await registerDashboardRoutes(app, dependencies);
 
   app.get('/health', async (_request, reply) => {
     try {
@@ -44,87 +32,6 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
       app.log.error({ error }, 'Database health check failed');
       return reply.code(503).send({ status: 'unhealthy' });
     }
-  });
-
-  app.get('/api/businesses', async () => ({ data: await store.listBusinesses() }));
-
-  app.get('/api/businesses/:id', async (request, reply) => {
-    const parsed = idParamsSchema.safeParse(request.params);
-    if (!parsed.success) {
-      validationError(reply, parsed.error.issues);
-      return;
-    }
-    const business = await store.getBusinessById(parsed.data.id);
-    if (!business) {
-      return reply.code(404).send({ error: 'Business not found' });
-    }
-    return { data: business };
-  });
-
-  app.post('/api/businesses', async (request, reply) => {
-    const parsed = createBusinessSchema.safeParse(request.body);
-    if (!parsed.success) {
-      validationError(reply, parsed.error.issues);
-      return;
-    }
-    const business = await store.createBusiness(parsed.data);
-    return reply.code(201).send({ data: business });
-  });
-
-  app.patch('/api/businesses/:id', async (request, reply) => {
-    const params = idParamsSchema.safeParse(request.params);
-    const body = updateBusinessSchema.safeParse(request.body);
-    if (!params.success || !body.success) {
-      validationError(reply, [
-        ...(params.success ? [] : params.error.issues),
-        ...(body.success ? [] : body.error.issues),
-      ]);
-      return;
-    }
-    const business = await store.updateBusiness(params.data.id, body.data);
-    if (!business) {
-      return reply.code(404).send({ error: 'Business not found' });
-    }
-    return { data: business };
-  });
-
-  app.delete('/api/businesses/:id', async (request, reply) => {
-    const parsed = idParamsSchema.safeParse(request.params);
-    if (!parsed.success) {
-      validationError(reply, parsed.error.issues);
-      return;
-    }
-    const deleted = await store.deleteBusiness(parsed.data.id);
-    if (deleted) {
-      return reply.code(204).send();
-    }
-    const existing = await store.getBusinessById(parsed.data.id);
-    if (existing) {
-      return reply.code(409).send({ error: 'Business with call history cannot be deleted; deactivate it instead' });
-    }
-    return reply.code(404).send({ error: 'Business not found' });
-  });
-
-  app.get('/api/calls', async (request, reply) => {
-    const parsed = callsQuerySchema.safeParse(request.query);
-    if (!parsed.success) {
-      validationError(reply, parsed.error.issues);
-      return;
-    }
-    return { data: await store.listCalls(parsed.data) };
-  });
-
-  app.get('/api/calls/:id', async (request, reply) => {
-    const parsed = idParamsSchema.safeParse(request.params);
-    if (!parsed.success) {
-      validationError(reply, parsed.error.issues);
-      return;
-    }
-    const call = await store.getCallById(parsed.data.id);
-    if (!call) {
-      return reply.code(404).send({ error: 'Call not found' });
-    }
-    return { data: call };
   });
 
   app.post(
@@ -179,16 +86,29 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
       });
 
       const agent = await store.getAgentConfig(business.id);
+      // The business picks its own provider; the platform still has to hold credentials
+      // for it. Without them the call falls back to the static greeting instead of
+      // opening a stream that could never connect.
+      const providerReady = agent ? config.providers[agent.voiceProvider] !== null : false;
       app.log.info(
         {
           businessId: business.id,
           callSid: parsed.data.CallSid,
           agentEnabled: Boolean(agent?.enabled),
+          voiceProvider: agent?.voiceProvider ?? null,
+          providerReady,
         },
         'Business resolved for incoming call',
       );
 
-      if (agent?.enabled) {
+      if (agent?.enabled && !providerReady) {
+        app.log.error(
+          { businessId: business.id, callSid: parsed.data.CallSid, voiceProvider: agent.voiceProvider },
+          'The provider this business selected has no platform credentials; answering with the static greeting',
+        );
+      }
+
+      if (agent?.enabled && providerReady) {
         // <Connect><Stream> is required for bidirectional audio; <Start><Stream> is one-way.
         const token = createStreamToken(config.twilioAuthToken, {
           callSid: parsed.data.CallSid,

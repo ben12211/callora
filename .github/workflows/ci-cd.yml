@@ -167,6 +167,11 @@ jobs:
           CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
           CARTESIA_VOICE_ID: ${{ vars.CARTESIA_VOICE_ID || secrets.CARTESIA_VOICE_ID }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
+          # Control plane. Together these create (or reset) the dashboard administrator;
+          # ADMIN_API_KEY is the optional machine credential for the management API.
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || secrets.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
           RELEASE_SHA: ${{ github.sha }}
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
@@ -280,6 +285,24 @@ jobs:
                   print('ALLOW_LIST must be E.164 numbers, e.g. +972501234567,+972509998888.', file=sys.stderr)
                   sys.exit(1)
 
+          # The dashboard needs an administrator; both halves are supplied together or
+          # neither, and an existing account is left alone when they are absent.
+          admin_email = (os.environ.get('ADMIN_EMAIL') or '').strip()
+          admin_password = os.environ.get('ADMIN_PASSWORD') or ''
+          if bool(admin_email) != bool(admin_password):
+              print('ADMIN_EMAIL and ADMIN_PASSWORD must be set together.', file=sys.stderr)
+              sys.exit(1)
+          if admin_email and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', admin_email):
+              print('ADMIN_EMAIL must be a single email address.', file=sys.stderr)
+              sys.exit(1)
+          if admin_password and len(admin_password.strip()) < 12:
+              print('ADMIN_PASSWORD must be at least 12 characters.', file=sys.stderr)
+              sys.exit(1)
+          admin_api_key = (os.environ.get('ADMIN_API_KEY') or '').strip()
+          if admin_api_key and len(admin_api_key) < 16:
+              print('ADMIN_API_KEY must be at least 16 characters.', file=sys.stderr)
+              sys.exit(1)
+
           release_sha = os.environ['RELEASE_SHA']
           if not re.fullmatch(r'[0-9a-f]{40}', release_sha):
               print('The release identifier must be a full commit SHA.', file=sys.stderr)
@@ -323,6 +346,9 @@ jobs:
           CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
           CARTESIA_VOICE_ID: ${{ vars.CARTESIA_VOICE_ID || secrets.CARTESIA_VOICE_ID }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || secrets.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
           DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
           SSH_DIR: ${{ runner.temp }}/callora-ssh
           CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -420,10 +446,33 @@ jobs:
             "${SSH[@]}" "$REMOTE" \
               "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
           "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
-          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+          ADMIN_EMAIL="$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.stdout.write((os.environ.get('ADMIN_EMAIL') or '').strip())
+          PY
+          )"
+          ADMIN_PASSWORD="$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.stdout.write((os.environ.get('ADMIN_PASSWORD') or '').strip())
+          PY
+          )"
+          ADMIN_API_KEY="$(python3 - <<'PY'
+          import os
+          import sys
+
+          sys.stdout.write((os.environ.get('ADMIN_API_KEY') or '').strip())
+          PY
+          )"
+
+          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
             "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" "$ALLOW_LIST" \
             "$VOICE_PROVIDER" "$ELEVENLABS_API_KEY" "$ELEVENLABS_AGENT_ID" \
-            "$CARTESIA_API_KEY" "$CARTESIA_VOICE_ID" | \
+            "$CARTESIA_API_KEY" "$CARTESIA_VOICE_ID" \
+            "$ADMIN_EMAIL" "$ADMIN_PASSWORD" "$ADMIN_API_KEY" | \
             "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
           if ! "${SSH[@]}" "$REMOTE" \

@@ -1,3 +1,5 @@
+import type { RealtimeProvider } from '../realtime/provider.js';
+
 export interface Business {
   id: string;
   name: string;
@@ -25,9 +27,83 @@ export interface AgentConfig {
   language: string;
   voice: string;
   realtimeModel: string;
+  /** Execution provider that answers this business's calls. */
+  voiceProvider: RealtimeProvider;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** Full agent configuration written from the control plane; every field is replaced. */
+export interface UpsertAgentConfigInput {
+  instructions: string;
+  greeting: string;
+  language: string;
+  voice: string;
+  realtimeModel: string;
+  voiceProvider: RealtimeProvider;
+  enabled: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  passwordHash: string;
+  active: boolean;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreateAdminUserInput {
+  email: string;
+  name: string;
+  passwordHash: string;
+}
+
+export interface AdminSession {
+  id: string;
+  adminUserId: string;
+  csrfToken: string;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+export interface CreateAdminSessionInput {
+  adminUserId: string;
+  tokenHash: string;
+  csrfToken: string;
+  expiresAt: Date;
+}
+
+export interface AuditEvent {
+  id: string;
+  actorId: string | null;
+  actorLabel: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  summary: string;
+  details: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export interface RecordAuditEventInput {
+  actorId: string | null;
+  actorLabel: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  summary: string;
+  details?: Record<string, unknown>;
+}
+
+export interface ListAuditEventsOptions {
+  entityType?: string;
+  entityId?: string;
+  limit: number;
+  offset: number;
 }
 
 export interface CallRecord {

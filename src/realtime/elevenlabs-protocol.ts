@@ -32,6 +32,8 @@ export interface ConversationOverrides {
   /** The tenant greeting, verbatim. Empty means the tenant has not configured one. */
   firstMessage: string;
   prompt: string;
+  /** Voice id chosen in Callora; absent keeps the agent's own configured voice. */
+  voiceId: string | undefined;
 }
 
 /**
@@ -46,20 +48,23 @@ export interface ConversationOverrides {
 export function resolveConversationOverrides(options: {
   agent: AgentConfig;
   callerNumber?: string | null;
+  voiceId?: string;
 }): ConversationOverrides {
-  const { agent, callerNumber } = options;
+  const { agent, callerNumber, voiceId } = options;
   return {
     language: languageCode(agent.language),
     firstMessage: agent.greeting.trim(),
     prompt: composeAgentInstructions({ agent, callerNumber }),
+    voiceId: voiceId?.trim() ? voiceId.trim() : undefined,
   };
 }
 
 export function buildConversationInitiation(options: {
   agent: AgentConfig;
   callerNumber?: string | null;
+  voiceId?: string;
 }): Record<string, unknown> {
-  const { language, firstMessage, prompt } = resolveConversationOverrides(options);
+  const { language, firstMessage, prompt, voiceId } = resolveConversationOverrides(options);
 
   return {
     type: 'conversation_initiation_client_data',
@@ -71,6 +76,9 @@ export function buildConversationInitiation(options: {
         ...(firstMessage ? { first_message: firstMessage } : {}),
         ...(language ? { language } : {}),
       },
+      // Sent only when Callora holds a voice for this business, so an agent whose voice
+      // override is not enabled in the ElevenLabs dashboard is not rejected needlessly.
+      ...(voiceId ? { tts: { voice_id: voiceId } } : {}),
     },
   };
 }

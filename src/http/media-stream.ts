@@ -251,27 +251,47 @@ async function openBridge(
     providerSocket.once('close', () => clearTimeout(maxDurationTimer));
   };
 
-  if (config.voiceProvider === 'cartesia') {
+  // The business chose the provider; the platform only supplies the credentials.
+  const provider = agent.voiceProvider;
+
+  if (provider === 'cartesia') {
+    const credentials = config.providers.cartesia;
+    if (!credentials) {
+      app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
+      socket.close(1011, 'provider unavailable');
+      return;
+    }
+    // A Cartesia agent stores its Sonic voice UUID in `voice`; the environment default
+    // covers agents configured before a voice was chosen.
+    const voiceId = agent.voice.trim() || credentials.defaultVoiceId;
+    if (!voiceId) {
+      app.log.error({ businessId, callSid }, 'The Cartesia agent has no voice id and no platform default');
+      socket.close(1011, 'provider unavailable');
+      return;
+    }
     const language = cartesiaLanguage(agent);
     const connectOptions = {
-      apiKey: config.cartesiaApiKey,
-      baseUrl: config.cartesiaWsBaseUrl,
-      version: config.cartesiaVersion,
+      apiKey: credentials.apiKey,
+      baseUrl: credentials.wsBaseUrl,
+      version: credentials.version,
     };
     // Both sockets are opened before any audio flows, so the first caller frame is never
     // dropped waiting for a half-built pipeline.
     const [sttSocket, ttsSocket] = await Promise.all([
-      connectCartesiaStt({ ...connectOptions, model: config.cartesiaSttModel, language }),
+      connectCartesiaStt({ ...connectOptions, model: credentials.sttModel, language }),
       connectCartesiaTts(connectOptions),
     ]);
+    // The reasoning model is per agent; Cartesia's own models stay platform-level.
+    const llmModel = agent.realtimeModel.trim() || credentials.textLlmModel;
     // Models and the voice id are safe to log; the API key never is.
     app.log.info(
       {
         businessId,
         callSid,
-        sttModel: config.cartesiaSttModel,
-        ttsModel: config.cartesiaTtsModel,
-        llmModel: config.textLlmModel,
+        sttModel: credentials.sttModel,
+        ttsModel: credentials.ttsModel,
+        llmModel,
+        voiceId,
         language: language ?? null,
       },
       'Cartesia pipeline opened',
@@ -286,9 +306,9 @@ async function openBridge(
       callSid,
       callId: call?.id ?? null,
       callerNumber: call?.fromNumber ?? null,
-      ttsModel: config.cartesiaTtsModel,
-      voiceId: config.cartesiaVoiceId,
-      llm: { baseUrl: config.textLlmBaseUrl, apiKey: config.textLlmApiKey, model: config.textLlmModel },
+      ttsModel: credentials.ttsModel,
+      voiceId,
+      llm: { baseUrl: credentials.textLlmBaseUrl, apiKey: credentials.textLlmApiKey, model: llmModel },
       logger: app.log,
       endCall,
       onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId),
@@ -300,19 +320,27 @@ async function openBridge(
     return;
   }
 
-  if (config.voiceProvider === 'elevenlabs') {
+  if (provider === 'elevenlabs') {
+    const credentials = config.providers.elevenlabs;
+    if (!credentials) {
+      app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
+      socket.close(1011, 'provider unavailable');
+      return;
+    }
     const elevenLabsSocket = await connectElevenLabsAgent({
-      apiKey: config.elevenLabsApiKey,
-      agentId: config.elevenLabsAgentId,
-      baseUrl: config.elevenLabsApiBaseUrl,
+      apiKey: credentials.apiKey,
+      agentId: credentials.agentId,
+      baseUrl: credentials.apiBaseUrl,
     });
     // The agent id is safe to log; the API key and the signed URL never are.
-    app.log.info({ businessId, callSid, agentId: config.elevenLabsAgentId }, 'ElevenLabs conversation opened');
+    app.log.info({ businessId, callSid, agentId: credentials.agentId }, 'ElevenLabs conversation opened');
 
     const bridge = new ElevenLabsBridge({
       twilio: twilioChannel,
       elevenlabs: websocketChannel(elevenLabsSocket),
       agent,
+      // Blank keeps whatever voice the ElevenLabs agent itself is configured with.
+      ...(agent.voice.trim() ? { voiceId: agent.voice.trim() } : {}),
       businessId,
       callSid,
       callId: call?.id ?? null,
@@ -327,9 +355,15 @@ async function openBridge(
     return;
   }
 
+  const openaiCredentials = config.providers.openai;
+  if (!openaiCredentials) {
+    app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
+    socket.close(1011, 'provider unavailable');
+    return;
+  }
   const openaiSocket = await connectOpenAiRealtime({
-    apiKey: config.openaiApiKey,
-    url: config.openaiRealtimeUrl,
+    apiKey: openaiCredentials.apiKey,
+    url: openaiCredentials.realtimeUrl,
     model: agent.realtimeModel,
   });
   app.log.info({ businessId, callSid, model: agent.realtimeModel }, 'OpenAI realtime connection opened');
@@ -342,7 +376,7 @@ async function openBridge(
     callSid,
     callId: call?.id ?? null,
     callerNumber: call?.fromNumber ?? null,
-    transcriptionModel: config.openaiTranscribeModel,
+    transcriptionModel: openaiCredentials.transcribeModel,
     logger: app.log,
     endCall,
     onIdentifiers: ({ streamSid, openaiSessionId }) => persistIdentifiers(streamSid, openaiSessionId),

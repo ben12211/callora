@@ -1,6 +1,8 @@
 import type pg from 'pg';
+import { ensureBootstrapAdmin } from '../auth/bootstrap.js';
 import { loadConfig } from '../config.js';
 import { createPool } from './pool.js';
+import { PostgresStore } from './postgres-store.js';
 
 const exampleBusinessId = '00000000-0000-4000-8000-000000000001';
 
@@ -19,8 +21,9 @@ export async function seedDatabase(pool: pg.Pool): Promise<void> {
 
   await pool.query(
     `INSERT INTO agent_configs (
-       business_id, instructions, greeting, language, voice, realtime_model, enabled
-     ) VALUES ($1, $2, $3, $4, $5, $6, true)
+       business_id, instructions, greeting, language, voice, realtime_model, enabled,
+       voice_provider
+     ) VALUES ($1, $2, $3, $4, $5, $6, true, $7)
      ON CONFLICT (business_id) DO NOTHING`,
     [
       exampleBusinessId,
@@ -37,6 +40,9 @@ export async function seedDatabase(pool: pg.Pool): Promise<void> {
       'he-IL',
       'marin',
       'gpt-realtime-2.1',
+      // The seeded demo answers on OpenAI Realtime; each business picks its own provider
+      // from the dashboard afterwards.
+      'openai',
     ],
   );
 }
@@ -46,6 +52,14 @@ async function main(): Promise<void> {
   const pool = createPool(config.databaseUrl);
   try {
     await seedDatabase(pool);
+    // The dashboard is unusable without an account, so seeding creates the bootstrap
+    // administrator too when the environment supplies one.
+    await ensureBootstrapAdmin(new PostgresStore(pool), config.auth, {
+      info: (details, msg) => process.stdout.write(`${JSON.stringify({ level: 'info', msg, ...details })}
+`),
+      warn: (details, msg) => process.stdout.write(`${JSON.stringify({ level: 'warn', msg, ...details })}
+`),
+    });
   } finally {
     await pool.end();
   }

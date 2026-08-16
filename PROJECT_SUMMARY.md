@@ -26,6 +26,16 @@ Callora הוא backend רב-דיירי (multi-tenant) לשירות לקוחות 
 
 מנהל חבילות: pnpm 10.28.2.
 
+## מישור הבקרה (Push 1)
+
+דשבורד ניהולי ב-`/dashboard`, מוגש כ-HTML מהשרת עצמו — אין frontend נפרד לבנות או לפרוס. מכיל התחברות, דף בית, ניהול עסקים (יצירה, עריכה, הפעלה, כיבוי, דף פירוט), טופס קונפיגורציית סוכן מלא (הפעלה, שפה, ברכה, הנחיות, ספק קול, קול, מודל), דף סטטוס ספקים, רשימת שיחות ודף שיחה, הגדרות עם החלפת סיסמה, והיסטוריית ביקורת.
+
+האימות: עוגיית סשן בצד השרת (רק ה-SHA-256 נשמר) עם טוקן CSRF לכל טופס, או `ADMIN_API_KEY` בכותרת `X-Api-Key` לקריאות מכונה. ה-webhooks של Twilio נשארים מחוץ לכך ומאומתים בחתימה של Twilio כמקודם.
+
+הזרימה: `התחברות → יצירת עסק → הגדרת סוכן → בחירת ספק וקול → שמירה → שיחה למספר`.
+
+קלורה היא מקור האמת לקונפיגורציה; OpenAI, ElevenLabs ו-Cartesia הם ספקי הרצה בלבד, והקרדנציאלים שלהם נשארים ברמת הפלטפורמה ואינם נחשפים בדשבורד.
+
 ## ארכיטקטורה ומבנה הקוד
 
 ```text
@@ -66,7 +76,10 @@ test/                       app.test.ts (API מול store בזיכרון), realt
 ## מודל הנתונים
 
 - **businesses** — `id`, `name`, `phone_number` (ייחודי, CHECK ל-E.164), `greeting`, `active`, חותמות זמן.
-- **agent_configs** — מפתח ראשי `business_id` (CASCADE): `instructions` (עד 8000 תווים), `greeting`, `language` (ברירת מחדל `he-IL`), `voice` (`marin`), `realtime_model` (`gpt-realtime-2.1`), `enabled`.
+- **agent_configs** — מפתח ראשי `business_id` (CASCADE): `instructions` (עד 8000 תווים), `greeting`, `language` (ברירת מחדל `he-IL`), `voice` (עד 80 תווים, ריק = הקול שכבר מוגדר אצל הספק), `realtime_model`, `voice_provider` (`openai` / `elevenlabs` / `cartesia`), `enabled`.
+- **admin_users** — משתמשי הדשבורד: `email` ייחודי, `name`, `password_hash` (scrypt עם salt לכל hash), `active`, `last_login_at`.
+- **admin_sessions** — סשנים בצד השרת: רק ה-SHA-256 של העוגייה נשמר, לצד `csrf_token` ו-`expires_at`.
+- **audit_events** — היסטוריית שינויים ניהולית: מבצע הפעולה, `action`, סוג ומזהה הישות, תקציר, ו-`details` (jsonb) עם דיף ברמת שדה.
 - **calls** — `twilio_call_sid` ייחודי, `from_number`/`to_number` עם CHECK ל-E.164, `status`, `direction`, `duration_seconds`, `twilio_stream_sid`, `openai_session_id`, זמני התחלה/סיום. מפתח זר ל-`businesses` עם `ON DELETE RESTRICT` — לכן מחיקת עסק עם היסטוריית שיחות מוחזרת כ-409.
 - אינדקסים: `(business_id, created_at DESC)` ו-`(to_number, created_at DESC)`.
 
@@ -76,14 +89,20 @@ test/                       app.test.ts (API מול store בזיכרון), realt
 
 | Method | Path | תיאור |
 | --- | --- | --- |
-| `GET` | `/health` | בריאות שירות + DB (503 כשה-DB נופל) |
+| `GET` | `/health` | בריאות שירות + DB (503 כשה-DB נופל). ללא אימות |
+| `GET` | `/dashboard/*` | הדשבורד הניהולי (עוגיית סשן) |
 | `GET` | `/api/businesses` | רשימת עסקים |
 | `POST` | `/api/businesses` | יצירת עסק |
 | `GET` | `/api/businesses/:id` | קריאת עסק |
 | `PATCH` | `/api/businesses/:id` | עדכון עסק |
 | `DELETE` | `/api/businesses/:id` | מחיקה רק ללא היסטוריית שיחות (אחרת 409) |
 | `GET` | `/api/calls?businessId=&limit=&offset=` | רשימת שיחות (עד 100 בעמוד) |
+| `GET` | `/api/businesses/:id/agent` | קריאת קונפיגורציית הסוכן |
+| `PUT` | `/api/businesses/:id/agent` | כתיבת קונפיגורציית הסוכן (422 אם הספק הנבחר אינו מוגדר בפלטפורמה) |
+| `GET` | `/api/providers` | זמינות הספקים, בלי אף קרדנציאל |
 | `GET` | `/api/calls/:id` | קריאת שיחה |
+| `GET` | `/api/audit` | היסטוריית שינויים ניהולית |
+| `GET` | `/api/me` | מי המבצע המאומת |
 | `POST` | `/webhooks/twilio/voice` | webhook שיחה נכנסת (חתום) → TwiML |
 | `POST` | `/webhooks/twilio/call-status` | קולבק מחזור-חיי שיחה (חתום) → 204 |
 | `WS` | `/webhooks/twilio/media` | Media Stream דו-כיווני, מאומת בטוקן |
@@ -94,7 +113,9 @@ test/                       app.test.ts (API מול store בזיכרון), realt
 
 משתני סביבה מאומתים ב-`src/config.ts` (נכשל מהר בעליית התהליך):
 
-חובה — `DATABASE_URL`, `TWILIO_AUTH_TOKEN`, `PUBLIC_BASE_URL` (URL, נחתך ה-slash הסופי), `OPENAI_API_KEY`.
+חובה — `DATABASE_URL`, `TWILIO_AUTH_TOKEN`, `TWILIO_ACCOUNT_SID`, `PUBLIC_BASE_URL` (URL, נחתך ה-slash הסופי), והקרדנציאלים של ספק ברירת המחדל (`VOICE_PROVIDER`).
+בקרת הפלטפורמה — `ADMIN_EMAIL` + `ADMIN_PASSWORD` יוצרים את מנהל הדשבורד ומאפסים את סיסמתו כשהערך משתנה, `ADMIN_API_KEY` הוא קרדנציאל מכונה אופציונלי ל-`/api`, ו-`SESSION_TTL_HOURS` קובע את אורך הסשן.
+`VOICE_PROVIDER` הוא רק ברירת המחדל לסוכנים חדשים — כל עסק בוחר ספק משלו בדשבורד, וכל ספק שהקרדנציאלים שלו קיימים הופך לזמין לבחירה.
 אופציונלי — `NODE_ENV`, `HOST` (`0.0.0.0`), `PORT` (`3000`), `LOG_LEVEL` (`info`), `TWILIO_ACCOUNT_SID`, `OPENAI_REALTIME_URL` (`wss://api.openai.com/v1/realtime`).
 
 `PUBLIC_BASE_URL` חייב להיות זהה בדיוק לכתובת שמוגדרת ב-Twilio (כולל HTTPS וכל prefix), אחרת אימות החתימה יחזיר 403.
@@ -123,9 +144,9 @@ docker compose up --build
 
 ## מה עוד לא קיים (מכוון)
 
-הרצת כלים (tool calling), אינטגרציות CRM/הזמנות/תורים, WhatsApp, שכפול קול, שמירת תמלולים, בונה סוכנים וגרסאות, וניהול מאומת. `src/future/interfaces.ts` מגדיר את הממשקים לכל אלה ללא מימוש.
+MCP, Google Calendar, מחברי CRM, WhatsApp, חיוב, ידע/RAG, חשבונות ללקוחות העסק, ומערכת הכלים המלאה. `src/future/interfaces.ts` מגדיר את הממשקים לכל אלה ללא מימוש.
 
-**סיכון פתוח:** ה-CRUD תחת `/api` אינו מאומת — אין לחשוף אותו לאינטרנט לפני הוספת אימות והרשאות ברמת דייר.
+**מגבלה ידועה:** מודל ההרשאות שטוח — כל מנהל הוא מנהל פלטפורמה, ואין עדיין הרשאות ברמת דייר.
 
 ## אבני דרך הבאות
 

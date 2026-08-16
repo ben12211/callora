@@ -33,6 +33,11 @@ export interface ElevenLabsBridgeOptions {
   /** Callora's own call record id, when the call row already exists. */
   callId?: string | null;
   callerNumber?: string | null;
+  /**
+   * ElevenLabs voice id chosen for this business in the control plane. Absent keeps the
+   * voice configured on the ElevenLabs agent itself.
+   */
+  voiceId?: string;
   logger: BridgeLogger;
   /** Called once the Twilio stream and, when known, the ElevenLabs conversation are identified. */
   onIdentifiers?: (identifiers: { streamSid: string | null; sessionId: string | null }) => void;
@@ -74,7 +79,7 @@ export class ElevenLabsBridge {
   public constructor(private readonly options: ElevenLabsBridgeOptions) {}
 
   public start(): void {
-    const { twilio, elevenlabs, agent, businessId, callSid, callerNumber, logger } = this.options;
+    const { twilio, elevenlabs, agent, businessId, callSid, callerNumber, voiceId, logger } = this.options;
 
     twilio.onMessage((raw) => this.handleTwilioMessage(raw));
     twilio.onClose(() => {
@@ -96,7 +101,7 @@ export class ElevenLabsBridge {
       this.close('elevenlabs-error');
     });
 
-    const overrides = resolveConversationOverrides({ agent, callerNumber });
+    const overrides = resolveConversationOverrides({ agent, callerNumber, voiceId });
 
     // The language and greeting are tenant configuration, not secrets, and they are the
     // two values worth seeing on every call: if a Hebrew agent answers in English, this
@@ -107,6 +112,7 @@ export class ElevenLabsBridge {
         language: overrides.language ?? null,
         agentLanguage: agent.language,
         firstMessage: overrides.firstMessage,
+        voiceId: overrides.voiceId ?? null,
       },
       'Sending ElevenLabs conversation overrides',
     );
@@ -124,7 +130,7 @@ export class ElevenLabsBridge {
     // what the agent actually received, not for production log volume.
     logger.debug({ ...this.logContext(), instructions: overrides.prompt }, 'Composed realtime agent instructions');
 
-    elevenlabs.send(JSON.stringify(buildConversationInitiation({ agent, callerNumber })));
+    elevenlabs.send(JSON.stringify(buildConversationInitiation({ agent, callerNumber, voiceId })));
   }
 
   /** Identifiers attached to every conversation log line. */

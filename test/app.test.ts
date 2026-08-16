@@ -1,190 +1,22 @@
-import { randomUUID } from 'node:crypto';
 import twilio from 'twilio';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { createCallerAllowlist } from '../src/dev/caller-allowlist.js';
 import { verifyStreamToken } from '../src/http/stream-token.js';
-import type { AppConfig } from '../src/config.js';
-import type { DataStore } from '../src/db/store.js';
-import type {
-  AgentConfig,
-  AttachRealtimeSessionInput,
-  Business,
-  CallRecord,
-  CreateBusinessInput,
-  ListCallsOptions,
-  UpdateBusinessInput,
-  UpdateCallStatusInput,
-  UpsertCallInput,
-} from '../src/domain/models.js';
+import type { Business } from '../src/domain/models.js';
+import {
+  MemoryStore,
+  agentConfig,
+  firstBusinessId,
+  firstNumber,
+  secondNumber,
+  testConfig,
+} from './support/memory-store.js';
 
-const firstBusinessId = '00000000-0000-4000-8000-000000000001';
-const secondBusinessId = '00000000-0000-4000-8000-000000000002';
-const firstNumber = '+15551234567';
-const secondNumber = '+15557654321';
+const config = { ...testConfig, auth: { ...testConfig.auth, apiKey: 'test-management-api-key' } };
 
-function business(id: string, name: string, phoneNumber: string, greeting: string): Business {
-  const now = new Date();
-  return { id, name, phoneNumber, greeting, active: true, createdAt: now, updatedAt: now };
-}
-
-export function agentConfig(businessId: string, enabled = true): AgentConfig {
-  const now = new Date();
-  return {
-    businessId,
-    instructions: 'Be a concise Hebrew customer-service agent.',
-    greeting: 'שלום, איך אפשר לעזור?',
-    language: 'he-IL',
-    voice: 'marin',
-    realtimeModel: 'gpt-realtime-2.1',
-    enabled,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-class MemoryStore implements DataStore {
-  public agentConfigs: AgentConfig[] = [];
-
-  public businesses: Business[] = [
-    business(firstBusinessId, 'First Business', firstNumber, 'Hello from the first business.'),
-    business(secondBusinessId, 'Second Business', secondNumber, 'Hello from the second business.'),
-  ];
-
-  public calls: CallRecord[] = [];
-  public healthy = true;
-
-  public async ping(): Promise<void> {
-    if (!this.healthy) {
-      throw new Error('database unavailable');
-    }
-  }
-
-  public async listBusinesses(): Promise<Business[]> {
-    return this.businesses;
-  }
-
-  public async getBusinessById(id: string): Promise<Business | null> {
-    return this.businesses.find((item) => item.id === id) ?? null;
-  }
-
-  public async getBusinessByPhoneNumber(phoneNumber: string, activeOnly = true): Promise<Business | null> {
-    return this.businesses.find(
-      (item) => item.phoneNumber === phoneNumber && (!activeOnly || item.active),
-    ) ?? null;
-  }
-
-  public async createBusiness(input: CreateBusinessInput): Promise<Business> {
-    const created = business(randomUUID(), input.name, input.phoneNumber, input.greeting);
-    created.active = input.active;
-    this.businesses.push(created);
-    return created;
-  }
-
-  public async updateBusiness(id: string, input: UpdateBusinessInput): Promise<Business | null> {
-    const existing = await this.getBusinessById(id);
-    if (!existing) {
-      return null;
-    }
-    Object.assign(existing, input, { updatedAt: new Date() });
-    return existing;
-  }
-
-  public async deleteBusiness(id: string): Promise<Business | null> {
-    if (this.calls.some((call) => call.businessId === id)) {
-      return null;
-    }
-    const index = this.businesses.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return null;
-    }
-    return this.businesses.splice(index, 1)[0] ?? null;
-  }
-
-  public async getAgentConfig(businessId: string): Promise<AgentConfig | null> {
-    return this.agentConfigs.find((item) => item.businessId === businessId) ?? null;
-  }
-
-  public async attachRealtimeSession(input: AttachRealtimeSessionInput): Promise<CallRecord | null> {
-    const existing = this.calls.find(
-      (call) => call.twilioCallSid === input.twilioCallSid && call.businessId === input.businessId,
-    );
-    if (!existing) {
-      return null;
-    }
-    existing.twilioStreamSid = input.twilioStreamSid ?? existing.twilioStreamSid;
-    existing.openaiSessionId = input.openaiSessionId ?? existing.openaiSessionId;
-    return existing;
-  }
-
-  public async getCallByTwilioSid(twilioCallSid: string): Promise<CallRecord | null> {
-    return this.calls.find((call) => call.twilioCallSid === twilioCallSid) ?? null;
-  }
-
-  public async upsertCall(input: UpsertCallInput): Promise<CallRecord> {
-    const existing = this.calls.find((call) => call.twilioCallSid === input.twilioCallSid);
-    if (existing) {
-      existing.status = input.status;
-      existing.updatedAt = new Date();
-      return existing;
-    }
-    const now = new Date();
-    const created: CallRecord = {
-      id: randomUUID(),
-      ...input,
-      twilioStreamSid: null,
-      openaiSessionId: null,
-      durationSeconds: null,
-      startedAt: now,
-      endedAt: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.calls.push(created);
-    return created;
-  }
-
-  public async updateCallStatus(input: UpdateCallStatusInput): Promise<CallRecord | null> {
-    const existing = this.calls.find(
-      (call) =>
-        call.twilioCallSid === input.twilioCallSid &&
-        call.businessId === input.businessId &&
-        call.toNumber === input.toNumber,
-    );
-    if (!existing) {
-      return null;
-    }
-    existing.status = input.status;
-    existing.durationSeconds = input.durationSeconds;
-    existing.updatedAt = new Date();
-    return existing;
-  }
-
-  public async listCalls(options: ListCallsOptions): Promise<CallRecord[]> {
-    return this.calls
-      .filter((call) => !options.businessId || call.businessId === options.businessId)
-      .slice(options.offset, options.offset + options.limit);
-  }
-
-  public async getCallById(id: string): Promise<CallRecord | null> {
-    return this.calls.find((call) => call.id === id) ?? null;
-  }
-}
-
-const config: AppConfig = {
-  nodeEnv: 'test',
-  host: '127.0.0.1',
-  port: 3000,
-  logLevel: 'silent',
-  databaseUrl: 'postgresql://unused',
-  twilioAccountSid: 'AC00000000000000000000000000000000',
-  twilioAuthToken: 'test-auth-token',
-  publicBaseUrl: 'https://voice.example.test',
-  voiceProvider: 'openai',
-  openaiApiKey: 'test-openai-key',
-  openaiRealtimeUrl: 'wss://api.openai.com/v1/realtime',
-  openaiTranscribeModel: 'gpt-4o-mini-transcribe',
-};
+/** The management API is authenticated; these tests use the machine credential. */
+const apiHeaders = { 'x-api-key': 'test-management-api-key' };
 
 function signedHeaders(path: string, payload: Record<string, string>): Record<string, string> {
   return {
@@ -430,6 +262,7 @@ describe('Callora backend', () => {
     const createResponse = await app.inject({
       method: 'POST',
       url: '/api/businesses',
+      headers: apiHeaders,
       payload: {
         name: 'New Business',
         phoneNumber: '+15550001111',
@@ -442,13 +275,19 @@ describe('Callora backend', () => {
     const updateResponse = await app.inject({
       method: 'PATCH',
       url: `/api/businesses/${created.id}`,
+      headers: apiHeaders,
       payload: { active: false },
     });
     expect(updateResponse.statusCode).toBe(200);
     expect(updateResponse.json<{ data: Business }>().data.active).toBe(false);
 
-    expect((await app.inject({ method: 'GET', url: '/api/calls?limit=10' })).statusCode).toBe(200);
-    expect((await app.inject({ method: 'DELETE', url: `/api/businesses/${created.id}` })).statusCode).toBe(204);
+    expect(
+      (await app.inject({ method: 'GET', url: '/api/calls?limit=10', headers: apiHeaders })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: 'DELETE', url: `/api/businesses/${created.id}`, headers: apiHeaders }))
+        .statusCode,
+    ).toBe(204);
     await app.close();
   });
 
@@ -457,6 +296,7 @@ describe('Callora backend', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/businesses',
+      headers: apiHeaders,
       payload: { name: 'Bad Number', phoneNumber: '555-1234', greeting: 'Hello' },
     });
     expect(response.statusCode).toBe(400);

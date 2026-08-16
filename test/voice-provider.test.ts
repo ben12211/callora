@@ -49,11 +49,11 @@ describe('voice provider selection', () => {
     });
 
     expect(config.voiceProvider).toBe('openai');
-    // Narrowed by the discriminant, so these are only reachable on the OpenAI branch.
-    if (config.voiceProvider !== 'openai') throw new Error('expected the OpenAI provider');
-    expect(config.openaiApiKey).toBe('sk-test');
-    expect(config.openaiRealtimeUrl).toBe('wss://api.openai.com/v1/realtime');
-    expect(config.openaiTranscribeModel).toBe('gpt-4o-transcribe');
+    const openai = config.providers.openai;
+    if (!openai) throw new Error('expected OpenAI credentials');
+    expect(openai.apiKey).toBe('sk-test');
+    expect(openai.realtimeUrl).toBe('wss://api.openai.com/v1/realtime');
+    expect(openai.transcribeModel).toBe('gpt-4o-transcribe');
   });
 
   it('selects ElevenLabs with its own credentials', () => {
@@ -65,10 +65,11 @@ describe('voice provider selection', () => {
     });
 
     expect(config.voiceProvider).toBe('elevenlabs');
-    if (config.voiceProvider !== 'elevenlabs') throw new Error('expected the ElevenLabs provider');
-    expect(config.elevenLabsApiKey).toBe('xi-test');
-    expect(config.elevenLabsAgentId).toBe('agent_123');
-    expect(config.elevenLabsApiBaseUrl).toBe('https://api.elevenlabs.io');
+    const elevenlabs = config.providers.elevenlabs;
+    if (!elevenlabs) throw new Error('expected ElevenLabs credentials');
+    expect(elevenlabs.apiKey).toBe('xi-test');
+    expect(elevenlabs.agentId).toBe('agent_123');
+    expect(elevenlabs.apiBaseUrl).toBe('https://api.elevenlabs.io');
   });
 
   // Compose and the deployment secret sync always define every provider variable, so
@@ -104,9 +105,8 @@ describe('voice provider selection', () => {
     });
 
     expect(config.voiceProvider).toBe('openai');
-    if (config.voiceProvider !== 'openai') throw new Error('expected the OpenAI provider');
-    expect(config.openaiRealtimeUrl).toBe('wss://api.openai.com/v1/realtime');
-    expect(config.openaiTranscribeModel).toBeTruthy();
+    expect(config.providers.openai?.realtimeUrl).toBe('wss://api.openai.com/v1/realtime');
+    expect(config.providers.openai?.transcribeModel).toBeTruthy();
 
     const elevenlabs = loadConfig({
       ...baseEnv,
@@ -115,8 +115,8 @@ describe('voice provider selection', () => {
       ELEVENLABS_AGENT_ID: 'agent_123',
       ELEVENLABS_API_BASE_URL: '',
     });
-    if (elevenlabs.voiceProvider !== 'elevenlabs') throw new Error('expected the ElevenLabs provider');
-    expect(elevenlabs.elevenLabsApiBaseUrl).toBe('https://api.elevenlabs.io');
+    expect(elevenlabs.voiceProvider).toBe('elevenlabs');
+    expect(elevenlabs.providers.elevenlabs?.apiBaseUrl).toBe('https://api.elevenlabs.io');
   });
 
   it('still rejects a blank credential the selected provider needs', () => {
