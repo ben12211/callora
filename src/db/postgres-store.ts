@@ -13,11 +13,13 @@ import type {
   CreateBusinessInput,
   ListAuditEventsOptions,
   ListCallsOptions,
+  PlatformSetting,
   RecordAuditEventInput,
   UpdateBusinessInput,
   UpdateCallStatusInput,
   UpsertAgentConfigInput,
   UpsertCallInput,
+  UpsertPlatformSettingInput,
 } from '../domain/models.js';
 import type { RealtimeProvider } from '../realtime/provider.js';
 import type { DataStore } from './store.js';
@@ -74,6 +76,13 @@ interface AuditEventRow {
   summary: string;
   details: Record<string, unknown> | null;
   created_at: Date;
+}
+
+interface PlatformSettingRow {
+  key: string;
+  value: string;
+  secret: boolean;
+  updated_at: Date;
 }
 
 interface CallRow {
@@ -198,6 +207,12 @@ const callColumns = `
   from_number, to_number, status, direction,
   duration_seconds, started_at, ended_at, created_at, updated_at
 `;
+
+function mapPlatformSetting(row: PlatformSettingRow): PlatformSetting {
+  return { key: row.key, value: row.value, secret: row.secret, updatedAt: row.updated_at };
+}
+
+const platformSettingColumns = `key, value, secret, updated_at`;
 
 export class PostgresStore implements DataStore {
   public constructor(private readonly pool: pg.Pool) {}
@@ -419,6 +434,31 @@ export class PostgresStore implements DataStore {
       [businessId ?? null],
     );
     return Number(result.rows[0]?.count ?? 0);
+  }
+
+  public async listPlatformSettings(): Promise<PlatformSetting[]> {
+    const result = await this.pool.query<PlatformSettingRow>(
+      `SELECT ${platformSettingColumns} FROM platform_settings ORDER BY key`,
+    );
+    return result.rows.map(mapPlatformSetting);
+  }
+
+  public async upsertPlatformSetting(input: UpsertPlatformSettingInput): Promise<PlatformSetting> {
+    const result = await this.pool.query<PlatformSettingRow>(
+      `INSERT INTO platform_settings (key, value, secret)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (key) DO UPDATE SET
+         value = EXCLUDED.value,
+         secret = EXCLUDED.secret,
+         updated_at = now()
+       RETURNING ${platformSettingColumns}`,
+      [input.key, input.value, input.secret],
+    );
+    return mapPlatformSetting(result.rows[0]!);
+  }
+
+  public async deletePlatformSetting(key: string): Promise<void> {
+    await this.pool.query('DELETE FROM platform_settings WHERE key = $1', [key]);
   }
 
   public async listAdminUsers(): Promise<AdminUser[]> {

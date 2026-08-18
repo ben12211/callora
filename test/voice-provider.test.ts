@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, missingProviderCredentials } from '../src/config.js';
 import { ElevenLabsBridge } from '../src/realtime/elevenlabs-bridge.js';
 import { fetchSignedUrl } from '../src/realtime/elevenlabs-connection.js';
 import {
@@ -119,14 +119,19 @@ describe('voice provider selection', () => {
     expect(elevenlabs.providers.elevenlabs?.apiBaseUrl).toBe('https://api.elevenlabs.io');
   });
 
-  it('still rejects a blank credential the selected provider needs', () => {
-    // Blank must mean "absent", not "valid" — the required check has to still fire.
-    expect(() =>
-      loadConfig({ ...baseEnv, VOICE_PROVIDER: 'elevenlabs', ELEVENLABS_API_KEY: '', ELEVENLABS_AGENT_ID: '' }),
-    ).toThrow(/ELEVENLABS_API_KEY/);
-    expect(() => loadConfig({ ...baseEnv, VOICE_PROVIDER: 'openai', OPENAI_API_KEY: '   ' })).toThrow(
-      /OPENAI_API_KEY/,
-    );
+  it('still treats a blank credential as absent rather than valid', () => {
+    const elevenlabs = {
+      ...baseEnv,
+      VOICE_PROVIDER: 'elevenlabs',
+      ELEVENLABS_API_KEY: '',
+      ELEVENLABS_AGENT_ID: '',
+    };
+    expect(loadConfig(elevenlabs).providers.elevenlabs).toBeNull();
+    expect(missingProviderCredentials(elevenlabs)).toEqual(['ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID']);
+
+    const openai = { ...baseEnv, VOICE_PROVIDER: 'openai', OPENAI_API_KEY: '   ' };
+    expect(loadConfig(openai).providers.openai).toBeNull();
+    expect(missingProviderCredentials(openai)).toEqual(['OPENAI_API_KEY']);
   });
 
   it('rejects a provider that is not openai or elevenlabs', () => {
@@ -138,28 +143,29 @@ describe('voice provider selection', () => {
     expect(loadConfig({ ...baseEnv, VOICE_PROVIDER: '', OPENAI_API_KEY: 'sk-test' }).voiceProvider).toBe('openai');
   });
 
-  it('requires only the selected provider credentials', () => {
-    // OpenAI selected: its key is required, ElevenLabs credentials are not.
-    expect(() => loadConfig({ ...baseEnv, VOICE_PROVIDER: 'openai' })).toThrow(/OPENAI_API_KEY/);
-    expect(() =>
-      loadConfig({ ...baseEnv, VOICE_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-test' }),
-    ).not.toThrow();
+  it('reports only the selected provider as missing credentials', () => {
+    // Missing credentials no longer stop the process: they can be entered in the
+    // dashboard, so they are reported for a startup warning and for the provider page.
+    expect(missingProviderCredentials({ ...baseEnv, VOICE_PROVIDER: 'openai' })).toEqual(['OPENAI_API_KEY']);
+    expect(
+      missingProviderCredentials({ ...baseEnv, VOICE_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-test' }),
+    ).toEqual([]);
 
-    // ElevenLabs selected: both of its values are required, the OpenAI key is not.
-    expect(() =>
-      loadConfig({ ...baseEnv, VOICE_PROVIDER: 'elevenlabs', ELEVENLABS_AGENT_ID: 'agent_123' }),
-    ).toThrow(/ELEVENLABS_API_KEY/);
-    expect(() =>
-      loadConfig({ ...baseEnv, VOICE_PROVIDER: 'elevenlabs', ELEVENLABS_API_KEY: 'xi-test' }),
-    ).toThrow(/ELEVENLABS_AGENT_ID/);
-    expect(() =>
-      loadConfig({
+    // ElevenLabs selected: both of its values are needed, the OpenAI key is not.
+    expect(
+      missingProviderCredentials({ ...baseEnv, VOICE_PROVIDER: 'elevenlabs', ELEVENLABS_AGENT_ID: 'agent_123' }),
+    ).toEqual(['ELEVENLABS_API_KEY']);
+    expect(
+      missingProviderCredentials({ ...baseEnv, VOICE_PROVIDER: 'elevenlabs', ELEVENLABS_API_KEY: 'xi-test' }),
+    ).toEqual(['ELEVENLABS_AGENT_ID']);
+    expect(
+      missingProviderCredentials({
         ...baseEnv,
         VOICE_PROVIDER: 'elevenlabs',
         ELEVENLABS_API_KEY: 'xi-test',
         ELEVENLABS_AGENT_ID: 'agent_123',
       }),
-    ).not.toThrow();
+    ).toEqual([]);
   });
 });
 

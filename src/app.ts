@@ -5,6 +5,8 @@ import { AuthService } from './auth/sessions.js';
 import { AuditRecorder } from './http/audit.js';
 import type { RouteDependencies } from './http/dependencies.js';
 import { registerRoutes } from './http/routes.js';
+import { createSecretBox } from './platform/secret-box.js';
+import { PlatformSettings, SETTINGS_REFRESH_INTERVAL_MS } from './platform/settings.js';
 
 type AppDependencies = RouteDependencies;
 
@@ -49,8 +51,35 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
     return payload;
   });
 
+  // Dashboard-managed settings are merged over the environment before any route reads a
+  // credential. A database that cannot be read leaves the deployment on its environment.
+  const platform =
+    dependencies.platform ??
+    new PlatformSettings({
+      store: dependencies.store,
+      config,
+      secretBox: createSecretBox(config.secretsKey),
+      logger: app.log,
+      ...(dependencies.callerAllowlist ? { fallbackAllowlist: dependencies.callerAllowlist } : {}),
+    });
+  await platform.load();
+
+  // The call path re-checks the settings as it uses them; this only keeps an idle
+  // instance converging too, so a change made on one is visible on the others without
+  // waiting for a call. Tests drive `refreshIfStale` directly instead.
+  if (config.nodeEnv !== 'test') {
+    const refresh = setInterval(() => {
+      void platform.refreshIfStale(SETTINGS_REFRESH_INTERVAL_MS);
+    }, SETTINGS_REFRESH_INTERVAL_MS);
+    refresh.unref?.();
+    app.addHook('onClose', async () => {
+      clearInterval(refresh);
+    });
+  }
+
   await registerRoutes(app, {
     ...dependencies,
+    platform,
     auth: new AuthService(dependencies.store, config.auth),
     audit: new AuditRecorder(dependencies.store, app.log),
   });

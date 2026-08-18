@@ -77,11 +77,14 @@ ADMIN_EMAIL=
 ADMIN_PASSWORD=
 ADMIN_API_KEY=
 SESSION_TTL_HOURS=12
+SECRETS_KEY=replace-with-a-long-random-string
 ```
 
-`VOICE_PROVIDER` sets the default provider for newly created agents and accepts only `openai` (the default), `elevenlabs`, or `cartesia`. Each business chooses its own provider in the dashboard, and any provider whose credentials are present in this file becomes selectable there. Selecting `cartesia` additionally requires `OPENAI_API_KEY`, because Cartesia supplies speech but not reasoning. Only the selected provider's credentials are required: an OpenAI deployment can leave both `ELEVENLABS_*` values empty, and an ElevenLabs deployment can leave `OPENAI_API_KEY` empty. The application refuses to start if the selected provider's credentials are missing, and the deployment fails the same check before it touches the server.
+`SECRETS_KEY` encrypts the provider credentials entered on the dashboard's **Providers** page. Generate it once with `openssl rand -base64 32`, and treat it as permanent: rotating it leaves every credential stored in Callora unreadable, and each one has to be entered again. It is only replaced on the server when the deployment supplies a value, so a pipeline that does not send one leaves the existing key alone. Without it the dashboard still manages every non-secret setting, but API keys have to come from this file.
 
-`ALLOW_LIST` is optional and is overwritten from the GitHub secret on every deployment, exactly like the Twilio and OpenAI credentials. Set the secret to a comma-separated list of E.164 numbers to restrict who can reach the agent; clear it to allow every caller again. A malformed value fails the deployment rather than silently blocking calls.
+`VOICE_PROVIDER` sets the default provider for newly created agents and accepts only `openai` (the default), `elevenlabs`, or `cartesia`. Each business chooses its own provider in the dashboard, and any provider whose credentials are present — here or saved in the dashboard — becomes selectable there. Selecting `cartesia` additionally requires `OPENAI_API_KEY`, because Cartesia supplies speech but not reasoning. Only the selected provider's credentials matter: an OpenAI deployment can leave both `ELEVENLABS_*` values empty, and an ElevenLabs deployment can leave `OPENAI_API_KEY` empty. Credentials missing here are reported by the deployment and at startup, not treated as a failure, since they may already be stored in the dashboard; until they exist in one of the two places, calls answer with the business's static greeting.
+
+`ALLOW_LIST` is optional and is overwritten from the GitHub secret on every deployment, exactly like the Twilio and OpenAI credentials — but an allowlist saved in the dashboard takes precedence over it. Set the secret to a comma-separated list of E.164 numbers to restrict who can reach the agent; clear it to allow every caller again. A malformed value fails the deployment rather than silently blocking calls.
 
 `ADMIN_EMAIL` and `ADMIN_PASSWORD` create the dashboard administrator and reset its password whenever the value changes, so keeping a stale password here would undo a rotation done in the dashboard. Both are overwritten from the GitHub secrets on every deployment; leave the secrets unset once the account exists and its password is managed from **Settings**. `ADMIN_API_KEY` is optional and only needed when something other than a browser calls the management API. Both `/api` and `/dashboard` refuse unauthenticated requests.
 
@@ -117,6 +120,7 @@ Repository Secrets:
 | `ADMIN_PASSWORD` | Bootstrap dashboard password, at least 12 characters. Set together with `ADMIN_EMAIL`; leave both unset to keep the existing account and its dashboard-managed password |
 | `ADMIN_EMAIL` | Bootstrap administrator address. A Repository Variable of the same name is also accepted and preferred, since it is not sensitive |
 | `ADMIN_API_KEY` | Optional machine credential for the management API, at least 16 characters. Unset means only the dashboard session is accepted |
+| `SECRETS_KEY` | Encrypts credentials entered on the dashboard's Providers page, at least 16 characters. Set it once and never rotate it: every stored credential is unreadable afterwards. Unset leaves the server's existing key untouched |
 
 Repository Variables:
 

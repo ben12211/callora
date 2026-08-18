@@ -14,11 +14,13 @@ import type {
   CreateBusinessInput,
   ListAuditEventsOptions,
   ListCallsOptions,
+  PlatformSetting,
   RecordAuditEventInput,
   UpdateBusinessInput,
   UpdateCallStatusInput,
   UpsertAgentConfigInput,
   UpsertCallInput,
+  UpsertPlatformSettingInput,
 } from '../../src/domain/models.js';
 
 export const firstBusinessId = '00000000-0000-4000-8000-000000000001';
@@ -57,6 +59,7 @@ export class MemoryStore implements DataStore {
   ];
 
   public calls: CallRecord[] = [];
+  public platformSettings: PlatformSetting[] = [];
   public healthy = true;
   public admins: AdminUser[] = [];
   public auditEvents: AuditEvent[] = [];
@@ -198,6 +201,25 @@ export class MemoryStore implements DataStore {
 
   public async countCalls(businessId?: string): Promise<number> {
     return this.calls.filter((call) => !businessId || call.businessId === businessId).length;
+  }
+
+  public async listPlatformSettings(): Promise<PlatformSetting[]> {
+    return this.platformSettings.map((setting) => ({ ...setting }));
+  }
+
+  public async upsertPlatformSetting(input: UpsertPlatformSettingInput): Promise<PlatformSetting> {
+    const stored: PlatformSetting = { ...input, updatedAt: new Date() };
+    const index = this.platformSettings.findIndex((setting) => setting.key === input.key);
+    if (index === -1) {
+      this.platformSettings.push(stored);
+    } else {
+      this.platformSettings[index] = stored;
+    }
+    return { ...stored };
+  }
+
+  public async deletePlatformSetting(key: string): Promise<void> {
+    this.platformSettings = this.platformSettings.filter((setting) => setting.key !== key);
   }
 
   public async listAdminUsers(): Promise<AdminUser[]> {

@@ -45,6 +45,23 @@ export interface UpsertAgentConfigInput {
   enabled: boolean;
 }
 
+/**
+ * One dashboard-managed platform setting, keyed by the environment variable it overrides.
+ * Secret values are stored sealed and are only ever decrypted in the server process.
+ */
+export interface PlatformSetting {
+  key: string;
+  value: string;
+  secret: boolean;
+  updatedAt: Date;
+}
+
+export interface UpsertPlatformSettingInput {
+  key: string;
+  value: string;
+  secret: boolean;
+}
+
 export interface AdminUser {
   id: string;
   email: string;

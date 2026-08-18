@@ -33,9 +33,14 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?TWILIO_ACCOUNT_SID is required}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+      # Encrypts the provider credentials entered in the dashboard. It must stay the same
+      # across deployments: change it and every credential stored in Callora becomes
+      # unreadable and has to be entered again. Leave it empty to manage credentials
+      # through these variables only.
+      SECRETS_KEY: ${SECRETS_KEY:-}
       # Default provider for newly created agents; each business then picks its own in
-      # the dashboard. Credentials for every provider are passed through optionally, and
-      # a provider becomes selectable once its own credentials are present.
+      # the dashboard. Every value below is a floor the dashboard can override, and a
+      # provider becomes selectable once its own credentials are present in either place.
       VOICE_PROVIDER: ${VOICE_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}

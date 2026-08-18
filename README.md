@@ -107,7 +107,7 @@ Twilio does not sign the WebSocket handshake, so the voice webhook issues a shor
 | `elevenlabs` | ElevenLabs Agents | `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID` |
 | `cartesia` | Cartesia STT -> text LLM -> Cartesia Sonic TTS | `CARTESIA_API_KEY`, `CARTESIA_VOICE_ID`, `OPENAI_API_KEY` |
 
-Only the selected provider's credentials are required; startup fails with a named variable if one is missing, and an unrecognised provider is rejected outright.
+Credentials can be entered on the dashboard's **Providers** page instead of in the environment, so a deployment can come up with none of them and be configured in the browser. A missing credential is reported at startup and on that page rather than stopping the process; until it is supplied, calls answer with the business's static greeting. An unrecognised provider is still rejected outright.
 
 All three carry G.711 mu-law at 8 kHz — the format Twilio Media Streams already speak — so no path transcodes. The ElevenLabs session reports the formats it actually chose in `conversation_initiation_metadata`; if the agent is configured for anything other than mu-law, Callora ends the call with an error rather than playing noise to the caller.
 
@@ -222,7 +222,7 @@ Login -> Create Business -> Configure Agent -> Choose Voice Provider/Voice -> Sa
 | Businesses | List, create, edit, enable, and disable businesses |
 | Business detail | Business fields, the agent configuration form, recent calls, and that business's change history |
 | Calls | Every recorded call, filterable by business, with a detail page per call |
-| Providers | Which execution providers this deployment can run, and what is missing for the ones it cannot |
+| Providers | Provider credentials, models, endpoints, the default provider, and the caller allowlist — all editable here |
 | Audit history | Administrative changes, newest first |
 | Settings | Your account, password rotation, platform configuration, and the administrator list |
 
@@ -238,10 +238,40 @@ A business is a Callora tenant. Each one owns exactly one agent configuration:
 | Voice | OpenAI voice name, ElevenLabs voice id, or Cartesia Sonic voice UUID. Blank keeps the provider's own configured voice; OpenAI requires one |
 | Model | OpenAI realtime model, or the reasoning model for the Cartesia pipeline |
 
-Provider credentials belong to the platform and are set only through the environment.
-They are never shown in the dashboard and never editable there. An agent cannot be
-enabled on a provider this deployment holds no credentials for, and if those credentials
-disappear later the call falls back to the static greeting rather than failing.
+### Platform settings
+
+Provider credentials belong to the platform, not to a business, and are managed on the
+**Providers** page. Every field there is named after the environment variable it overrides:
+a value saved in the dashboard wins, and clearing it falls back to the environment. Saved
+values take effect on the next call, without a restart.
+
+| Setting | Where |
+| --- | --- |
+| Default provider for new agents, caller allowlist | Platform |
+| `OPENAI_API_KEY`, realtime endpoint, transcription model | OpenAI |
+| `ELEVENLABS_API_KEY`, agent id, API base URL | ElevenLabs |
+| `CARTESIA_API_KEY`, voice id, TTS/STT models, API version, reasoning model and endpoint | Cartesia |
+
+API keys are encrypted with AES-256-GCM under `SECRETS_KEY` before they are stored, so a
+database dump or backup carries nothing usable on its own. That key lives in the
+environment and must stay the same for the life of the deployment: change it and every
+stored credential becomes unreadable and has to be entered again. Without a `SECRETS_KEY`
+the credential fields are disabled — everything else stays editable — rather than writing
+keys to the database in the clear.
+
+Changes reach the running server on their own. The instance that handled the save applies
+it immediately; every other reader — a second instance, or a value written straight into the
+database — re-checks the table when its snapshot ages out, which the call path does as it
+answers, so a credential saved in the browser is in force within seconds without a restart
+or a redeployment. If somebody else changed the settings while your page was open, saving is
+refused with a message rather than rolling their change back: reload and make the change
+again.
+
+A stored credential is never rendered back to the browser, not even masked: the page shows
+only that one exists and where it came from. Entering a new value replaces it; leaving the
+field blank keeps it. An agent cannot be enabled on a provider this deployment holds no
+credentials for, and if those credentials disappear later the call falls back to the static
+greeting rather than failing.
 
 ## Authentication
 

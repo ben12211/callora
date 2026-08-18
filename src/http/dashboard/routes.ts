@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { hashPassword } from '../../auth/passwords.js';
 import { CSRF_FIELD_NAME, SESSION_COOKIE_NAME, csrfTokenMatches, type AuthenticatedActor } from '../../auth/sessions.js';
 import type { AgentConfig, Business } from '../../domain/models.js';
+import { SETTING_CATALOG, SettingsValidationError } from '../../platform/settings.js';
 import { providerStatuses } from '../../realtime/provider-catalog.js';
 import { defaultAgentConfig } from '../api-routes.js';
 import { AGENT_AUDIT_FIELDS, AUDIT_ACTIONS, BUSINESS_AUDIT_FIELDS, changedFields } from '../audit.js';
@@ -62,7 +63,7 @@ export async function registerDashboardRoutes(
   app: FastifyInstance,
   dependencies: ControlPlaneDependencies,
 ): Promise<void> {
-  const { config, store, auth, audit } = dependencies;
+  const { config, store, platform, auth, audit } = dependencies;
   // A dev stack served over plain HTTP would drop a Secure cookie, so it follows the
   // scheme the deployment actually advertises rather than a hard-coded value.
   const secureCookies = config.publicBaseUrl.startsWith('https://');
@@ -192,6 +193,7 @@ export async function registerDashboardRoutes(
   app.get('/dashboard', async (request, reply) => {
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
+    await platform.refreshIfStale();
     const businesses = await store.listBusinesses();
     const [agents, callCount, recentCalls, recentAudit] = await Promise.all([
       agentsByBusiness(businesses),
@@ -210,7 +212,7 @@ export async function registerDashboardRoutes(
         callCount,
         recentCalls,
         recentAudit,
-        providers: providerStatuses(config.providers, config.voiceProvider),
+        providers: providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment()),
       }),
     );
   });
@@ -317,7 +319,7 @@ export async function registerDashboardRoutes(
         agent,
         calls,
         audit: auditEvents,
-        providers: providerStatuses(config.providers, config.voiceProvider),
+        providers: providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment()),
         csrfToken: actor.session?.csrfToken ?? '',
         ...(readQueryString(request, 'notice') ? { notice: readQueryString(request, 'notice')! } : {}),
         ...(readQueryString(request, 'error') ? { error: readQueryString(request, 'error')! } : {}),
@@ -399,7 +401,7 @@ export async function registerDashboardRoutes(
     if (!business) {
       return page(reply, request, actor, 'Not found', notFoundPage('That business does not exist.'), 404);
     }
-    if (parsed.data.enabled && !config.providers[parsed.data.voiceProvider]) {
+    if (parsed.data.enabled && !platform.providers()[parsed.data.voiceProvider]) {
       return reply.redirect(
         `/dashboard/businesses/${id}?error=${encodeURIComponent(
           `The ${parsed.data.voiceProvider} provider has no platform credentials, so the agent cannot be enabled on it.`,
@@ -462,13 +464,86 @@ export async function registerDashboardRoutes(
   app.get('/dashboard/providers', async (request, reply) => {
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
+    await platform.refreshIfStale();
     return page(
       reply,
       request,
       actor,
       'Providers',
-      providerPage(providerStatuses(config.providers, config.voiceProvider), config.voiceProvider),
+      providerPage({
+        providers: providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment()),
+        platformDefault: platform.defaultProvider(),
+        settings: platform.view(),
+        revision: platform.revision(),
+        secretsEditable: platform.secretsEditable(),
+        csrfToken: actor.session?.csrfToken ?? '',
+        ...(readQueryString(request, 'notice') ? { notice: readQueryString(request, 'notice')! } : {}),
+        ...(readQueryString(request, 'error') ? { error: readQueryString(request, 'error')! } : {}),
+      }),
     );
+  });
+
+  /**
+   * Writes platform settings. Only the fields the submitted form actually carries are
+   * considered, so saving one provider's card never disturbs another's.
+   */
+  app.post('/dashboard/providers', async (request, reply) => {
+    const actor = await requireSession(request, reply);
+    if (!actor) return reply;
+    if (!checkCsrf(actor, request, reply)) return reply;
+
+    // Decide what to write against the current stored state, not against whatever this
+    // instance last happened to read: an untouched field must stay untouched even when
+    // another administrator changed it since this form was rendered.
+    await platform.refreshIfStale(0);
+
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const values: Record<string, string | undefined> = {};
+    for (const setting of SETTING_CATALOG) {
+      const submitted = body[setting.key];
+      if (typeof submitted === 'string') {
+        values[setting.key] = submitted;
+      }
+    }
+    // Repeated checkboxes arrive as an array; a single one arrives as a string.
+    const rawClear = body['clear'];
+    const clear = (Array.isArray(rawClear) ? rawClear : [rawClear]).filter(
+      (entry): entry is string => typeof entry === 'string',
+    );
+
+    const submittedRevision = typeof body['revision'] === 'string' ? body['revision'] : undefined;
+
+    let changed: string[];
+    try {
+      changed = await platform.save({
+        values,
+        clear,
+        ...(submittedRevision === undefined ? {} : { expectedRevision: submittedRevision }),
+      });
+    } catch (error) {
+      if (!(error instanceof SettingsValidationError)) {
+        app.log.error(
+          { error: error instanceof Error ? error.message : 'unknown error' },
+          'Failed to save platform settings',
+        );
+      }
+      const message =
+        error instanceof SettingsValidationError ? error.message : 'The settings could not be saved.';
+      return reply.redirect(`/dashboard/providers?error=${encodeURIComponent(message)}`, 303);
+    }
+
+    if (changed.length === 0) {
+      return reply.redirect('/dashboard/providers?notice=Nothing+changed.', 303);
+    }
+    // Only the key names are recorded: the values themselves are credentials.
+    await audit.record(actor, {
+      action: AUDIT_ACTIONS.platformSettingsUpdated,
+      entityType: 'platform',
+      entityId: null,
+      summary: `Updated platform settings: ${changed.join(', ')}`,
+      details: { changes: Object.fromEntries(changed.map((key) => [key, 'updated'])) },
+    });
+    return reply.redirect('/dashboard/providers?notice=Platform+settings+saved.', 303);
   });
 
   app.get('/dashboard/audit', async (request, reply) => {
@@ -482,6 +557,7 @@ export async function registerDashboardRoutes(
   app.get('/dashboard/settings', async (request, reply) => {
     const actor = await requireSession(request, reply);
     if (!actor?.user) return reply;
+    await platform.refreshIfStale();
     return page(
       reply,
       request,
@@ -490,9 +566,9 @@ export async function registerDashboardRoutes(
       settingsPage({
         user: actor.user,
         admins: await store.listAdminUsers(),
-        providers: providerStatuses(config.providers, config.voiceProvider),
+        providers: providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment()),
         publicBaseUrl: config.publicBaseUrl,
-        platformDefault: config.voiceProvider,
+        platformDefault: platform.defaultProvider(),
         sessionTtlHours: config.auth.sessionTtlHours,
         apiKeyConfigured: Boolean(config.auth.apiKey),
         csrfToken: actor.session?.csrfToken ?? '',

@@ -20,6 +20,45 @@ function blankAsAbsent<T extends z.ZodTypeAny>(schema: T) {
   return z.preprocess((value) => (typeof value === 'string' && value.trim() === '' ? undefined : value), schema);
 }
 
+/**
+ * The voice settings a deployment can change at runtime.
+ *
+ * They are parsed on their own as well as part of the whole configuration, because the
+ * dashboard writes these same keys into `platform_settings` and the running process has
+ * to re-derive credentials from the merged values without a restart. Everything else
+ * below — ports, database, Twilio — is startup-only and is not managed from the UI.
+ */
+const providerFields = {
+  // Which realtime backend answers calls. Only the selected provider's credentials are required.
+  VOICE_PROVIDER: blankAsAbsent(z.enum([...REALTIME_PROVIDERS]).default(DEFAULT_REALTIME_PROVIDER)),
+  OPENAI_API_KEY: blankAsAbsent(z.string().min(1).optional()),
+  OPENAI_REALTIME_URL: blankAsAbsent(z.string().min(1).default('wss://api.openai.com/v1/realtime')),
+  // Transcribes caller audio for conversation logging only; it never drives the reply.
+  OPENAI_TRANSCRIBE_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_TRANSCRIPTION_MODEL)),
+  ELEVENLABS_API_KEY: blankAsAbsent(z.string().min(1).optional()),
+  ELEVENLABS_AGENT_ID: blankAsAbsent(z.string().min(1).optional()),
+  ELEVENLABS_API_BASE_URL: blankAsAbsent(z.string().min(1).default('https://api.elevenlabs.io')),
+  CARTESIA_API_KEY: blankAsAbsent(z.string().min(1).optional()),
+  CARTESIA_VOICE_ID: blankAsAbsent(z.string().min(1).optional()),
+  CARTESIA_TTS_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_CARTESIA_TTS_MODEL)),
+  CARTESIA_STT_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_CARTESIA_STT_MODEL)),
+  CARTESIA_VERSION: blankAsAbsent(z.string().min(1).default(CARTESIA_API_VERSION)),
+  CARTESIA_WS_BASE_URL: blankAsAbsent(z.string().min(1).default('wss://api.cartesia.ai')),
+  // The Cartesia pipeline supplies its own reasoning through a text LLM rather than a
+  // speech-to-speech model, so the chat endpoint is configurable independently.
+  TEXT_LLM_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_TEXT_LLM_MODEL)),
+  TEXT_LLM_BASE_URL: blankAsAbsent(z.string().min(1).default('https://api.openai.com/v1')),
+} as const;
+
+/**
+ * Lenient view of the same fields: defaults are applied and anything missing is simply
+ * absent. A half-filled provider must leave the dashboard reporting "not configured", not
+ * throw inside a live call, so nothing here requires a credential to be present.
+ */
+const providerSchema = z.object(providerFields);
+
+type ProviderSettings = z.infer<typeof providerSchema>;
+
 const configSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -31,25 +70,7 @@ const configSchema = z
     // Required: the REST client that hangs calls up is authenticated per account.
     TWILIO_ACCOUNT_SID: z.string().regex(/^AC[0-9a-fA-F]{32}$/, 'TWILIO_ACCOUNT_SID must be a Twilio Account SID'),
     PUBLIC_BASE_URL: z.url().transform((value) => value.replace(/\/$/, '')),
-    // Which realtime backend answers calls. Only the selected provider's credentials are required.
-    VOICE_PROVIDER: blankAsAbsent(z.enum([...REALTIME_PROVIDERS]).default(DEFAULT_REALTIME_PROVIDER)),
-    OPENAI_API_KEY: blankAsAbsent(z.string().min(1).optional()),
-    OPENAI_REALTIME_URL: blankAsAbsent(z.string().min(1).default('wss://api.openai.com/v1/realtime')),
-    // Transcribes caller audio for conversation logging only; it never drives the reply.
-    OPENAI_TRANSCRIBE_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_TRANSCRIPTION_MODEL)),
-    ELEVENLABS_API_KEY: blankAsAbsent(z.string().min(1).optional()),
-    ELEVENLABS_AGENT_ID: blankAsAbsent(z.string().min(1).optional()),
-    ELEVENLABS_API_BASE_URL: blankAsAbsent(z.string().min(1).default('https://api.elevenlabs.io')),
-    CARTESIA_API_KEY: blankAsAbsent(z.string().min(1).optional()),
-    CARTESIA_VOICE_ID: blankAsAbsent(z.string().min(1).optional()),
-    CARTESIA_TTS_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_CARTESIA_TTS_MODEL)),
-    CARTESIA_STT_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_CARTESIA_STT_MODEL)),
-    CARTESIA_VERSION: blankAsAbsent(z.string().min(1).default(CARTESIA_API_VERSION)),
-    CARTESIA_WS_BASE_URL: blankAsAbsent(z.string().min(1).default('wss://api.cartesia.ai')),
-    // The Cartesia pipeline supplies its own reasoning through a text LLM rather than a
-    // speech-to-speech model, so the chat endpoint is configurable independently.
-    TEXT_LLM_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_TEXT_LLM_MODEL)),
-    TEXT_LLM_BASE_URL: blankAsAbsent(z.string().min(1).default('https://api.openai.com/v1')),
+    ...providerFields,
     // Control plane. The bootstrap administrator is created (and its password reset) on
     // every start when both values are present, so a fresh stack has a way in.
     ADMIN_EMAIL: blankAsAbsent(z.email().optional()),
@@ -58,35 +79,41 @@ const configSchema = z
     /** Optional machine credential for the management API; the dashboard never uses it. */
     ADMIN_API_KEY: blankAsAbsent(z.string().min(16).optional()),
     SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(12),
-  })
-  .superRefine((value, ctx) => {
-    // A deployment only needs credentials for the provider it actually uses, so an
-    // OpenAI-only server never has to invent an ElevenLabs key and vice versa.
-    const byProvider = {
-      openai: [['OPENAI_API_KEY', value.OPENAI_API_KEY]],
-      elevenlabs: [
-        ['ELEVENLABS_API_KEY', value.ELEVENLABS_API_KEY],
-        ['ELEVENLABS_AGENT_ID', value.ELEVENLABS_AGENT_ID],
-      ],
-      // Cartesia covers speech only; the reasoning turn reuses the server-side OpenAI
-      // credentials, so that key is required here too.
-      cartesia: [
-        ['CARTESIA_API_KEY', value.CARTESIA_API_KEY],
-        ['CARTESIA_VOICE_ID', value.CARTESIA_VOICE_ID],
-        ['OPENAI_API_KEY', value.OPENAI_API_KEY],
-      ],
-    } as const satisfies Record<RealtimeProvider, readonly (readonly [string, string | undefined])[]>;
-
-    for (const [name, provided] of byProvider[value.VOICE_PROVIDER]) {
-      if (!provided) {
-        ctx.addIssue({
-          code: 'custom',
-          path: [name],
-          message: `${name} is required when VOICE_PROVIDER is ${value.VOICE_PROVIDER}`,
-        });
-      }
-    }
+    /**
+     * Encrypts the provider credentials the dashboard stores. Without it the dashboard
+     * still manages every non-secret setting; it just refuses to write an API key to the
+     * database rather than storing one in the clear.
+     */
+    SECRETS_KEY: blankAsAbsent(z.string().min(16).optional()),
   });
+
+/**
+ * Environment variables each provider needs before it can answer a call. They may come
+ * from the environment or from `platform_settings`, so this is reported rather than
+ * enforced: see `missingProviderCredentials`.
+ */
+export const REQUIRED_PROVIDER_SETTINGS = {
+  openai: ['OPENAI_API_KEY'],
+  elevenlabs: ['ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID'],
+  // Cartesia covers speech only; the reasoning turn reuses the server-side OpenAI
+  // credentials, so that key is required here too.
+  cartesia: ['CARTESIA_API_KEY', 'CARTESIA_VOICE_ID', 'OPENAI_API_KEY'],
+} as const satisfies Record<RealtimeProvider, readonly string[]>;
+
+/**
+ * What the default provider is still missing, for a startup warning.
+ *
+ * This used to fail configuration parsing outright. Since credentials can now be entered
+ * in the dashboard, a deployment that starts with none is a legitimate first boot: the
+ * provider page reports what is missing, and until it is filled in, calls answer with the
+ * business's static greeting instead of opening a session that could never connect.
+ */
+export function missingProviderCredentials(values: NodeJS.ProcessEnv): string[] {
+  const parsed = providerSchema.parse(values);
+  return REQUIRED_PROVIDER_SETTINGS[parsed.VOICE_PROVIDER].filter(
+    (name) => !parsed[name as keyof ProviderSettings],
+  );
+}
 
 export interface AdminAuthConfig {
   /** Bootstrap administrator, applied at startup when both values are supplied. */
@@ -112,8 +139,14 @@ interface BaseConfig {
    * Credentials for every provider this deployment can execute, independent of which one
    * a given business picked. A `null` entry means the platform has no credentials for
    * that provider, which the provider status page reports and the call path respects.
+   *
+   * This is the value the process started with. Once the dashboard has written provider
+   * settings, the live values come from `PlatformSettings`, and the call path reads them
+   * from there rather than from here.
    */
   providers: ProviderCredentials;
+  /** Encrypts dashboard-managed credentials; absent means the UI manages non-secrets only. */
+  secretsKey?: string;
 }
 
 /** Platform credentials for OpenAI Realtime. Per-call voice and model come from the agent. */
@@ -155,18 +188,28 @@ export interface ProviderCredentials {
  * `voiceProvider` is only the default for newly created agents: each business stores its
  * own provider, and the call path reads the credentials for that provider out of
  * `providers`. Credentials live in exactly one place, so there is no second copy to keep
- * in step. The startup check in the schema still requires the default provider to be
- * usable, so a deployment cannot come up unable to serve the provider it hands out.
+ * in step.
  */
 export type AppConfig = BaseConfig & { voiceProvider: RealtimeProvider };
 
-export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = configSchema.parse(environment);
+/**
+ * Derives provider credentials from settings values, wherever they came from: the process
+ * environment at startup, or the dashboard-managed overrides merged over it.
+ *
+ * A provider is "configured" once its own credentials are present, regardless of which
+ * provider VOICE_PROVIDER names. Businesses pick per agent, so several can be live at
+ * once and the status page can show exactly which ones are usable.
+ */
+export function resolveProviderSettings(values: NodeJS.ProcessEnv): {
+  providers: ProviderCredentials;
+  voiceProvider: RealtimeProvider;
+} {
+  const parsed = providerSchema.parse(values);
+  return { providers: buildProviders(parsed), voiceProvider: parsed.VOICE_PROVIDER };
+}
 
-  // A provider is "configured" once its own credentials are present, regardless of which
-  // provider VOICE_PROVIDER names. Businesses pick per agent, so several can be live at
-  // once and the status page can show exactly which ones are usable.
-  const providers: ProviderCredentials = {
+function buildProviders(parsed: ProviderSettings): ProviderCredentials {
+  return {
     openai: parsed.OPENAI_API_KEY
       ? {
           apiKey: parsed.OPENAI_API_KEY,
@@ -198,9 +241,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
           }
         : null,
   };
+}
+
+export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
+  const parsed = configSchema.parse(environment);
 
   const base: BaseConfig = {
-    providers,
+    providers: buildProviders(parsed),
+    ...(parsed.SECRETS_KEY ? { secretsKey: parsed.SECRETS_KEY } : {}),
     auth: {
       ...(parsed.ADMIN_EMAIL ? { bootstrapEmail: parsed.ADMIN_EMAIL.toLowerCase() } : {}),
       ...(parsed.ADMIN_PASSWORD ? { bootstrapPassword: parsed.ADMIN_PASSWORD } : {}),

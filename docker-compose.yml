@@ -34,8 +34,11 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-AC00000000000000000000000000000000}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-local-development-token}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://callora.example.invalid}
+      # Encrypts credentials entered in the dashboard; keep it stable across restarts.
+      SECRETS_KEY: ${SECRETS_KEY:-callora-local-development-secrets-key}
       # Default provider for newly created agents. Every business picks its own provider
-      # in the dashboard; a provider is usable once its credentials are present below.
+      # in the dashboard; a provider is usable once its credentials are present here or
+      # have been entered in the dashboard.
       VOICE_PROVIDER: ${VOICE_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-local-development-openai-key}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}

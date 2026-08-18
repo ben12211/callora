@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, missingProviderCredentials } from '../src/config.js';
 import { CartesiaBridge } from '../src/realtime/cartesia-bridge.js';
 import {
   CARTESIA_AUDIO_ENCODING,
@@ -56,10 +56,12 @@ describe('cartesia provider selection', () => {
     expect(cartesia.textLlmApiKey).toBe('sk-llm');
   });
 
-  it('requires the cartesia credentials and the LLM key, naming each', () => {
-    expect(() => loadConfig({ ...cartesiaEnv, CARTESIA_API_KEY: '' })).toThrow(/CARTESIA_API_KEY/);
-    expect(() => loadConfig({ ...cartesiaEnv, CARTESIA_VOICE_ID: '' })).toThrow(/CARTESIA_VOICE_ID/);
-    expect(() => loadConfig({ ...cartesiaEnv, OPENAI_API_KEY: '' })).toThrow(/OPENAI_API_KEY/);
+  it('names each missing cartesia credential, including the LLM key', () => {
+    expect(missingProviderCredentials({ ...cartesiaEnv, CARTESIA_API_KEY: '' })).toEqual(['CARTESIA_API_KEY']);
+    expect(missingProviderCredentials({ ...cartesiaEnv, CARTESIA_VOICE_ID: '' })).toEqual(['CARTESIA_VOICE_ID']);
+    expect(missingProviderCredentials({ ...cartesiaEnv, OPENAI_API_KEY: '' })).toEqual(['OPENAI_API_KEY']);
+    // Cartesia needs its own key and the reasoning key before it can answer a call.
+    expect(loadConfig({ ...cartesiaEnv, OPENAI_API_KEY: '' }).providers.cartesia).toBeNull();
   });
 
   it('does not require cartesia credentials for the other providers', () => {

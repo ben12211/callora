@@ -167,6 +167,9 @@ jobs:
           CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
           CARTESIA_VOICE_ID: ${{ vars.CARTESIA_VOICE_ID || secrets.CARTESIA_VOICE_ID }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
+          # Encrypts credentials entered in the dashboard. Rotating it makes every stored
+          # credential unreadable, so it is set once and left alone.
+          SECRETS_KEY: ${{ secrets.SECRETS_KEY }}
           # Control plane. Together these create (or reset) the dashboard administrator;
           # ADMIN_API_KEY is the optional machine credential for the management API.
           ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || secrets.ADMIN_EMAIL }}
@@ -237,23 +240,37 @@ jobs:
               'cartesia': 'CARTESIA_SONIC',
           }[voice_provider])
 
-          def require_single_line(name):
-              value = (os.environ.get(name) or '').strip()
-              if not value or any(character in value for character in ('\r', '\n', '\0')):
-                  print(
-                      f'{name} must contain a single-line credential when VOICE_PROVIDER is {voice_provider}.',
-                      file=sys.stderr,
-                  )
-                  sys.exit(1)
-
-          # Cartesia covers speech only, so it needs the OpenAI key for the reasoning turn
-          # on top of its own credentials.
+          # A credential may be supplied here or entered in the dashboard, which stores it
+          # encrypted in the database. Only its shape is enforced: an absent one is
+          # reported, because the deployment is then relying on the dashboard for it.
+          missing = []
           for name in {
               'openai': ('OPENAI_API_KEY',),
               'elevenlabs': ('ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID'),
               'cartesia': ('CARTESIA_API_KEY', 'CARTESIA_VOICE_ID', 'OPENAI_API_KEY'),
           }[voice_provider]:
-              require_single_line(name)
+              value = (os.environ.get(name) or '').strip()
+              if not value:
+                  missing.append(name)
+              elif any(character in value for character in ('\r', '\n', '\0')):
+                  print(f'{name} must be a single-line credential.', file=sys.stderr)
+                  sys.exit(1)
+
+          if missing:
+              print(
+                  'Not supplied here: ' + ', '.join(missing)
+                  + '. The deployment must have them stored in the dashboard under Providers,'
+                  + ' or calls will answer with the static greeting.'
+              )
+
+          # Credentials entered in the dashboard are encrypted with this key. Without one
+          # the dashboard can still manage every non-secret setting.
+          secrets_key = (os.environ.get('SECRETS_KEY') or '').strip()
+          if secrets_key and len(secrets_key) < 16:
+              print('SECRETS_KEY must be at least 16 characters.', file=sys.stderr)
+              sys.exit(1)
+          if not secrets_key:
+              print('SECRETS_KEY is not set: API keys cannot be entered in the dashboard.')
 
           # Optional. Empty disables the caller allowlist and allows every caller.
           # A bracketed or quoted list is accepted too, matching what the app parses.
@@ -346,6 +363,7 @@ jobs:
           CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
           CARTESIA_VOICE_ID: ${{ vars.CARTESIA_VOICE_ID || secrets.CARTESIA_VOICE_ID }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
+          SECRETS_KEY: ${{ secrets.SECRETS_KEY }}
           ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || secrets.ADMIN_EMAIL }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
@@ -467,12 +485,20 @@ jobs:
           sys.stdout.write((os.environ.get('ADMIN_API_KEY') or '').strip())
           PY
           )"
+          SECRETS_KEY="$(python3 - <<'PY'
+          import os
+          import sys
 
-          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+          sys.stdout.write((os.environ.get('SECRETS_KEY') or '').strip())
+          PY
+          )"
+
+          # Appended last, so a server still running an older deploy.sh simply ignores it.
+          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
             "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" "$ALLOW_LIST" \
             "$VOICE_PROVIDER" "$ELEVENLABS_API_KEY" "$ELEVENLABS_AGENT_ID" \
             "$CARTESIA_API_KEY" "$CARTESIA_VOICE_ID" \
-            "$ADMIN_EMAIL" "$ADMIN_PASSWORD" "$ADMIN_API_KEY" | \
+            "$ADMIN_EMAIL" "$ADMIN_PASSWORD" "$ADMIN_API_KEY" "$SECRETS_KEY" | \
             "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
           if ! "${SSH[@]}" "$REMOTE" \

@@ -1,6 +1,6 @@
 import { buildApp } from './app.js';
 import { ensureBootstrapAdmin } from './auth/bootstrap.js';
-import { loadConfig } from './config.js';
+import { loadConfig, missingProviderCredentials } from './config.js';
 import { createPool } from './db/pool.js';
 import { PostgresStore } from './db/postgres-store.js';
 import { loadCallerAllowlist } from './dev/caller-allowlist.js';
@@ -23,6 +23,16 @@ await ensureBootstrapAdmin(store, config.auth, {
   info: startupLog('info'),
   warn: startupLog('warn'),
 });
+// Missing credentials are no longer fatal: they can be entered in the dashboard, and any
+// that are already stored there are merged in a moment. Say so once, loudly enough to
+// explain why calls are answering with the static greeting on a fresh deployment.
+const missing = missingProviderCredentials(process.env);
+if (missing.length > 0) {
+  startupLog('warn')(
+    { voiceProvider: config.voiceProvider, missing },
+    'The default provider has no credentials in the environment; set them here or in the dashboard under Providers',
+  );
+}
 const app = await buildApp({ config, store, callerAllowlist });
 // Expired sessions are already rejected on lookup; this only keeps the table from
 // growing without bound.

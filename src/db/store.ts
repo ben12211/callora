@@ -11,11 +11,13 @@ import type {
   CreateBusinessInput,
   ListAuditEventsOptions,
   ListCallsOptions,
+  PlatformSetting,
   RecordAuditEventInput,
   UpdateBusinessInput,
   UpdateCallStatusInput,
   UpsertAgentConfigInput,
   UpsertCallInput,
+  UpsertPlatformSettingInput,
 } from '../domain/models.js';
 
 export interface DataStore {
@@ -35,6 +37,11 @@ export interface DataStore {
   getCallById(id: string): Promise<CallRecord | null>;
   getCallByTwilioSid(twilioCallSid: string): Promise<CallRecord | null>;
   countCalls(businessId?: string): Promise<number>;
+
+  // Platform settings written from the dashboard; an absent key means "use the environment".
+  listPlatformSettings(): Promise<PlatformSetting[]>;
+  upsertPlatformSetting(input: UpsertPlatformSettingInput): Promise<PlatformSetting>;
+  deletePlatformSetting(key: string): Promise<void>;
 
   // Control plane: administrators, sessions, and the audit trail.
   listAdminUsers(): Promise<AdminUser[]>;

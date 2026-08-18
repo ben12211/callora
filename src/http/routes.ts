@@ -17,8 +17,7 @@ export async function registerRoutes(
   app: FastifyInstance,
   dependencies: ControlPlaneDependencies,
 ): Promise<void> {
-  const { config, store } = dependencies;
-  const allowlist = dependencies.callerAllowlist ?? { enabled: false, allows: () => true };
+  const { config, store, platform } = dependencies;
 
   registerMediaStreamRoute(app, dependencies);
   await registerApiRoutes(app, dependencies);
@@ -44,9 +43,15 @@ export async function registerRoutes(
         return;
       }
 
-      // Development-only gate. This is the one place `From` decides anything; it never
-      // takes part in tenant selection. A rejected call returns before any business
-      // lookup, so no stream token is issued and no Realtime session is ever opened.
+      // Settings may have been saved on another instance, or straight into the
+      // database, so the snapshot is re-checked before it decides anything about a call.
+      await platform.refreshIfStale();
+
+      // Testing gate, set in the dashboard or the environment. This is the one place
+      // `From` decides anything; it never takes part in tenant selection. A rejected call
+      // returns before any business lookup, so no stream token is issued and no realtime
+      // session is ever opened.
+      const allowlist = platform.allowlist();
       if (allowlist.enabled && !allowlist.allows(parsed.data.From)) {
         app.log.warn(
           {
@@ -89,7 +94,7 @@ export async function registerRoutes(
       // The business picks its own provider; the platform still has to hold credentials
       // for it. Without them the call falls back to the static greeting instead of
       // opening a stream that could never connect.
-      const providerReady = agent ? config.providers[agent.voiceProvider] !== null : false;
+      const providerReady = agent ? platform.providers()[agent.voiceProvider] !== null : false;
       app.log.info(
         {
           businessId: business.id,

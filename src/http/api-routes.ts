@@ -29,15 +29,16 @@ export function defaultAgentConfig(
   dependencies: ControlPlaneDependencies,
   greeting: string,
 ): UpsertAgentConfigInput {
-  const { config } = dependencies;
-  const provider = config.voiceProvider;
+  const { platform } = dependencies;
+  const provider = platform.defaultProvider();
+  const cartesia = platform.providers().cartesia;
   // Each provider reads `voice` and `realtimeModel` differently, so the starting values
   // have to come from that provider. Blank means "keep the provider's own configured
   // voice", which only OpenAI has no answer for.
   const voice = {
     openai: 'marin',
     elevenlabs: '',
-    cartesia: config.providers.cartesia?.defaultVoiceId ?? '',
+    cartesia: cartesia?.defaultVoiceId ?? '',
   }[provider];
 
   return {
@@ -48,9 +49,7 @@ export function defaultAgentConfig(
     voiceProvider: provider,
     voice,
     realtimeModel:
-      provider === 'cartesia'
-        ? (config.providers.cartesia?.textLlmModel ?? DEFAULT_TEXT_LLM_MODEL)
-        : 'gpt-realtime-2.1',
+      provider === 'cartesia' ? (cartesia?.textLlmModel ?? DEFAULT_TEXT_LLM_MODEL) : 'gpt-realtime-2.1',
   };
 }
 
@@ -63,7 +62,7 @@ export async function registerApiRoutes(
   app: FastifyInstance,
   dependencies: ControlPlaneDependencies,
 ): Promise<void> {
-  const { store, config, auth, audit } = dependencies;
+  const { store, platform, auth, audit } = dependencies;
 
   app.register(async (api) => {
     api.addHook('preHandler', requireApiAuth(auth));
@@ -195,7 +194,7 @@ export async function registerApiRoutes(
       // Callora is the source of truth for configuration, but it cannot execute a call on
       // a provider it holds no credentials for. Refusing here surfaces the mistake in the
       // dashboard rather than as a dropped call.
-      if (body.data.enabled && !config.providers[body.data.voiceProvider]) {
+      if (body.data.enabled && !platform.providers()[body.data.voiceProvider]) {
         return reply.code(422).send({
           error: `The ${body.data.voiceProvider} provider is not configured on this platform`,
         });
@@ -213,9 +212,12 @@ export async function registerApiRoutes(
       return { data: agent };
     });
 
-    api.get('/api/providers', async () => ({
-      data: providerStatuses(config.providers, config.voiceProvider),
-    }));
+    api.get('/api/providers', async () => {
+      await platform.refreshIfStale();
+      return {
+        data: providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment()),
+      };
+    });
 
     api.get('/api/calls', async (request, reply) => {
       const parsed = callsQuerySchema.safeParse(request.query);

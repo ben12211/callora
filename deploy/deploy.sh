@@ -291,6 +291,11 @@ update_runtime_secrets() {
   IFS= read -r admin_email || true
   IFS= read -r admin_password || true
   IFS= read -r admin_api_key || true
+  # Encrypts the credentials entered in the dashboard. Optional, and deliberately last: an
+  # older workflow sends nothing, which must leave whatever key the server already has
+  # untouched, because replacing it would make every stored credential unreadable.
+  secrets_key=''
+  IFS= read -r secrets_key || true
   [[ -n "$voice_provider" ]] || voice_provider=openai
 
   [[ "$twilio_account_sid" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
@@ -309,31 +314,41 @@ update_runtime_secrets() {
       ;;
   esac
 
-  require_secret() {
+  # A credential may arrive here or be stored in the dashboard, which keeps it encrypted
+  # in the database. A malformed one still aborts; a missing one is only reported, since
+  # the deployment may be relying on what an operator already entered in the browser.
+  check_secret() {
     local name="$1" value="$2"
-    [[ -n "$value" && "$value" != *$'\r'* ]] || {
-      log "$name must be a non-empty, single-line value when VOICE_PROVIDER is $voice_provider."
+    if [[ "$value" == *$'\r'* ]]; then
+      log "$name must be a single-line value."
       return 1
-    }
+    fi
+    [[ -n "$value" ]] || missing_secrets+=("$name")
   }
 
-  # Only the selected provider's credentials have to be present, so a deployment that
-  # runs on one provider never has to carry a placeholder secret for the others.
+  local -a missing_secrets=()
   case "$voice_provider" in
     openai)
-      require_secret OPENAI_API_KEY "$openai_api_key" || return 1
+      check_secret OPENAI_API_KEY "$openai_api_key" || return 1
       ;;
     elevenlabs)
-      require_secret ELEVENLABS_API_KEY "$elevenlabs_api_key" || return 1
-      require_secret ELEVENLABS_AGENT_ID "$elevenlabs_agent_id" || return 1
+      check_secret ELEVENLABS_API_KEY "$elevenlabs_api_key" || return 1
+      check_secret ELEVENLABS_AGENT_ID "$elevenlabs_agent_id" || return 1
       ;;
     cartesia)
-      require_secret CARTESIA_API_KEY "$cartesia_api_key" || return 1
-      require_secret CARTESIA_VOICE_ID "$cartesia_voice_id" || return 1
+      check_secret CARTESIA_API_KEY "$cartesia_api_key" || return 1
+      check_secret CARTESIA_VOICE_ID "$cartesia_voice_id" || return 1
       # Cartesia covers speech only; the reasoning turn runs on the OpenAI text model.
-      require_secret OPENAI_API_KEY "$openai_api_key" || return 1
+      check_secret OPENAI_API_KEY "$openai_api_key" || return 1
       ;;
   esac
+  if [[ ${#missing_secrets[@]} -gt 0 ]]; then
+    log "Not supplied by the pipeline: ${missing_secrets[*]}. They must be stored in the dashboard under Providers, or calls will answer with the static greeting."
+  fi
+  [[ -z "$secrets_key" || ${#secrets_key} -ge 16 ]] || {
+    log 'SECRETS_KEY must be at least 16 characters.'
+    return 1
+  }
   # Both halves of the bootstrap administrator are needed, or neither.
   if [[ -n "$admin_email" || -n "$admin_password" ]]; then
     [[ "$admin_email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || {
@@ -361,7 +376,10 @@ update_runtime_secrets() {
 
   temp_env="$(mktemp "$APP_DIR/.env.XXXXXX")"
   trap 'rm -f -- "$temp_env"' RETURN
-  awk '
+  # SECRETS_KEY is dropped only when a new one was sent: an empty value means "keep the
+  # key this server already has", never "erase it".
+  awk -v replace_secrets_key="${secrets_key:+1}" '
+    (replace_secrets_key == "" || !/^[[:space:]]*SECRETS_KEY[[:space:]]*=/) &&
     !/^[[:space:]]*TWILIO_ACCOUNT_SID[[:space:]]*=/ &&
     !/^[[:space:]]*TWILIO_AUTH_TOKEN[[:space:]]*=/ &&
     !/^[[:space:]]*OPENAI_API_KEY[[:space:]]*=/ &&
@@ -387,6 +405,9 @@ update_runtime_secrets() {
   printf 'ADMIN_EMAIL=%s\n' "$admin_email" >> "$temp_env"
   printf 'ADMIN_PASSWORD=%s\n' "$admin_password" >> "$temp_env"
   printf 'ADMIN_API_KEY=%s\n' "$admin_api_key" >> "$temp_env"
+  if [[ -n "$secrets_key" ]]; then
+    printf 'SECRETS_KEY=%s\n' "$secrets_key" >> "$temp_env"
+  fi
   chmod 0600 "$temp_env"
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN

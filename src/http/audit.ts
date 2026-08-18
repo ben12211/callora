@@ -18,13 +18,14 @@ export const AUDIT_ACTIONS = {
   agentUpdated: 'agent.updated',
   adminLoggedIn: 'admin.logged_in',
   adminPasswordChanged: 'admin.password_changed',
+  platformSettingsUpdated: 'platform.settings_updated',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
 
 export interface AuditWrite {
   action: AuditAction;
-  entityType: 'business' | 'agent' | 'admin';
+  entityType: 'business' | 'agent' | 'admin' | 'platform';
   entityId: string | null;
   summary: string;
   details?: Record<string, unknown>;

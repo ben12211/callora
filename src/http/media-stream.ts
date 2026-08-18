@@ -3,6 +3,7 @@ import twilio from 'twilio';
 import type WebSocket from 'ws';
 import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
+import type { PlatformRuntime } from '../platform/settings.js';
 import { MediaStreamBridge, type MessageChannel } from '../realtime/bridge.js';
 import { CartesiaBridge } from '../realtime/cartesia-bridge.js';
 import { cartesiaSocket, connectCartesiaStt, connectCartesiaTts } from '../realtime/cartesia-connection.js';
@@ -24,6 +25,8 @@ const STREAM_AUTH_TIMEOUT_MS = 5_000;
 interface MediaStreamDependencies {
   config: AppConfig;
   store: DataStore;
+  /** Live provider credentials, so a key saved in the dashboard applies to the next call. */
+  platform: PlatformRuntime;
   /** Overridable so tests never reach the Twilio REST API. */
   callTerminator?: CallTerminator;
 }
@@ -191,7 +194,13 @@ async function openBridge(
   businessId: string,
   callSid: string,
 ): Promise<void> {
-  const { config, store } = dependencies;
+  const { store } = dependencies;
+  // Settings saved on another instance, or written straight into the database, reach this
+  // call rather than the next restart.
+  await dependencies.platform.refreshIfStale();
+  // Read once per call: the credentials in force when this call was answered are the ones
+  // it runs on, even if an operator saves new ones while it is still connected.
+  const providers = dependencies.platform.providers();
 
   const agent = await store.getAgentConfig(businessId);
   if (!agent || !agent.enabled) {
@@ -255,7 +264,7 @@ async function openBridge(
   const provider = agent.voiceProvider;
 
   if (provider === 'cartesia') {
-    const credentials = config.providers.cartesia;
+    const credentials = providers.cartesia;
     if (!credentials) {
       app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
       socket.close(1011, 'provider unavailable');
@@ -321,7 +330,7 @@ async function openBridge(
   }
 
   if (provider === 'elevenlabs') {
-    const credentials = config.providers.elevenlabs;
+    const credentials = providers.elevenlabs;
     if (!credentials) {
       app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
       socket.close(1011, 'provider unavailable');
@@ -355,7 +364,7 @@ async function openBridge(
     return;
   }
 
-  const openaiCredentials = config.providers.openai;
+  const openaiCredentials = providers.openai;
   if (!openaiCredentials) {
     app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
     socket.close(1011, 'provider unavailable');

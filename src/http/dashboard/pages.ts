@@ -1,4 +1,5 @@
 import type { AdminUser, AgentConfig, AuditEvent, Business, CallRecord } from '../../domain/models.js';
+import type { SettingGroup, SettingView } from '../../platform/settings.js';
 import type { ProviderStatus } from '../../realtime/provider-catalog.js';
 import { PROVIDER_CATALOG } from '../../realtime/provider-catalog.js';
 import { REALTIME_PROVIDERS, type RealtimeProvider } from '../../realtime/provider.js';
@@ -347,8 +348,112 @@ export function callDetailPage(call: CallRecord, business: Business | null): str
 <div class="actions"><a class="button secondary" href="/dashboard/calls">Back to calls</a></div>`;
 }
 
-export function providerPage(providers: ProviderStatus[], platformDefault: RealtimeProvider): string {
-  const cards = providers
+export interface ProviderPageData {
+  providers: ProviderStatus[];
+  platformDefault: RealtimeProvider;
+  settings: SettingView[];
+  /** Revision the page was rendered from; submitted back to detect a concurrent change. */
+  revision: string;
+  /** False when the deployment has no SECRETS_KEY, so credentials cannot be stored. */
+  secretsEditable: boolean;
+  csrfToken: string;
+  notice?: string;
+  error?: string;
+}
+
+/** Where the value in force came from, so an operator can see what a save would replace. */
+function sourceNote(setting: SettingView): string {
+  if (setting.unreadable) {
+    return 'A value is stored but cannot be decrypted with this SECRETS_KEY. Clear it and enter it again.';
+  }
+  switch (setting.source) {
+    case 'callora':
+      return setting.secret ? 'Stored in Callora.' : 'Saved here, overriding the environment.';
+    case 'environment':
+      return setting.secret
+        ? 'Supplied by the environment. Entering a value here stores it in Callora instead.'
+        : 'From the environment. Clear the field to go back to it.';
+    default:
+      return 'Not set; the built-in default applies.';
+  }
+}
+
+function settingField(setting: SettingView, secretsEditable: boolean): string {
+  const id = `setting-${setting.key}`;
+  const label = `<label for="${id}">${escapeHtml(setting.label)}
+    <span class="hint mono">${escapeHtml(setting.key)}</span>
+    <span class="hint">${escapeHtml(setting.hint)}</span></label>`;
+
+  if (setting.choices) {
+    return `${label}
+  <select id="${id}" name="${escapeHtml(setting.key)}">
+    ${setting.choices
+      .map(
+        (choice) =>
+          `<option value="${escapeHtml(choice)}"${choice === setting.value ? ' selected' : ''}>${escapeHtml(
+            PROVIDER_CATALOG[choice as RealtimeProvider]?.label ?? choice,
+          )}</option>`,
+      )
+      .join('')}
+  </select>
+  <p class="muted">${escapeHtml(sourceNote(setting))}</p>`;
+  }
+
+  if (setting.secret) {
+    // The stored value is never rendered, so the field is always empty and blank means
+    // "leave it as it is". Removing one is an explicit choice, hence the checkbox.
+    const status = setting.configured
+      ? badge(!setting.unreadable, 'Configured', 'Unreadable')
+      : '<span class="badge">Not set</span>';
+    return `${label}
+  <p>${status} <span class="muted">${escapeHtml(sourceNote(setting))}</span></p>
+  <input id="${id}" name="${escapeHtml(setting.key)}" type="password" autocomplete="new-password"
+    placeholder="${setting.configured ? 'Leave blank to keep the current value' : 'Not set'}"${
+      secretsEditable ? '' : ' disabled'
+    } />
+  ${
+    setting.source === 'callora' || setting.unreadable
+      ? `<div class="checkbox">
+    <input id="clear-${escapeHtml(setting.key)}" name="clear" type="checkbox" value="${escapeHtml(setting.key)}" />
+    <label for="clear-${escapeHtml(setting.key)}" style="margin:0">Remove the stored value and fall back to the environment</label>
+  </div>`
+      : ''
+  }`;
+  }
+
+  if (setting.multiline) {
+    return `${label}
+  <textarea id="${id}" name="${escapeHtml(setting.key)}" rows="3">${escapeHtml(setting.value)}</textarea>
+  <p class="muted">${escapeHtml(sourceNote(setting))}</p>`;
+  }
+
+  return `${label}
+  <input id="${id}" name="${escapeHtml(setting.key)}" type="text" value="${escapeHtml(setting.value)}" />
+  <p class="muted">${escapeHtml(sourceNote(setting))}</p>`;
+}
+
+function settingsForm(options: {
+  group: SettingGroup;
+  title: string;
+  settings: SettingView[];
+  secretsEditable: boolean;
+  csrfToken: string;
+  revision: string;
+}): string {
+  const fields = options.settings.filter((setting) => setting.group === options.group);
+  if (fields.length === 0) {
+    return '';
+  }
+  return `<form method="post" action="/dashboard/providers">
+  ${csrfField(options.csrfToken)}
+  <input type="hidden" name="revision" value="${escapeHtml(options.revision)}" />
+  ${fields.map((setting) => settingField(setting, options.secretsEditable)).join('\n')}
+  <div class="actions"><button type="submit">${escapeHtml(options.title)}</button></div>
+</form>`;
+}
+
+export function providerPage(data: ProviderPageData): string {
+  const cards = data.providers
     .map(
       (provider) => `<div class="panel">
   <h2 style="margin-top:0">${escapeHtml(provider.label)} ${badge(
@@ -361,22 +466,53 @@ export function providerPage(providers: ProviderStatus[], platformDefault: Realt
      <strong>Model field:</strong> ${escapeHtml(provider.modelHint)}</p>
   ${
     provider.configured
-      ? `<table><tbody>${Object.entries(provider.details)
-          .map(([key, value]) => `<tr><th>${escapeHtml(key)}</th><td class="mono">${escapeHtml(value)}</td></tr>`)
-          .join('')}</tbody></table>`
-      : `<p class="muted">Missing platform configuration: <span class="mono">${escapeHtml(
+      ? ''
+      : `<p class="muted">Still missing: <span class="mono">${escapeHtml(
           provider.missingEnvironment.join(', ') || provider.requiredEnvironment.join(', '),
         )}</span></p>`
   }
+  ${settingsForm({
+    group: provider.id,
+    title: `Save ${provider.label} settings`,
+    settings: data.settings,
+    secretsEditable: data.secretsEditable,
+    csrfToken: data.csrfToken,
+    revision: data.revision,
+  })}
 </div>`,
     )
     .join('');
 
   return `<h1>Providers</h1>
-<p class="lede">Execution providers Callora can hand a call to. Credentials are held by the platform and are never shown here; the default for new agents is ${escapeHtml(
-    PROVIDER_CATALOG[platformDefault].label,
-  )}.</p>
-${cards}`;
+<p class="lede">Execution providers Callora can hand a call to, configured here rather than in the deployment's environment. A saved value overrides the environment variable of the same name and applies to the next call; clearing a field falls back to it.</p>
+${flash('ok', data.notice)}
+${flash('error', data.error)}
+${
+  data.secretsEditable
+    ? ''
+    : flash(
+        'error',
+        'This deployment has no SECRETS_KEY, so API keys cannot be stored safely and their fields are disabled. Set SECRETS_KEY in the environment to manage credentials here; everything else is still editable.',
+      )
+}
+
+<h2>Platform</h2>
+<div class="panel">
+  ${settingsForm({
+    group: 'platform',
+    title: 'Save platform settings',
+    settings: data.settings,
+    secretsEditable: data.secretsEditable,
+    csrfToken: data.csrfToken,
+    revision: data.revision,
+  })}
+</div>
+
+<h2>Execution providers</h2>
+${cards}
+<p class="muted">Stored credentials are encrypted and are never displayed again, here or anywhere else in Callora. The default for new agents is ${escapeHtml(
+    PROVIDER_CATALOG[data.platformDefault].label,
+  )}.</p>`;
 }
 
 export function auditPage(events: AuditEvent[], limit: number, offset: number): string {
@@ -480,7 +616,8 @@ ${flash('error', options.error)}
 <div class="panel table-scroll"><table><tbody>${platformRows
     .map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td class="mono">${escapeHtml(value)}</td></tr>`)
     .join('')}</tbody></table>
-  <p class="muted">Provider credentials are held by the platform and are never displayed or editable here.</p>
+  <p class="muted">Provider credentials and the default provider are managed on the
+    <a href="/dashboard/providers">Providers</a> page. Everything above is fixed for the lifetime of the process.</p>
 </div>
 
 <h2>Administrators</h2>
