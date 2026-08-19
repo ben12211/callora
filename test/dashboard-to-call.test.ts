@@ -289,6 +289,57 @@ describe('what the dashboard saves reaches the call', () => {
     await app.close();
   });
 
+  it('shows the resolved call configuration back on the preview page', async () => {
+    const { app, cookie } = await dashboard(store);
+    const previewFor = async (): Promise<string> =>
+      (
+        await app.inject({
+          method: 'GET',
+          url: `/dashboard/businesses/${firstBusinessId}/preview`,
+          headers: { cookie },
+        })
+      ).body;
+
+    await saveAgentForm(app, cookie, store, {
+      voiceProvider: 'openai',
+      voice: 'cedar',
+      realtimeModel: 'gpt-realtime-from-the-form',
+    });
+    const openAi = await previewFor();
+
+    // The operator's own words, the model, and the voice, read back from the same
+    // builders the call uses.
+    expect(openAi).toContain(INSTRUCTIONS);
+    expect(openAi).toContain(GREETING);
+    expect(openAi).toContain('gpt-realtime-from-the-form');
+    expect(openAi).toContain('cedar');
+
+    await saveAgentForm(app, cookie, store, {
+      voiceProvider: 'elevenlabs',
+      voice: 'voice_from_the_form',
+      realtimeModel: 'eleven_flash_v2_5',
+    });
+    const elevenLabs = await previewFor();
+
+    expect(elevenLabs).toContain(INSTRUCTIONS);
+    // The page states plainly which value goes nowhere, and why a call can still ignore
+    // everything else on it.
+    expect(elevenLabs).toContain('not sent');
+    expect(elevenLabs).toContain('Security tab');
+    expect(elevenLabs).toContain('agent_platform_wide');
+    await app.close();
+  });
+
+  it('keeps the preview behind a session', async () => {
+    const app = await buildApp({ config, store });
+    const response = await app.inject({
+      method: 'GET',
+      url: `/dashboard/businesses/${firstBusinessId}/preview`,
+    });
+    expect(response.statusCode).toBe(303);
+    await app.close();
+  });
+
   it('switching provider in the form switches which bridge the call opens', async () => {
     const { app, cookie } = await dashboard(store);
     for (const provider of ['openai', 'elevenlabs', 'cartesia'] as const) {

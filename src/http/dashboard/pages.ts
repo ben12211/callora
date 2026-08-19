@@ -1,4 +1,5 @@
 import type { AdminUser, AgentConfig, AuditEvent, Business, CallRecord } from '../../domain/models.js';
+import type { CallPreview } from './call-preview.js';
 import type { SettingGroup, SettingView } from '../../platform/settings.js';
 import type { ProviderStatus } from '../../realtime/provider-catalog.js';
 import { PROVIDER_CATALOG } from '../../realtime/provider-catalog.js';
@@ -263,7 +264,10 @@ ${flash('error', data.error)}
     PROVIDER_CATALOG[id].suggestedModels.map((model) => `<option value="${escapeHtml(model)}"></option>`),
   ).join('')}</datalist>
 
-  <div class="actions"><button type="submit">Save agent configuration</button></div>
+  <div class="actions">
+    <button type="submit">Save agent configuration</button>
+    <a class="button secondary" href="/dashboard/businesses/${escapeHtml(business.id)}/preview">See what a call will use</a>
+  </div>
   ${PROVIDER_HINT_SCRIPT}
 </form>
 
@@ -272,6 +276,75 @@ ${callTable(data.calls, [business])}
 
 <h2>Change history</h2>
 ${auditTable(data.audit)}`;
+}
+
+/**
+ * Shows the resolved call configuration for one business.
+ *
+ * Rendered from the same builders the call path uses, so this page cannot drift from what
+ * a caller actually reaches: if the prompt below is not the one in the form, the call is
+ * not using the form either, and the warnings say why.
+ */
+export function callPreviewPage(options: {
+  business: Business;
+  preview: CallPreview;
+  generatedAt: Date;
+}): string {
+  const { business, preview } = options;
+
+  const rows = preview.fields
+    .map(
+      (field) => `<tr>
+  <th>${escapeHtml(field.label)}</th>
+  <td class="mono"${field.ignored ? ' style="color:var(--danger)"' : ''}>${escapeHtml(field.value)}${
+    field.ignored ? ' — not sent' : ''
+  }</td>
+  <td class="muted">${escapeHtml(field.note ?? '')}</td>
+</tr>`,
+    )
+    .join('');
+
+  return `<h1>What the next call will use</h1>
+<p class="lede">${escapeHtml(business.name)} · <span class="mono">${escapeHtml(business.phoneNumber)}</span></p>
+<p class="muted">Resolved from the stored configuration by the same code that answers a call, at ${escapeHtml(
+    formatDate(options.generatedAt),
+  )}. If something here is not what you saved, the call is not reading what you saved either.</p>
+${preview.warnings.map((warning) => flash('error', warning)).join('')}
+
+<div class="panel">
+  <h2 style="margin-top:0">${escapeHtml(preview.providerLabel)} ${badge(
+    preview.providerConfigured,
+    'Credentials present',
+    'No platform credentials',
+  )} ${badge(preview.enabled, 'Agent on', 'Agent off')}</h2>
+  <div class="table-scroll"><table><tbody>${rows}</tbody></table></div>
+</div>
+
+<h2>First thing the caller hears</h2>
+<div class="panel"><pre class="mono" style="white-space:pre-wrap;margin:0">${escapeHtml(preview.greeting)}</pre></div>
+
+<h2>System prompt as the provider receives it</h2>
+<div class="panel">
+  <p class="muted">Your business instructions appear inside the configuration block. Everything around them is the
+    Callora phone-agent policy, which is applied on top and outranks them: it can be narrowed, never widened.</p>
+  <pre class="mono" style="white-space:pre-wrap;max-height:32rem;overflow:auto;margin:0">${escapeHtml(
+    preview.instructions,
+  )}</pre>
+</div>
+${
+  preview.payload
+    ? `<h2>Initiation payload</h2>
+<div class="panel">
+  <p class="muted">${escapeHtml(preview.payloadNote ?? '')}</p>
+  <pre class="mono" style="white-space:pre-wrap;max-height:24rem;overflow:auto;margin:0">${escapeHtml(
+    preview.payload,
+  )}</pre>
+</div>`
+    : ''
+}
+<div class="actions"><a class="button secondary" href="/dashboard/businesses/${escapeHtml(
+    business.id,
+  )}">Back to the business</a></div>`;
 }
 
 export function callListPage(options: {

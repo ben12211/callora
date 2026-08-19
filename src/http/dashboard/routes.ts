@@ -3,7 +3,7 @@ import { hashPassword } from '../../auth/passwords.js';
 import { CSRF_FIELD_NAME, SESSION_COOKIE_NAME, csrfTokenMatches, type AuthenticatedActor } from '../../auth/sessions.js';
 import type { AgentConfig, Business } from '../../domain/models.js';
 import { SETTING_CATALOG, SettingsValidationError } from '../../platform/settings.js';
-import { providerStatuses } from '../../realtime/provider-catalog.js';
+import { PROVIDER_CATALOG, providerStatuses } from '../../realtime/provider-catalog.js';
 import { defaultAgentConfig } from '../api-routes.js';
 import { AGENT_AUDIT_FIELDS, AUDIT_ACTIONS, BUSINESS_AUDIT_FIELDS, changedFields } from '../audit.js';
 import { clearCookie, readCookie, setCookie } from '../cookies.js';
@@ -15,6 +15,7 @@ import {
   loginSchema,
   updateBusinessSchema,
 } from '../schemas.js';
+import { buildCallPreview } from './call-preview.js';
 import { renderPage } from './layout.js';
 import {
   auditPage,
@@ -22,6 +23,7 @@ import {
   businessListPage,
   callDetailPage,
   callListPage,
+  callPreviewPage,
   homePage,
   loginPage,
   newBusinessPage,
@@ -420,6 +422,48 @@ export async function registerDashboardRoutes(
       details: { changes: changedFields<AgentConfig>(before, agent, AGENT_AUDIT_FIELDS) },
     });
     return reply.redirect(`/dashboard/businesses/${business.id}?notice=Agent+configuration+saved.`, 303);
+  });
+
+  /**
+   * What the next call to this business would send, resolved by the same code the call
+   * path runs. It exists so "the agent ignores what I configured" can be answered by
+   * looking rather than by reading logs on the server.
+   */
+  app.get('/dashboard/businesses/:id/preview', async (request, reply) => {
+    const actor = await requireSession(request, reply);
+    if (!actor) return reply;
+    const { id } = request.params as { id: string };
+    const business = await store.getBusinessById(id).catch(() => null);
+    if (!business) {
+      return page(reply, request, actor, 'Not found', notFoundPage('That business does not exist.'), 404);
+    }
+    const agent = await store.getAgentConfig(business.id);
+    if (!agent) {
+      return page(
+        reply,
+        request,
+        actor,
+        'Not found',
+        notFoundPage('That business has no agent configuration yet.'),
+        404,
+      );
+    }
+    await platform.refreshIfStale();
+    return page(
+      reply,
+      request,
+      actor,
+      'Call preview',
+      callPreviewPage({
+        business,
+        preview: buildCallPreview({
+          agent,
+          providers: platform.providers(),
+          providerLabel: PROVIDER_CATALOG[agent.voiceProvider].label,
+        }),
+        generatedAt: new Date(),
+      }),
+    );
   });
 
   app.get('/dashboard/calls', async (request, reply) => {
