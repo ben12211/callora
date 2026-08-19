@@ -148,6 +148,38 @@ export interface BusinessDetailData {
   error?: string;
 }
 
+/**
+ * The `voice` and `model` fields mean something different on each provider, so only the
+ * selected provider's note is shown. Rendering all of them at once was how a field that
+ * one provider ignores could still read as if it applied.
+ */
+function providerHints(field: 'voice' | 'model', selected: RealtimeProvider): string {
+  return REALTIME_PROVIDERS.map((id) => {
+    const descriptor = PROVIDER_CATALOG[id];
+    // The one field the form offers that its provider never receives.
+    const ignored = field === 'model' && id === 'elevenlabs';
+    return `<p class="hint" data-hint="${field}" data-provider="${id}"${id === selected ? '' : ' hidden'}${
+      ignored ? ' style="color:var(--danger)"' : ''
+    }>${ignored ? 'Not used on this provider. ' : ''}${escapeHtml(
+      field === 'voice' ? descriptor.voiceHint : descriptor.modelHint,
+    )}</p>`;
+  }).join('');
+}
+
+/** Swaps those notes when the provider changes, so the page never has to be reloaded. */
+const PROVIDER_HINT_SCRIPT = `<script>
+(function () {
+  var select = document.getElementById('voiceProvider');
+  if (!select) { return; }
+  select.addEventListener('change', function () {
+    var notes = document.querySelectorAll('[data-hint]');
+    for (var index = 0; index < notes.length; index += 1) {
+      notes[index].hidden = notes[index].getAttribute('data-provider') !== select.value;
+    }
+  });
+})();
+</script>`;
+
 export function businessDetailPage(data: BusinessDetailData): string {
   const { business, agent, csrfToken } = data;
   const configured = new Set(data.providers.filter((provider) => provider.configured).map((p) => p.id));
@@ -213,10 +245,8 @@ ${flash('error', data.error)}
     agent?.instructions ?? '',
   )}</textarea>
 
-  <label for="voice">Voice
-    <span class="hint">${REALTIME_PROVIDERS.map(
-      (id) => `${escapeHtml(PROVIDER_CATALOG[id].label)}: ${escapeHtml(PROVIDER_CATALOG[id].voiceHint)}`,
-    ).join(' ')}</span></label>
+  <label for="voice">Voice</label>
+  ${providerHints('voice', selectedProvider)}
   <input id="voice" name="voice" type="text" maxlength="80" list="voice-suggestions" value="${escapeHtml(
     agent?.voice ?? '',
   )}" />
@@ -224,10 +254,8 @@ ${flash('error', data.error)}
     PROVIDER_CATALOG[id].suggestedVoices.map((voice) => `<option value="${escapeHtml(voice)}"></option>`),
   ).join('')}</datalist>
 
-  <label for="realtimeModel">Model
-    <span class="hint">${REALTIME_PROVIDERS.map(
-      (id) => `${escapeHtml(PROVIDER_CATALOG[id].label)}: ${escapeHtml(PROVIDER_CATALOG[id].modelHint)}`,
-    ).join(' ')}</span></label>
+  <label for="realtimeModel">Model</label>
+  ${providerHints('model', selectedProvider)}
   <input id="realtimeModel" name="realtimeModel" type="text" required maxlength="80" list="model-suggestions" value="${escapeHtml(
     agent?.realtimeModel ?? 'gpt-realtime-2.1',
   )}" />
@@ -236,6 +264,7 @@ ${flash('error', data.error)}
   ).join('')}</datalist>
 
   <div class="actions"><button type="submit">Save agent configuration</button></div>
+  ${PROVIDER_HINT_SCRIPT}
 </form>
 
 <h2>Recent calls</h2>

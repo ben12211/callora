@@ -13,6 +13,8 @@ Shared record of meaningful completed Callora changes.
 
 ### Changed
 
+- The agent form now shows only the selected provider's note for the Voice and Model fields, and says outright that ElevenLabs never receives the Model value: it belongs to the agent configured on their side, and sending it as a conversation override would fail the call unless that override is enabled there. Showing all three providers' notes at once was how a field one provider ignores could still read as if it applied.
+
 - Missing provider credentials no longer stop the process. They can now be entered in the dashboard, so a fresh deployment may legitimately start with none; `loadConfig` reports them through `missingProviderCredentials` for a startup warning and the Providers page, and until they exist calls answer with the business's static greeting — the behaviour an unconfigured provider already had. An unrecognised `VOICE_PROVIDER` is still rejected outright.
 - The deployment pipeline carries `SECRETS_KEY` and no longer fails when the selected provider's credentials are absent from GitHub Secrets; it names them and continues, since they may be stored in the dashboard. A malformed credential still aborts. The key is only written to the server's `.env` when the pipeline actually sends one, so an existing key is never erased — which would leave every stored credential unreadable.
 

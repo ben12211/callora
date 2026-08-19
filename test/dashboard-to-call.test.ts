@@ -249,6 +249,46 @@ describe('what the dashboard saves reaches the call', () => {
     await app.close();
   });
 
+  it('says on the page which fields the selected provider actually uses', async () => {
+    const { app, cookie } = await dashboard(store);
+
+    /** The rendered note for one field on one provider, so its `hidden` state is checkable. */
+    const noteFor = (body: string, field: string, provider: string): string => {
+      const match = new RegExp(`<p[^>]*data-hint="${field}"[^>]*data-provider="${provider}"[^>]*>`).exec(body);
+      expect(match, `${field}/${provider} note is missing`).not.toBeNull();
+      return match![0];
+    };
+    const pageFor = async (): Promise<string> =>
+      (await app.inject({ method: 'GET', url: `/dashboard/businesses/${firstBusinessId}`, headers: { cookie } }))
+        .body;
+
+    await saveAgentForm(app, cookie, store, {
+      voiceProvider: 'elevenlabs',
+      voice: 'voice_from_the_form',
+      realtimeModel: 'eleven_turbo_v2_5',
+    });
+    const elevenLabsPage = await pageFor();
+
+    // The model note for the selected provider is the visible one, and it says outright
+    // that the value goes nowhere.
+    expect(noteFor(elevenLabsPage, 'model', 'elevenlabs')).not.toContain('hidden');
+    expect(elevenLabsPage).toContain('Not used on this provider');
+    expect(elevenLabsPage).toContain('Callora never sends this to ElevenLabs');
+    // The other providers' notes are rendered but out of the way.
+    expect(noteFor(elevenLabsPage, 'model', 'openai')).toContain('hidden');
+    expect(noteFor(elevenLabsPage, 'voice', 'cartesia')).toContain('hidden');
+
+    await saveAgentForm(app, cookie, store, {
+      voiceProvider: 'openai',
+      voice: 'marin',
+      realtimeModel: 'gpt-realtime-2.1',
+    });
+    const openAiPage = await pageFor();
+    expect(noteFor(openAiPage, 'model', 'openai')).not.toContain('hidden');
+    expect(noteFor(openAiPage, 'model', 'elevenlabs')).toContain('hidden');
+    await app.close();
+  });
+
   it('switching provider in the form switches which bridge the call opens', async () => {
     const { app, cookie } = await dashboard(store);
     for (const provider of ['openai', 'elevenlabs', 'cartesia'] as const) {
