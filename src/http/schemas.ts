@@ -35,6 +35,8 @@ export const agentConfigSchema = z
     greeting: z.string().trim().min(1).max(500),
     instructions: z.string().trim().min(1).max(8000),
     voiceProvider: z.enum([...REALTIME_PROVIDERS]),
+    // Blank means the platform-wide agent, so an existing deployment keeps its behaviour.
+    elevenLabsAgentId: z.string().trim().max(120).default(''),
     // Blank is meaningful: it means "use whatever the provider is already configured with".
     voice: z.string().trim().max(80).default(''),
     realtimeModel: z.string().trim().min(1).max(80),

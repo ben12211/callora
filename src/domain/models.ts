@@ -29,6 +29,12 @@ export interface AgentConfig {
   realtimeModel: string;
   /** Execution provider that answers this business's calls. */
   voiceProvider: RealtimeProvider;
+  /**
+   * ElevenLabs agent this business owns. Empty falls back to the platform-wide agent,
+   * which is the pre-existing behaviour; Callora only writes configuration into an agent
+   * a business owns, so a shared one is never overwritten.
+   */
+  elevenLabsAgentId: string;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -42,6 +48,7 @@ export interface UpsertAgentConfigInput {
   voice: string;
   realtimeModel: string;
   voiceProvider: RealtimeProvider;
+  elevenLabsAgentId: string;
   enabled: boolean;
 }
 

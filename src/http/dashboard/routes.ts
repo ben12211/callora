@@ -4,6 +4,7 @@ import { CSRF_FIELD_NAME, SESSION_COOKIE_NAME, csrfTokenMatches, type Authentica
 import type { AgentConfig, Business } from '../../domain/models.js';
 import { SETTING_CATALOG, SettingsValidationError } from '../../platform/settings.js';
 import { PROVIDER_CATALOG, providerStatuses } from '../../realtime/provider-catalog.js';
+import { syncAgentToProvider } from '../agent-sync.js';
 import { defaultAgentConfig } from '../api-routes.js';
 import { AGENT_AUDIT_FIELDS, AUDIT_ACTIONS, BUSINESS_AUDIT_FIELDS, changedFields } from '../audit.js';
 import { clearCookie, readCookie, setCookie } from '../cookies.js';
@@ -389,6 +390,7 @@ export async function registerDashboardRoutes(
       greeting: body['greeting'],
       instructions: body['instructions'],
       voiceProvider: body['voiceProvider'],
+      elevenLabsAgentId: body['elevenLabsAgentId'] ?? '',
       voice: body['voice'] ?? '',
       realtimeModel: body['realtimeModel'],
     });
@@ -421,7 +423,39 @@ export async function registerDashboardRoutes(
       summary: `Updated the agent for ${business.name}`,
       details: { changes: changedFields<AgentConfig>(before, agent, AGENT_AUDIT_FIELDS) },
     });
-    return reply.redirect(`/dashboard/businesses/${business.id}?notice=Agent+configuration+saved.`, 303);
+    // ElevenLabs keeps its own copy of this configuration, so saving here is only half of
+    // it. The push never fails the save: what is stored in Callora is correct either way,
+    // and a failure means ElevenLabs is still answering with its previous copy.
+    const sync = await syncAgentToProvider({
+      agent,
+      providers: platform.providers(),
+      ...(dependencies.fetchImpl ? { fetchImpl: dependencies.fetchImpl } : {}),
+    });
+    if (!sync.skipped) {
+      await audit.record(actor, {
+        action: AUDIT_ACTIONS.agentSynced,
+        entityType: 'agent',
+        entityId: business.id,
+        summary: sync.ok
+          ? `Pushed the agent for ${business.name} to ElevenLabs`
+          : `Failed to push the agent for ${business.name} to ElevenLabs`,
+        details: { ok: sync.ok, message: sync.message },
+      });
+    }
+    if (sync.message && !sync.ok) {
+      return reply.redirect(
+        `/dashboard/businesses/${business.id}?notice=${encodeURIComponent(
+          'Agent configuration saved.',
+        )}&error=${encodeURIComponent(sync.message)}`,
+        303,
+      );
+    }
+    return reply.redirect(
+      `/dashboard/businesses/${business.id}?notice=${encodeURIComponent(
+        sync.message ? `Agent configuration saved. ${sync.message}` : 'Agent configuration saved.',
+      )}`,
+      303,
+    );
   });
 
   /**

@@ -43,6 +43,7 @@ export function agentConfig(businessId: string, enabled = true): AgentConfig {
     voice: 'marin',
     realtimeModel: 'gpt-realtime-2.1',
     voiceProvider: 'openai',
+    elevenLabsAgentId: '',
     enabled,
     createdAt: now,
     updatedAt: now,

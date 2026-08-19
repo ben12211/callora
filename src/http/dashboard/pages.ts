@@ -255,6 +255,14 @@ ${flash('error', data.error)}
     PROVIDER_CATALOG[id].suggestedVoices.map((voice) => `<option value="${escapeHtml(voice)}"></option>`),
   ).join('')}</datalist>
 
+  <label for="elevenLabsAgentId">ElevenLabs agent id
+    <span class="hint">Only used when the provider is ElevenLabs. Give this business an agent of its own and
+      Callora writes the configuration above into it on every save. Leave it empty to keep running on the shared
+      platform agent, which is never written to.</span></label>
+  <input id="elevenLabsAgentId" name="elevenLabsAgentId" type="text" maxlength="120" value="${escapeHtml(
+    agent?.elevenLabsAgentId ?? '',
+  )}" />
+
   <label for="realtimeModel">Model</label>
   ${providerHints('model', selectedProvider)}
   <input id="realtimeModel" name="realtimeModel" type="text" required maxlength="80" list="model-suggestions" value="${escapeHtml(

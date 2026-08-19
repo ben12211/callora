@@ -66,9 +66,11 @@ export function buildCallPreview(options: {
         'The platform holds no ElevenLabs credentials, so calls fall back to the business greeting. Add them on the Providers page.',
       );
     }
-    warnings.push(
-      'ElevenLabs rejects an override that is not enabled on the agent itself. If the prompt, first message, and language switches under its Security tab are off, ElevenLabs discards everything below and answers with the prompt configured on their side — which looks exactly like Callora ignoring this page.',
-    );
+    if (!agent.elevenLabsAgentId.trim()) {
+      warnings.push(
+        'This business has no ElevenLabs agent of its own, so the configuration below is sent as per-call overrides. ElevenLabs rejects an override that is not enabled on the agent itself: if the prompt, first message, and language switches under its Security tab are off, it discards them and answers with its own prompt — which looks exactly like Callora ignoring this page. Give the business its own agent id and Callora writes the configuration into it instead.',
+      );
+    }
 
     const initiation = buildConversationInitiation({
       agent,
@@ -88,13 +90,17 @@ export function buildCallPreview(options: {
         {
           label: 'Model',
           value: agent.realtimeModel,
-          ignored: true,
-          note: 'Stored in Callora and never sent. The model belongs to the agent in the ElevenLabs dashboard.',
+          ignored: !agent.elevenLabsAgentId.trim(),
+          note: agent.elevenLabsAgentId.trim()
+            ? 'Written into the ElevenLabs agent on save, so the call runs on it.'
+            : 'Never sent. Without an agent of its own, the model stays whatever the shared agent is configured with.',
         },
         {
-          label: 'ElevenLabs agent id',
-          value: credentials?.agentId ?? 'not configured',
-          note: 'Platform-wide: every business on this provider runs on this one agent.',
+          label: 'ElevenLabs agent',
+          value: agent.elevenLabsAgentId.trim() || credentials?.agentId || 'not configured',
+          note: agent.elevenLabsAgentId.trim()
+            ? 'This business owns this agent, so saving in Callora writes the configuration into it.'
+            : 'The shared platform agent. Callora never writes into it, so this page is sent as per-call overrides only.',
         },
       ],
       instructions,

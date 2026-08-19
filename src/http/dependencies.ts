@@ -18,6 +18,8 @@ export interface RouteDependencies {
   callerAllowlist?: CallerAllowlist;
   /** Overridable so tests can seed platform settings; `buildApp` builds one otherwise. */
   platform?: PlatformSettings;
+  /** Outbound HTTP for provider management calls; injectable so tests stay offline. */
+  fetchImpl?: typeof fetch;
 }
 
 /** Everything the control-plane routes need, built once in `buildApp`. */

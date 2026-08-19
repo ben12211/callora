@@ -16,6 +16,7 @@ export const AUDIT_ACTIONS = {
   businessDisabled: 'business.disabled',
   businessDeleted: 'business.deleted',
   agentUpdated: 'agent.updated',
+  agentSynced: 'agent.pushed_to_provider',
   adminLoggedIn: 'admin.logged_in',
   adminPasswordChanged: 'admin.password_changed',
   platformSettingsUpdated: 'platform.settings_updated',
@@ -79,6 +80,7 @@ export const AGENT_AUDIT_FIELDS = [
   'greeting',
   'instructions',
   'voiceProvider',
+  'elevenLabsAgentId',
   'voice',
   'realtimeModel',
 ] as const satisfies readonly (keyof AgentConfig & string)[];

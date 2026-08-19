@@ -336,13 +336,15 @@ async function openBridge(
       socket.close(1011, 'provider unavailable');
       return;
     }
+    // A business that owns an agent runs on it; the rest share the platform agent.
+    const agentId = agent.elevenLabsAgentId.trim() || credentials.agentId;
     const elevenLabsSocket = await connectElevenLabsAgent({
       apiKey: credentials.apiKey,
-      agentId: credentials.agentId,
+      agentId,
       baseUrl: credentials.apiBaseUrl,
     });
     // The agent id is safe to log; the API key and the signed URL never are.
-    app.log.info({ businessId, callSid, agentId: credentials.agentId }, 'ElevenLabs conversation opened');
+    app.log.info({ businessId, callSid, agentId }, 'ElevenLabs conversation opened');
 
     const bridge = new ElevenLabsBridge({
       twilio: twilioChannel,

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { AgentConfig, UpsertAgentConfigInput } from '../domain/models.js';
 import { DEFAULT_TEXT_LLM_MODEL } from '../realtime/cartesia-constants.js';
 import { providerStatuses } from '../realtime/provider-catalog.js';
+import { syncAgentToProvider } from './agent-sync.js';
 import { requireApiAuth } from './auth-guard.js';
 import {
   AGENT_AUDIT_FIELDS,
@@ -47,6 +48,7 @@ export function defaultAgentConfig(
     greeting,
     instructions: 'Describe the business, its tone, and what it can help callers with.',
     voiceProvider: provider,
+    elevenLabsAgentId: '',
     voice,
     realtimeModel:
       provider === 'cartesia' ? (cartesia?.textLlmModel ?? DEFAULT_TEXT_LLM_MODEL) : 'gpt-realtime-2.1',
@@ -209,7 +211,26 @@ export async function registerApiRoutes(
         summary: `Updated the agent for ${business.name}`,
         details: { changes: changedFields<AgentConfig>(before, agent, AGENT_AUDIT_FIELDS) },
       });
-      return { data: agent };
+
+      // Same contract as the dashboard: stored here, then pushed to the provider that
+      // keeps its own copy. Reported alongside the saved row rather than as a failure.
+      const sync = await syncAgentToProvider({
+        agent,
+        providers: platform.providers(),
+        ...(dependencies.fetchImpl ? { fetchImpl: dependencies.fetchImpl } : {}),
+      });
+      if (!sync.skipped) {
+        await audit.record(request.actor, {
+          action: AUDIT_ACTIONS.agentSynced,
+          entityType: 'agent',
+          entityId: business.id,
+          summary: sync.ok
+            ? `Pushed the agent for ${business.name} to ElevenLabs`
+            : `Failed to push the agent for ${business.name} to ElevenLabs`,
+          details: { ok: sync.ok, message: sync.message },
+        });
+      }
+      return { data: agent, sync: { ok: sync.ok, message: sync.message } };
     });
 
     api.get('/api/providers', async () => {

@@ -42,6 +42,7 @@ interface AgentConfigRow {
   voice: string;
   realtime_model: string;
   voice_provider: RealtimeProvider;
+  elevenlabs_agent_id: string;
   enabled: boolean;
   created_at: Date;
   updated_at: Date;
@@ -146,6 +147,7 @@ function mapAgentConfig(row: AgentConfigRow): AgentConfig {
     voice: row.voice,
     realtimeModel: row.realtime_model,
     voiceProvider: row.voice_provider,
+    elevenLabsAgentId: row.elevenlabs_agent_id,
     enabled: row.enabled,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -154,7 +156,7 @@ function mapAgentConfig(row: AgentConfigRow): AgentConfig {
 
 const agentConfigColumns = `
   business_id, instructions, greeting, language, voice, realtime_model, voice_provider,
-  enabled, created_at, updated_at
+  elevenlabs_agent_id, enabled, created_at, updated_at
 `;
 
 function mapAdminUser(row: AdminUserRow): AdminUser {
@@ -309,8 +311,9 @@ export class PostgresStore implements DataStore {
   public async upsertAgentConfig(businessId: string, input: UpsertAgentConfigInput): Promise<AgentConfig> {
     const result = await this.pool.query<AgentConfigRow>(
       `INSERT INTO agent_configs (
-         business_id, instructions, greeting, language, voice, realtime_model, voice_provider, enabled
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         business_id, instructions, greeting, language, voice, realtime_model, voice_provider,
+         elevenlabs_agent_id, enabled
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (business_id) DO UPDATE SET
          instructions = EXCLUDED.instructions,
          greeting = EXCLUDED.greeting,
@@ -318,6 +321,7 @@ export class PostgresStore implements DataStore {
          voice = EXCLUDED.voice,
          realtime_model = EXCLUDED.realtime_model,
          voice_provider = EXCLUDED.voice_provider,
+         elevenlabs_agent_id = EXCLUDED.elevenlabs_agent_id,
          enabled = EXCLUDED.enabled,
          updated_at = now()
        RETURNING ${agentConfigColumns}`,
@@ -329,6 +333,7 @@ export class PostgresStore implements DataStore {
         input.voice,
         input.realtimeModel,
         input.voiceProvider,
+        input.elevenLabsAgentId,
         input.enabled,
       ],
     );
