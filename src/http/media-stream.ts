@@ -13,6 +13,7 @@ import { connectElevenLabsAgent } from '../realtime/elevenlabs-connection.js';
 import { connectOpenAiRealtime } from '../realtime/openai-connection.js';
 import { parseJsonObject, readObject, readString } from '../realtime/protocol.js';
 import { websocketChannel } from '../realtime/websocket-channel.js';
+import type { CallRegistry } from '../telephony/call-registry.js';
 import { createCallTerminator, type CallTerminator } from '../telephony/call-terminator.js';
 import { verifyStreamToken, type StreamTokenPayload } from './stream-token.js';
 
@@ -29,6 +30,8 @@ interface MediaStreamDependencies {
   platform: PlatformRuntime;
   /** Overridable so tests never reach the Twilio REST API. */
   callTerminator?: CallTerminator;
+  /** Live calls on this instance, so a deploy can drain instead of cutting them off. */
+  registry?: CallRegistry;
 }
 
 function validWebSocketSignature(request: FastifyRequest, config: AppConfig): boolean {
@@ -164,6 +167,18 @@ async function startAuthorizedBridge(
   }
 
   const { claims } = authorized;
+  if (dependencies.registry?.isDraining) {
+    // This instance is going away. Refusing the stream is better than accepting a call
+    // that would be cut off part-way through the drain window.
+    app.log.warn(
+      { businessId: claims.businessId, callSid: claims.callSid },
+      'Refusing a new media stream while shutting down',
+    );
+    await fallbackToGreeting(app, dependencies, claims.businessId, claims.callSid, 'shutting-down');
+    socket.close(1012, 'shutting down');
+    return;
+  }
+
   try {
     await openBridge(
       app,
@@ -182,7 +197,40 @@ async function startAuthorizedBridge(
       },
       'Failed to start the realtime call bridge',
     );
+    // A <Connect><Stream> call whose stream just closes hears nothing at all. Hand the
+    // call back to TwiML so the caller gets the business's greeting instead of silence.
+    await fallbackToGreeting(app, dependencies, claims.businessId, claims.callSid, 'bridge-failed');
     socket.close(1011, 'bridge failed');
+  }
+}
+
+/** Last line before dead air: speak the tenant's static greeting and hang up. */
+export async function fallbackToGreeting(
+  app: FastifyInstance,
+  dependencies: MediaStreamDependencies,
+  businessId: string,
+  callSid: string,
+  reason: string,
+): Promise<void> {
+  const terminator = dependencies.callTerminator;
+  if (!terminator) {
+    return;
+  }
+  try {
+    const business = await dependencies.store.getBusinessById(businessId);
+    const line = business?.greeting?.trim();
+    if (!line) {
+      app.log.warn({ businessId, callSid, reason }, 'No greeting to fall back to; hanging up');
+      await terminator.endCall(callSid);
+      return;
+    }
+    await terminator.sayAndHangUp(callSid, line);
+    app.log.info({ businessId, callSid, reason }, 'Answered with the static greeting after the realtime path failed');
+  } catch (error) {
+    app.log.error(
+      { businessId, callSid, reason, error: error instanceof Error ? error.message : 'unknown error' },
+      'Failed to fall back to the static greeting',
+    );
   }
 }
 
@@ -205,6 +253,7 @@ async function openBridge(
   const agent = await store.getAgentConfig(businessId);
   if (!agent || !agent.enabled) {
     app.log.warn({ businessId, callSid }, 'No enabled agent configuration for the resolved business');
+    await fallbackToGreeting(app, dependencies, businessId, callSid, 'agent-unavailable');
     socket.close(1011, 'agent unavailable');
     return;
   }
@@ -252,6 +301,25 @@ async function openBridge(
       }
     : undefined;
 
+  /**
+   * Registers the live call so a shutdown can wait for it, and unregisters it however it
+   * ends. Without this a deploy closes the server underneath every conversation.
+   */
+  const track = (bridgeClose: (reason: string) => void, provider: string): void => {
+    const registry = dependencies.registry;
+    if (!registry) {
+      return;
+    }
+    registry.add({
+      businessId,
+      callSid,
+      provider,
+      startedAt: Date.now(),
+      close: (reason) => bridgeClose(reason),
+    });
+    socket.once('close', () => registry.remove(callSid));
+  };
+
   /** One ceiling per call, cleared by whichever side disconnects first. */
   const guardDuration = (close: () => void, providerSocket: WebSocket): void => {
     const maxDurationTimer = setTimeout(close, MAX_CALL_DURATION_MS);
@@ -267,6 +335,7 @@ async function openBridge(
     const credentials = providers.cartesia;
     if (!credentials) {
       app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
+      await fallbackToGreeting(app, dependencies, businessId, callSid, 'provider-unavailable');
       socket.close(1011, 'provider unavailable');
       return;
     }
@@ -275,6 +344,7 @@ async function openBridge(
     const voiceId = agent.voice.trim() || credentials.defaultVoiceId;
     if (!voiceId) {
       app.log.error({ businessId, callSid }, 'The Cartesia agent has no voice id and no platform default');
+      await fallbackToGreeting(app, dependencies, businessId, callSid, 'voice-unavailable');
       socket.close(1011, 'provider unavailable');
       return;
     }
@@ -325,6 +395,7 @@ async function openBridge(
 
     guardDuration(() => bridge.close('max-duration'), sttSocket);
     ttsSocket.once('close', () => bridge.close('tts-closed'));
+    track((reason) => bridge.close(reason), 'cartesia');
     bridge.start();
     return;
   }
@@ -333,6 +404,7 @@ async function openBridge(
     const credentials = providers.elevenlabs;
     if (!credentials) {
       app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
+      await fallbackToGreeting(app, dependencies, businessId, callSid, 'provider-unavailable');
       socket.close(1011, 'provider unavailable');
       return;
     }
@@ -362,6 +434,7 @@ async function openBridge(
     });
 
     guardDuration(() => bridge.close('max-duration'), elevenLabsSocket);
+    track((reason) => bridge.close(reason), 'elevenlabs');
     bridge.start();
     return;
   }
@@ -369,6 +442,7 @@ async function openBridge(
   const openaiCredentials = providers.openai;
   if (!openaiCredentials) {
     app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
+    await fallbackToGreeting(app, dependencies, businessId, callSid, 'provider-unavailable');
     socket.close(1011, 'provider unavailable');
     return;
   }
@@ -394,5 +468,6 @@ async function openBridge(
   });
 
   guardDuration(() => bridge.close('max-duration'), openaiSocket);
+  track((reason) => bridge.close(reason), 'openai');
   bridge.start();
 }

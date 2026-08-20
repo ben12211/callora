@@ -3,6 +3,7 @@ import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
 import type { CallerAllowlist } from '../dev/caller-allowlist.js';
 import type { PlatformSettings } from '../platform/settings.js';
+import type { CallRegistry } from '../telephony/call-registry.js';
 import type { CallTerminator } from '../telephony/call-terminator.js';
 import type { AuditRecorder } from './audit.js';
 
@@ -20,6 +21,11 @@ export interface RouteDependencies {
   platform?: PlatformSettings;
   /** Outbound HTTP for provider management calls; injectable so tests stay offline. */
   fetchImpl?: typeof fetch;
+  /**
+   * Live calls on this instance. `buildApp` creates one when none is supplied, so a
+   * shutdown can drain conversations instead of cutting them off mid-sentence.
+   */
+  registry?: CallRegistry;
 }
 
 /** Everything the control-plane routes need, built once in `buildApp`. */

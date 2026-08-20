@@ -7,6 +7,14 @@ import type { RouteDependencies } from './http/dependencies.js';
 import { registerRoutes } from './http/routes.js';
 import { createSecretBox } from './platform/secret-box.js';
 import { PlatformSettings, SETTINGS_REFRESH_INTERVAL_MS } from './platform/settings.js';
+import { CallRegistry } from './telephony/call-registry.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /** Calls this instance is bridging right now; see `call-registry.ts`. */
+    callRegistry: CallRegistry;
+  }
+}
 
 type AppDependencies = RouteDependencies;
 
@@ -77,8 +85,12 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
     });
   }
 
+  const registry = dependencies.registry ?? new CallRegistry();
+  app.decorate('callRegistry', registry);
+
   await registerRoutes(app, {
     ...dependencies,
+    registry,
     platform,
     auth: new AuthService(dependencies.store, config.auth),
     audit: new AuditRecorder(dependencies.store, app.log),

@@ -24,13 +24,32 @@ export async function registerRoutes(
   await registerDashboardRoutes(app, dependencies);
 
   app.get('/health', async (_request, reply) => {
+    const calls = app.callRegistry.snapshot();
+    // A draining instance is deliberately unhealthy: the load balancer has to stop
+    // sending it calls while the ones it already has finish.
+    if (calls.draining) {
+      return reply.code(503).send({ status: 'draining', activeCalls: calls.active });
+    }
+
     try {
       await store.ping();
-      return { status: 'ok' };
     } catch (error) {
       app.log.error({ error }, 'Database health check failed');
-      return reply.code(503).send({ status: 'unhealthy' });
+      return reply.code(503).send({ status: 'unhealthy', reason: 'database' });
     }
+
+    // Reported, never fatal: a deployment with no provider credentials still answers
+    // calls with the static greeting, and that is a valid state to be in.
+    const providers = platform.providers();
+    const ready = Object.entries(providers)
+      .filter(([, credentials]) => credentials !== null)
+      .map(([name]) => name);
+
+    return {
+      status: 'ok',
+      activeCalls: calls.active,
+      providersReady: ready,
+    };
   });
 
   app.post(
