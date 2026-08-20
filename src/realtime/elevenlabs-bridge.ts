@@ -1,4 +1,5 @@
 import type { AgentConfig } from '../domain/models.js';
+import type { CallMetrics } from '../platform/metrics.js';
 import {
   HangupSequence,
   SilenceWatchdog,
@@ -51,6 +52,8 @@ export interface ElevenLabsBridgeOptions {
    */
   endCall?: (reason: string) => Promise<void>;
   silence?: SilenceOptions;
+  /** Call-quality counters; absent simply records nothing. */
+  metrics?: CallMetrics;
 }
 
 function readNumber(source: Record<string, unknown>, key: string): number | undefined {
@@ -76,6 +79,10 @@ export class ElevenLabsBridge {
 
   /** Agent audio chunks handed to Twilio but not yet acknowledged by a mark. */
   private pendingMarks = 0;
+
+  /** When the Twilio stream opened, and whether the caller has heard anything yet. */
+  private streamOpenedAt: number | null = null;
+  private reportedFirstAudio = false;
 
   /** Shared with every other provider bridge: see `call-leg.ts`. */
   private readonly hangup: HangupSequence;
@@ -223,6 +230,7 @@ export class ElevenLabsBridge {
           { businessId: this.options.businessId, callSid: this.options.callSid, streamSid: this.streamSid },
           'Twilio media stream started',
         );
+        this.streamOpenedAt = Date.now();
         this.options.onIdentifiers?.({ streamSid: this.streamSid, sessionId: this.conversationId });
         this.silence.restart();
         return;
@@ -301,6 +309,7 @@ export class ElevenLabsBridge {
         if (!payload || !this.streamSid) {
           return;
         }
+        this.reportFirstAudio();
         this.options.twilio.send(JSON.stringify(buildTwilioMedia(this.streamSid, payload)));
         this.options.twilio.send(JSON.stringify(buildTwilioMark(this.streamSid)));
         this.pendingMarks += 1;
@@ -372,8 +381,21 @@ export class ElevenLabsBridge {
     }
   }
 
+  /**
+   * The caller has now heard the agent for the first time. Everything before this is
+   * silence on the line, which is the latency that actually matters on a phone call.
+   */
+  private reportFirstAudio(): void {
+    if (this.reportedFirstAudio || this.streamOpenedAt === null) {
+      return;
+    }
+    this.reportedFirstAudio = true;
+    this.options.metrics?.firstAudio('elevenlabs', Date.now() - this.streamOpenedAt);
+  }
+
   /** Caller started speaking: drop whatever Twilio still has queued. */
   private handleInterruption(): void {
+    this.options.metrics?.bargeIn('elevenlabs');
     this.silence.reset();
     if (this.hangup.closing) {
       // The caller talked over the goodbye. Stop the audio and hang up now rather than

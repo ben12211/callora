@@ -1,4 +1,5 @@
 import type { AgentConfig } from '../domain/models.js';
+import type { CallMetrics } from '../platform/metrics.js';
 import { composeAgentInstructions } from './policy.js';
 import {
   END_CALL_TOOL_NAME,
@@ -65,6 +66,8 @@ export interface BridgeOptions {
    */
   endCall?: (reason: string) => Promise<void>;
   silence?: SilenceOptions;
+  /** Call-quality counters; absent simply records nothing. */
+  metrics?: CallMetrics;
 }
 
 /**
@@ -97,6 +100,10 @@ export class MediaStreamBridge {
   private farewellPending = false;
   /** `call_id`s of `end_call` tool calls already answered, so retries stay idempotent. */
   private readonly handledEndCallIds = new Set<string>();
+
+  /** When the Twilio stream opened, and whether the caller has heard anything yet. */
+  private streamOpenedAt: number | null = null;
+  private reportedFirstAudio = false;
 
   /** Shared with every other provider bridge: see `call-leg.ts`. */
   private readonly hangup: HangupSequence;
@@ -225,6 +232,7 @@ export class MediaStreamBridge {
           { businessId: this.options.businessId, callSid: this.options.callSid, streamSid: this.streamSid },
           'Twilio media stream started',
         );
+        this.streamOpenedAt = Date.now();
         this.options.onIdentifiers?.({ streamSid: this.streamSid, openaiSessionId: this.openaiSessionId });
         this.silence.restart();
         return;
@@ -302,6 +310,7 @@ export class MediaStreamBridge {
           return;
         }
         this.assistantAudioInResponse = true;
+        this.reportFirstAudio();
         if (this.responseStartTimestamp === null) {
           this.responseStartTimestamp = this.latestMediaTimestamp;
         }
@@ -381,8 +390,21 @@ export class MediaStreamBridge {
     }
   }
 
+  /**
+   * The caller has now heard the agent for the first time. Everything before this is
+   * silence on the line, which is the latency that actually matters on a phone call.
+   */
+  private reportFirstAudio(): void {
+    if (this.reportedFirstAudio || this.streamOpenedAt === null) {
+      return;
+    }
+    this.reportedFirstAudio = true;
+    this.options.metrics?.firstAudio('openai', Date.now() - this.streamOpenedAt);
+  }
+
   /** Caller started speaking: drop queued assistant audio and rewind the model's item. */
   private handleBargeIn(): void {
+    this.options.metrics?.bargeIn('openai');
     if (this.hangup.closing) {
       // The caller talked over the goodbye. Stop the audio and hang up now rather than
       // waiting for marks that will never arrive.

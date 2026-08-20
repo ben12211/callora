@@ -3,6 +3,7 @@ import twilio from 'twilio';
 import type WebSocket from 'ws';
 import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
+import type { MetricsRegistry } from '../platform/metrics.js';
 import type { PlatformRuntime } from '../platform/settings.js';
 import { MediaStreamBridge, type MessageChannel } from '../realtime/bridge.js';
 import { CartesiaBridge } from '../realtime/cartesia-bridge.js';
@@ -32,6 +33,8 @@ interface MediaStreamDependencies {
   callTerminator?: CallTerminator;
   /** Live calls on this instance, so a deploy can drain instead of cutting them off. */
   registry?: CallRegistry;
+  /** Call-path counters; absent simply records nothing. */
+  metrics?: MetricsRegistry;
 }
 
 function validWebSocketSignature(request: FastifyRequest, config: AppConfig): boolean {
@@ -225,6 +228,7 @@ export async function fallbackToGreeting(
       return;
     }
     await terminator.sayAndHangUp(callSid, line);
+    dependencies.metrics?.greetingFallback(reason);
     app.log.info({ businessId, callSid, reason }, 'Answered with the static greeting after the realtime path failed');
   } catch (error) {
     app.log.error(
@@ -306,6 +310,12 @@ async function openBridge(
    * ends. Without this a deploy closes the server underneath every conversation.
    */
   const track = (bridgeClose: (reason: string) => void, provider: string): void => {
+    const startedAt = Date.now();
+    dependencies.metrics?.callStarted(provider);
+    socket.once('close', (code: number) => {
+      dependencies.metrics?.callEnded(provider, String(code), (Date.now() - startedAt) / 1000);
+    });
+
     const registry = dependencies.registry;
     if (!registry) {
       return;
@@ -314,7 +324,7 @@ async function openBridge(
       businessId,
       callSid,
       provider,
-      startedAt: Date.now(),
+      startedAt,
       close: (reason) => bridgeClose(reason),
     });
     socket.once('close', () => registry.remove(callSid));
@@ -390,6 +400,7 @@ async function openBridge(
       llm: { baseUrl: credentials.textLlmBaseUrl, apiKey: credentials.textLlmApiKey, model: llmModel },
       logger: app.log,
       endCall,
+      ...(dependencies.metrics ? { metrics: dependencies.metrics } : {}),
       onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId),
     });
 
@@ -430,6 +441,7 @@ async function openBridge(
       callerNumber: call?.fromNumber ?? null,
       logger: app.log,
       endCall,
+      ...(dependencies.metrics ? { metrics: dependencies.metrics } : {}),
       onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId),
     });
 
@@ -464,6 +476,7 @@ async function openBridge(
     transcriptionModel: openaiCredentials.transcribeModel,
     logger: app.log,
     endCall,
+    ...(dependencies.metrics ? { metrics: dependencies.metrics } : {}),
     onIdentifiers: ({ streamSid, openaiSessionId }) => persistIdentifiers(streamSid, openaiSessionId),
   });
 

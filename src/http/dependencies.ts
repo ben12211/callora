@@ -2,6 +2,7 @@ import type { AuthService } from '../auth/sessions.js';
 import type { AppConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
 import type { CallerAllowlist } from '../dev/caller-allowlist.js';
+import type { MetricsRegistry } from '../platform/metrics.js';
 import type { PlatformSettings } from '../platform/settings.js';
 import type { CallRegistry } from '../telephony/call-registry.js';
 import type { CallTerminator } from '../telephony/call-terminator.js';
@@ -26,6 +27,8 @@ export interface RouteDependencies {
    * shutdown can drain conversations instead of cutting them off mid-sentence.
    */
   registry?: CallRegistry;
+  /** Call-path counters, exposed at `/metrics`; `buildApp` creates one when absent. */
+  metrics?: MetricsRegistry;
 }
 
 /** Everything the control-plane routes need, built once in `buildApp`. */

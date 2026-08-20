@@ -1,4 +1,5 @@
 import type { AgentConfig } from '../domain/models.js';
+import type { CallMetrics } from '../platform/metrics.js';
 import {
   HangupSequence,
   SilenceWatchdog,
@@ -67,6 +68,8 @@ export interface CartesiaBridgeOptions {
   /** Injectable so tests never reach a real LLM. */
   streamChat?: typeof streamChatCompletion;
   silence?: SilenceOptions;
+  /** Call-quality counters; absent simply records nothing. */
+  metrics?: CallMetrics;
 }
 
 /**
@@ -83,6 +86,10 @@ export interface CartesiaBridgeOptions {
 export class CartesiaBridge {
   private streamSid: string | null = null;
   private closed = false;
+
+  /** When the Twilio stream opened, and whether the caller has heard anything yet. */
+  private streamOpenedAt: number | null = null;
+  private reportedFirstAudio = false;
   private pendingMarks = 0;
 
   /** Conversation so far, seeded with the composed Callora policy. */
@@ -259,6 +266,7 @@ export class CartesiaBridge {
         }
         this.options.logger.info({ ...this.logContext() }, 'Twilio media stream started');
         this.options.onIdentifiers?.({ streamSid: this.streamSid, sessionId: null });
+        this.streamOpenedAt = Date.now();
         this.speakGreeting();
         this.silence.restart();
         return;
@@ -384,7 +392,16 @@ export class CartesiaBridge {
    * keeps streaming chunks regardless. Abandoning the context id is what actually silences
    * the agent: later chunks tagged with it are dropped instead of forwarded.
    */
+  private reportFirstAudio(): void {
+    if (this.reportedFirstAudio || this.streamOpenedAt === null) {
+      return;
+    }
+    this.reportedFirstAudio = true;
+    this.options.metrics?.firstAudio('cartesia', Date.now() - this.streamOpenedAt);
+  }
+
   private handleBargeIn(): void {
+    this.options.metrics?.bargeIn('cartesia');
     const abandoned = this.activeContextId;
     this.activeContextId = null;
     this.agentSpeaking = false;
@@ -511,6 +528,7 @@ export class CartesiaBridge {
         if (!data || !this.streamSid || contextId !== this.activeContextId) {
           return;
         }
+        this.reportFirstAudio();
         this.options.twilio.send(JSON.stringify(buildTwilioMedia(this.streamSid, data)));
         this.options.twilio.send(JSON.stringify(buildTwilioMark(this.streamSid)));
         this.pendingMarks += 1;
