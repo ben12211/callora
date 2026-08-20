@@ -1,5 +1,12 @@
 import type { AgentConfig } from '../domain/models.js';
-import { truncateTranscript, type BridgeLogger, type MessageChannel } from './bridge.js';
+import {
+  HangupSequence,
+  SilenceWatchdog,
+  truncateTranscript,
+  type BridgeLogger,
+  type MessageChannel,
+  type SilenceOptions,
+} from './call-leg.js';
 import {
   ELEVENLABS_AUDIO_FORMAT,
   ELEVENLABS_END_CALL_TOOL_NAME,
@@ -20,9 +27,6 @@ import {
 
 /** Ceiling on waiting for the goodbye audio to drain before hanging up anyway. */
 export const ELEVENLABS_DRAIN_TIMEOUT_MS = 5_000;
-
-/** Progress of a hangup, from the agent's tool call to the terminated Twilio call. */
-type EndState = 'none' | 'draining' | 'terminating' | 'terminated';
 
 export interface ElevenLabsBridgeOptions {
   twilio: MessageChannel;
@@ -46,6 +50,7 @@ export interface ElevenLabsBridgeOptions {
    * caller closes over the CallSid the stream was authorized for.
    */
   endCall?: (reason: string) => Promise<void>;
+  silence?: SilenceOptions;
 }
 
 function readNumber(source: Record<string, unknown>, key: string): number | undefined {
@@ -72,11 +77,36 @@ export class ElevenLabsBridge {
   /** Agent audio chunks handed to Twilio but not yet acknowledged by a mark. */
   private pendingMarks = 0;
 
-  private endState: EndState = 'none';
-  private endReason: string | null = null;
-  private endTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Shared with every other provider bridge: see `call-leg.ts`. */
+  private readonly hangup: HangupSequence;
+  private readonly silence: SilenceWatchdog;
 
-  public constructor(private readonly options: ElevenLabsBridgeOptions) {}
+  public constructor(private readonly options: ElevenLabsBridgeOptions) {
+    this.hangup = new HangupSequence({
+      businessId: options.businessId,
+      callSid: options.callSid,
+      logger: options.logger,
+      endCall: options.endCall,
+      audioDrained: () => this.pendingMarks === 0,
+      onFinished: (reason) => this.close(`end-call:${reason}`),
+      drainTimeoutMs: ELEVENLABS_DRAIN_TIMEOUT_MS,
+    });
+    // ElevenLabs gives Callora no supported way to make the agent speak unprompted, so
+    // this runs a single stage: a caller who goes quiet is hung up on rather than left
+    // holding a Twilio leg and a provider session open until the hour-long ceiling.
+    this.silence = new SilenceWatchdog({
+      ...options.silence,
+      armed: () => !this.closed && !this.hangup.active && this.streamSid !== null,
+      agentSpeaking: () => this.pendingMarks > 0,
+      onHangup: () => {
+        options.logger.info(
+          { businessId: options.businessId, callSid: options.callSid },
+          'Caller silent; ending the call',
+        );
+        this.requestEndCall('caller_silent');
+      },
+    });
+  }
 
   public start(): void {
     const { twilio, elevenlabs, agent, businessId, callSid, callerNumber, voiceId, logger } = this.options;
@@ -148,7 +178,8 @@ export class ElevenLabsBridge {
       return;
     }
     this.closed = true;
-    this.clearEndTimer();
+    this.silence.stop();
+    this.hangup.dispose();
     this.options.logger.info(
       {
         businessId: this.options.businessId,
@@ -193,6 +224,7 @@ export class ElevenLabsBridge {
           'Twilio media stream started',
         );
         this.options.onIdentifiers?.({ streamSid: this.streamSid, sessionId: this.conversationId });
+        this.silence.restart();
         return;
       }
       case 'media': {
@@ -209,7 +241,7 @@ export class ElevenLabsBridge {
         }
         // A mark means Twilio finished playing that chunk to the caller, so this is the
         // only reliable signal that the goodbye was actually heard.
-        this.terminateWhenAudioDrained();
+        this.hangup.terminateWhenDrained();
         return;
       }
       case 'stop': {
@@ -291,11 +323,15 @@ export class ElevenLabsBridge {
       }
       case 'user_transcript': {
         const event = readObject(message, 'user_transcription_event');
+        // ElevenLabs runs turn detection itself, so a finished caller transcript is the
+        // clearest signal Callora gets that the caller is still on the line.
+        this.silence.reset();
         this.logTranscript('USER', event ? readString(event, 'user_transcript') : undefined);
         return;
       }
       case 'agent_response': {
         const event = readObject(message, 'agent_response_event');
+        this.silence.restart();
         this.logTranscript('AI', event ? readString(event, 'agent_response') : undefined);
         return;
       }
@@ -338,14 +374,15 @@ export class ElevenLabsBridge {
 
   /** Caller started speaking: drop whatever Twilio still has queued. */
   private handleInterruption(): void {
-    if (this.endState === 'draining') {
+    this.silence.reset();
+    if (this.hangup.closing) {
       // The caller talked over the goodbye. Stop the audio and hang up now rather than
       // waiting for marks that will never arrive.
       if (this.streamSid) {
         this.options.twilio.send(JSON.stringify(buildTwilioClear(this.streamSid)));
       }
       this.pendingMarks = 0;
-      this.terminate('interrupted-farewell');
+      this.hangup.terminate('interrupted-farewell');
       return;
     }
     if (!this.streamSid || this.pendingMarks === 0) {
@@ -404,79 +441,15 @@ export class ElevenLabsBridge {
    * tool call never queues a second hangup.
    */
   private requestEndCall(reason: string): void {
-    if (this.closed || this.endState !== 'none') {
+    if (this.closed || this.hangup.active) {
       return;
     }
 
-    this.endState = 'draining';
-    this.endReason = reason;
+    this.silence.stop();
     this.options.logger.info(
       { businessId: this.options.businessId, callSid: this.options.callSid, reason },
       'Ending the call once the goodbye has played',
     );
-    this.armEndTimer(ELEVENLABS_DRAIN_TIMEOUT_MS, 'farewell-drain-timeout');
-    this.terminateWhenAudioDrained();
-  }
-
-  private terminateWhenAudioDrained(): void {
-    if (this.endState === 'draining' && this.pendingMarks === 0) {
-      this.terminate(this.endReason ?? 'end-call');
-    }
-  }
-
-  /** Idempotent: only the first call reaches Twilio, and only once. */
-  private terminate(reason: string): void {
-    if (this.endState === 'terminating' || this.endState === 'terminated') {
-      return;
-    }
-    this.endState = 'terminating';
-    this.clearEndTimer();
-
-    const { businessId, callSid, logger, endCall } = this.options;
-    const finish = (): void => {
-      this.endState = 'terminated';
-      this.close(`end-call:${reason}`);
-    };
-
-    if (!endCall) {
-      finish();
-      return;
-    }
-
-    endCall(reason).then(
-      () => {
-        logger.info({ businessId, callSid, reason }, 'Twilio call terminated');
-        finish();
-      },
-      (error: unknown) => {
-        // Hanging up the media stream still drops a <Connect><Stream> call, so a failed
-        // REST hangup degrades rather than stranding the caller.
-        logger.error(
-          { businessId, callSid, reason, error: error instanceof Error ? error.message : 'unknown error' },
-          'Failed to terminate the Twilio call; closing the media stream instead',
-        );
-        finish();
-      },
-    );
-  }
-
-  private armEndTimer(delayMs: number, reason: string): void {
-    this.clearEndTimer();
-    this.endTimer = setTimeout(() => {
-      this.endTimer = null;
-      this.options.logger.warn(
-        { businessId: this.options.businessId, callSid: this.options.callSid, reason },
-        'Goodbye audio did not complete in time; hanging up anyway',
-      );
-      this.terminate(reason);
-    }, delayMs);
-    this.endTimer.unref?.();
-  }
-
-  private clearEndTimer(): void {
-    if (this.endTimer) {
-      clearTimeout(this.endTimer);
-      this.endTimer = null;
-    }
+    this.hangup.beginDraining(reason);
   }
 }

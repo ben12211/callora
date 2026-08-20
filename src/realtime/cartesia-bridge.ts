@@ -1,5 +1,12 @@
 import type { AgentConfig } from '../domain/models.js';
-import { truncateTranscript, type BridgeLogger, type MessageChannel } from './bridge.js';
+import {
+  HangupSequence,
+  SilenceWatchdog,
+  truncateTranscript,
+  type BridgeLogger,
+  type MessageChannel,
+  type SilenceOptions,
+} from './call-leg.js';
 import type { CartesiaSocket } from './cartesia-connection.js';
 import {
   STT_CLOSE_COMMAND,
@@ -7,7 +14,7 @@ import {
   buildTtsChunk,
   cartesiaLanguage,
 } from './cartesia-protocol.js';
-import { composeAgentInstructions } from './policy.js';
+import { composeAgentInstructions, stillThereLine } from './policy.js';
 import {
   END_CALL_TOOL_NAME,
   buildTwilioClear,
@@ -25,7 +32,6 @@ export const CARTESIA_DRAIN_TIMEOUT_MS = 5_000;
 /** Cartesia drops an idle STT socket after ~3 minutes; silence keeps it alive. */
 export const STT_KEEPALIVE_MS = 30_000;
 
-type EndState = 'none' | 'draining' | 'terminating' | 'terminated';
 
 /** The same hangup contract the speech-to-speech providers expose, as an LLM tool. */
 const END_CALL_TOOL: ChatToolDefinition = {
@@ -60,6 +66,7 @@ export interface CartesiaBridgeOptions {
   endCall?: (reason: string) => Promise<void>;
   /** Injectable so tests never reach a real LLM. */
   streamChat?: typeof streamChatCompletion;
+  silence?: SilenceOptions;
 }
 
 /**
@@ -97,12 +104,39 @@ export class CartesiaBridge {
    */
   private readonly awaitingTtsDone = new Set<string>();
 
-  private endState: EndState = 'none';
-  private endReason: string | null = null;
-  private endTimer: ReturnType<typeof setTimeout> | null = null;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
-  public constructor(private readonly options: CartesiaBridgeOptions) {}
+  /** Shared with every other provider bridge: see `call-leg.ts`. */
+  private readonly hangup: HangupSequence;
+  private readonly silence: SilenceWatchdog;
+
+  public constructor(private readonly options: CartesiaBridgeOptions) {
+    this.hangup = new HangupSequence({
+      businessId: options.businessId,
+      callSid: options.callSid,
+      logger: options.logger,
+      endCall: options.endCall,
+      // Sonic has to have finished generating *and* Twilio has to have played it.
+      audioDrained: () => this.awaitingTtsDone.size === 0 && this.pendingMarks === 0,
+      onFinished: (reason) => this.close(`end-call:${reason}`),
+      drainTimeoutMs: CARTESIA_DRAIN_TIMEOUT_MS,
+    });
+    // Callora drives this pipeline itself, so unlike ElevenLabs it can genuinely speak a
+    // check-in line before giving up on a silent caller.
+    this.silence = new SilenceWatchdog({
+      ...options.silence,
+      armed: () => !this.closed && !this.hangup.active && this.streamSid !== null,
+      agentSpeaking: () => this.agentSpeaking || this.pendingMarks > 0,
+      onPrompt: () => {
+        options.logger.info(this.logContext(), 'Caller silent; asking whether they are still on the line');
+        this.speak(stillThereLine(options.agent));
+      },
+      onHangup: () => {
+        options.logger.info(this.logContext(), 'Caller silent; ending the call');
+        this.requestEndCall('caller_silent');
+      },
+    });
+  }
 
   public start(): void {
     const { twilio, stt, tts, agent, businessId, callSid, callerNumber, logger } = this.options;
@@ -167,7 +201,8 @@ export class CartesiaBridge {
       return;
     }
     this.closed = true;
-    this.clearEndTimer();
+    this.silence.stop();
+    this.hangup.dispose();
     if (this.keepaliveTimer) {
       clearInterval(this.keepaliveTimer);
       this.keepaliveTimer = null;
@@ -225,6 +260,7 @@ export class CartesiaBridge {
         this.options.logger.info({ ...this.logContext() }, 'Twilio media stream started');
         this.options.onIdentifiers?.({ streamSid: this.streamSid, sessionId: null });
         this.speakGreeting();
+        this.silence.restart();
         return;
       }
       case 'media': {
@@ -243,7 +279,7 @@ export class CartesiaBridge {
         if (this.pendingMarks === 0) {
           this.agentSpeaking = false;
         }
-        this.terminateWhenAudioDrained();
+        this.hangup.terminateWhenDrained();
         return;
       }
       case 'stop': {
@@ -262,10 +298,19 @@ export class CartesiaBridge {
       this.options.logger.warn(this.logContext(), 'The business has no greeting configured');
       return;
     }
+    this.speak(greeting);
+  }
+
+  /** Says one line Callora composed itself, on its own context, and records it as a turn. */
+  private speak(line: string): void {
+    const text = line.trim();
+    if (!text || this.closed) {
+      return;
+    }
     const contextId = this.nextContext();
-    this.sendTtsChunk(contextId, greeting, false);
-    this.history.push({ role: 'assistant', content: greeting });
-    this.logTranscript('AI', greeting);
+    this.sendTtsChunk(contextId, text, false);
+    this.history.push({ role: 'assistant', content: text });
+    this.logTranscript('AI', text);
   }
 
   private nextContext(): string {
@@ -325,6 +370,8 @@ export class CartesiaBridge {
       return;
     }
     this.callerBuffer = '';
+    // The caller spoke: silence escalation starts over from scratch.
+    this.silence.reset();
     this.logTranscript('USER', utterance);
     this.history.push({ role: 'user', content: utterance });
     void this.runTurn();
@@ -354,18 +401,20 @@ export class CartesiaBridge {
     }
     this.pendingMarks = 0;
 
-    if (this.endState === 'draining') {
-      this.terminate('interrupted-farewell');
+    if (this.hangup.closing) {
+      this.hangup.terminate('interrupted-farewell');
       return;
     }
+    this.silence.reset();
     this.options.logger.debug(this.logContext(), 'Caller barge-in; stopped the agent and resumed listening');
   }
 
   /** One reasoning turn, streamed into speech as it is produced. */
   private async runTurn(): Promise<void> {
-    if (this.closed || this.endState !== 'none') {
+    if (this.closed || this.hangup.active) {
       return;
     }
+    this.silence.restart();
 
     const abort = new AbortController();
     this.turnAbort = abort;
@@ -473,7 +522,13 @@ export class CartesiaBridge {
         if (contextId) {
           this.awaitingTtsDone.delete(contextId);
         }
-        this.terminateWhenAudioDrained();
+        // A context that finished without producing audio never gets a mark, so without
+        // this the agent would be recorded as speaking for the rest of the call — which
+        // would keep the silence watchdog permanently disarmed.
+        if (this.pendingMarks === 0 && this.awaitingTtsDone.size === 0) {
+          this.agentSpeaking = false;
+        }
+        this.hangup.terminateWhenDrained();
         return;
       }
       case 'error': {
@@ -500,76 +555,14 @@ export class CartesiaBridge {
   }
 
   private requestEndCall(reason: string): void {
-    if (this.closed || this.endState !== 'none') {
+    if (this.closed || this.hangup.active) {
       return;
     }
-    this.endState = 'draining';
-    this.endReason = reason;
+    this.silence.stop();
     this.options.logger.info(
       { businessId: this.options.businessId, callSid: this.options.callSid, reason },
       'Ending the call once the goodbye has played',
     );
-    this.armEndTimer(CARTESIA_DRAIN_TIMEOUT_MS, 'farewell-drain-timeout');
-    this.terminateWhenAudioDrained();
-  }
-
-  /** Safe to hang up only once Sonic has finished generating and Twilio has played it. */
-  private terminateWhenAudioDrained(): void {
-    if (this.endState === 'draining' && this.awaitingTtsDone.size === 0 && this.pendingMarks === 0) {
-      this.terminate(this.endReason ?? 'end-call');
-    }
-  }
-
-  private terminate(reason: string): void {
-    if (this.endState === 'terminating' || this.endState === 'terminated') {
-      return;
-    }
-    this.endState = 'terminating';
-    this.clearEndTimer();
-
-    const { businessId, callSid, logger, endCall } = this.options;
-    const finish = (): void => {
-      this.endState = 'terminated';
-      this.close(`end-call:${reason}`);
-    };
-
-    if (!endCall) {
-      finish();
-      return;
-    }
-
-    endCall(reason).then(
-      () => {
-        logger.info({ businessId, callSid, reason }, 'Twilio call terminated');
-        finish();
-      },
-      (error: unknown) => {
-        logger.error(
-          { businessId, callSid, reason, error: error instanceof Error ? error.message : 'unknown error' },
-          'Failed to terminate the Twilio call; closing the media stream instead',
-        );
-        finish();
-      },
-    );
-  }
-
-  private armEndTimer(delayMs: number, reason: string): void {
-    this.clearEndTimer();
-    this.endTimer = setTimeout(() => {
-      this.endTimer = null;
-      this.options.logger.warn(
-        { businessId: this.options.businessId, callSid: this.options.callSid, reason },
-        'Goodbye audio did not complete in time; hanging up anyway',
-      );
-      this.terminate(reason);
-    }, delayMs);
-    this.endTimer.unref?.();
-  }
-
-  private clearEndTimer(): void {
-    if (this.endTimer) {
-      clearTimeout(this.endTimer);
-      this.endTimer = null;
-    }
+    this.hangup.beginDraining(reason);
   }
 }

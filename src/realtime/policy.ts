@@ -126,3 +126,25 @@ export function composeAgentInstructions(options: AgentInstructionOptions): stri
 
   return sections.join('\n\n');
 }
+
+/**
+ * The literal check-in line for a caller who has gone quiet.
+ *
+ * Speech-to-speech providers are asked for this in an instruction and phrase it
+ * themselves. The Cartesia pipeline synthesises text Callora supplies, so it needs the
+ * sentence itself, in the tenant's language.
+ */
+const STILL_THERE_LINES: Record<string, string> = {
+  he: 'אתה עדיין איתי?',
+  en: 'Are you still there?',
+  es: '¿Sigues ahí?',
+  fr: 'Vous êtes toujours là ?',
+  de: 'Sind Sie noch da?',
+  ar: 'هل ما زلت معي؟',
+  ru: 'Вы ещё на линии?',
+};
+
+export function stillThereLine(agent: { language: string }): string {
+  const code = languageCode(agent.language);
+  return (code && STILL_THERE_LINES[code]) ?? STILL_THERE_LINES['en']!;
+}

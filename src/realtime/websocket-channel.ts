@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import type { MessageChannel } from './bridge.js';
+import type { MessageChannel } from './call-leg.js';
 
 /**
  * Adapts a `ws` WebSocket to the bridge's text channel interface.
