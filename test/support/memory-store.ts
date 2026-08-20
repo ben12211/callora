@@ -345,6 +345,9 @@ export const testConfig: AppConfig = {
   databaseUrl: 'postgresql://unused',
   twilioAccountSid: 'AC00000000000000000000000000000000',
   twilioAuthToken: 'test-auth-token',
+  // Matches the default: without STREAM_TOKEN_SECRET the Twilio auth token still signs
+  // media-stream tokens, so the existing tests keep minting and verifying with it.
+  streamTokenSecrets: ['test-auth-token'],
   publicBaseUrl: 'https://voice.example.test',
   auth: { bootstrapName: 'Callora Administrator', sessionTtlHours: 12 },
   providers: {

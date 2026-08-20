@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "validate:config": "node scripts/validate-config.mjs",
+    "secrets:rotate": "node scripts/rotate-secrets-key.mjs",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",
     "db:migrate:prod": "node dist/db/migrate.js",

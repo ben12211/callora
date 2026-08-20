@@ -147,7 +147,9 @@ export async function registerRoutes(
 
       if (agent?.enabled && providerReady) {
         // <Connect><Stream> is required for bidirectional audio; <Start><Stream> is one-way.
-        const token = createStreamToken(config.twilioAuthToken, {
+        // Minted with the newest secret; the media endpoint still accepts the previous
+        // one, so introducing or rotating STREAM_TOKEN_SECRET drops no in-flight call.
+        const token = createStreamToken(config.streamTokenSecrets[0] ?? config.twilioAuthToken, {
           callSid: parsed.data.CallSid,
           businessId: business.id,
         });

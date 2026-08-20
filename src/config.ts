@@ -85,6 +85,10 @@ const configSchema = z
      * database rather than storing one in the clear.
      */
     SECRETS_KEY: blankAsAbsent(z.string().min(16).optional()),
+    // Signs the short-lived Media Stream handshake token. Defaults to the Twilio auth
+    // token, which is what it used to be; setting this separates the two so rotating one
+    // credential does not silently change the other's meaning.
+    STREAM_TOKEN_SECRET: blankAsAbsent(z.string().min(16).optional()),
   });
 
 /**
@@ -132,6 +136,14 @@ interface BaseConfig {
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
   databaseUrl: string;
   twilioAuthToken: string;
+  /**
+   * Secrets accepted for Media Stream tokens, newest first.
+   *
+   * A list rather than a value so `STREAM_TOKEN_SECRET` can be introduced or rotated
+   * without rejecting the tokens already in flight: a stream token lives five minutes,
+   * and a call that started before the change still has to be able to connect.
+   */
+  streamTokenSecrets: string[];
   twilioAccountSid: string;
   publicBaseUrl: string;
   auth: AdminAuthConfig;
@@ -262,6 +274,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     logLevel: parsed.LOG_LEVEL,
     databaseUrl: parsed.DATABASE_URL,
     twilioAuthToken: parsed.TWILIO_AUTH_TOKEN,
+    streamTokenSecrets: parsed.STREAM_TOKEN_SECRET
+      ? [parsed.STREAM_TOKEN_SECRET, parsed.TWILIO_AUTH_TOKEN]
+      : [parsed.TWILIO_AUTH_TOKEN],
     twilioAccountSid: parsed.TWILIO_ACCOUNT_SID,
     publicBaseUrl: parsed.PUBLIC_BASE_URL,
   };

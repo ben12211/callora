@@ -51,7 +51,7 @@ function validWebSocketSignature(request: FastifyRequest, config: AppConfig): bo
 
 export function streamClaimsFromStartMessage(
   raw: string,
-  secret: string,
+  secret: string | readonly string[],
 ): StreamTokenPayload | null {
   const message = parseJsonObject(raw);
   if (!message || readString(message, 'event') !== 'start') {
@@ -85,7 +85,7 @@ function replayBufferedMessages(channel: MessageChannel, buffered: string[]): Me
 
 async function authorizeTwilioStream(
   channel: MessageChannel,
-  secret: string,
+  secret: string | readonly string[],
 ): Promise<{ channel: MessageChannel; claims: StreamTokenPayload }> {
   return new Promise((resolve, reject) => {
     const buffered: string[] = [];
@@ -159,7 +159,7 @@ async function startAuthorizedBridge(
 ): Promise<void> {
   let authorized: Awaited<ReturnType<typeof authorizeTwilioStream>>;
   try {
-    authorized = await authorizeTwilioStream(websocketChannel(socket), dependencies.config.twilioAuthToken);
+    authorized = await authorizeTwilioStream(websocketChannel(socket), dependencies.config.streamTokenSecrets);
   } catch (error) {
     app.log.warn(
       { ip: request.ip, error: error instanceof Error ? error.message : 'unknown error' },
