@@ -19,6 +19,7 @@ export const agent: AgentConfig = {
   voice: 'marin',
   realtimeModel: 'gpt-realtime-2.1',
   voiceProvider: 'openai',
+  elevenLabsAgentId: '',
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

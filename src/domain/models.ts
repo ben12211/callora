@@ -69,11 +69,23 @@ export interface UpsertPlatformSettingInput {
   secret: boolean;
 }
 
+/**
+ * What an administrator is allowed to reach.
+ *
+ * `platform` is what every account was before per-tenant authorization existed: access to
+ * every business, call, and provider credential. `business` is scoped to exactly one
+ * tenant and can never see another's data or the platform's credentials.
+ */
+export type AdminRole = 'platform' | 'business';
+
 export interface AdminUser {
   id: string;
   email: string;
   name: string;
   passwordHash: string;
+  role: AdminRole;
+  /** Set for a `business` administrator, and null for a platform one. */
+  businessId: string | null;
   active: boolean;
   lastLoginAt: Date | null;
   createdAt: Date;
@@ -84,6 +96,8 @@ export interface CreateAdminUserInput {
   email: string;
   name: string;
   passwordHash: string;
+  role?: AdminRole;
+  businessId?: string | null;
 }
 
 export interface AdminSession {
@@ -135,7 +149,10 @@ export interface CallRecord {
   businessId: string;
   twilioCallSid: string;
   twilioStreamSid: string | null;
-  openaiSessionId: string | null;
+  /** The provider's own session/conversation id, whichever provider ran the call. */
+  providerSessionId: string | null;
+  /** Which backend ran it: `openai`, `elevenlabs`, or `cartesia`. */
+  provider: string | null;
   fromNumber: string | null;
   toNumber: string;
   status: string;
@@ -168,7 +185,27 @@ export interface AttachRealtimeSessionInput {
   businessId: string;
   twilioCallSid: string;
   twilioStreamSid: string | null;
-  openaiSessionId: string | null;
+  providerSessionId: string | null;
+  provider?: string | null;
+}
+
+/** One completed turn of a conversation. */
+export interface CallTranscriptTurn {
+  id: string;
+  callId: string;
+  businessId: string;
+  speaker: 'caller' | 'agent';
+  content: string;
+  turn: number;
+  createdAt: Date;
+}
+
+export interface AppendTranscriptInput {
+  callId: string;
+  businessId: string;
+  speaker: 'caller' | 'agent';
+  content: string;
+  turn: number;
 }
 
 export interface ListCallsOptions {

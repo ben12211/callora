@@ -142,7 +142,7 @@ describe('what the dashboard saves reaches the call', () => {
     expect(String(session['instructions'])).toContain('Always speak fr-FR');
     // The locale also steers the transcriber behind the conversation log.
     const transcription = (audio['input'] as Record<string, Record<string, unknown>>)['transcription'];
-    expect(transcription['language']).toBe('fr');
+    expect(transcription?.['language']).toBe('fr');
 
     const greeting = buildGreetingResponse(agent)['response'] as Record<string, unknown>;
     expect(String(greeting['instructions'])).toContain(GREETING);

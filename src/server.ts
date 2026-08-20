@@ -46,7 +46,42 @@ const sessionSweep = setInterval(
 );
 sessionSweep.unref();
 
+/**
+ * Retention sweep for conversation transcripts.
+ *
+ * They are the caller's own words, so they age out on a schedule rather than accumulating
+ * forever. `TRANSCRIPT_RETENTION_DAYS=0` keeps them, which has to be a deliberate choice.
+ */
+const transcriptSweep =
+  config.transcriptRetentionDays > 0
+    ? setInterval(
+        () => {
+          const cutoff = new Date(Date.now() - config.transcriptRetentionDays * 24 * 60 * 60 * 1000);
+          void store
+            .deleteTranscriptsOlderThan(cutoff)
+            .then((removed) => {
+              if (removed > 0) {
+                app.log.info({ removed, cutoff }, 'Pruned transcripts past their retention window');
+              }
+            })
+            .catch((error: unknown) => {
+              app.log.warn({ error }, 'Failed to prune transcripts');
+            });
+        },
+        60 * 60 * 1000,
+      )
+    : null;
+transcriptSweep?.unref();
+
 let shuttingDown = false;
+
+/**
+ * How long a shutdown waits for live conversations to end on their own.
+ *
+ * All bridge state is in memory, so closing the server immediately drops every call
+ * mid-sentence. Waiting costs a slower deploy; not waiting costs real conversations.
+ */
+const DRAIN_TIMEOUT_MS = Number(process.env['SHUTDOWN_DRAIN_TIMEOUT_MS'] ?? 30_000);
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) {
@@ -54,7 +89,20 @@ async function shutdown(signal: string): Promise<void> {
   }
   shuttingDown = true;
   clearInterval(sessionSweep);
-  app.log.info({ signal }, 'Shutting down');
+  if (transcriptSweep) {
+    clearInterval(transcriptSweep);
+  }
+
+  const active = app.callRegistry.size;
+  app.log.info({ signal, activeCalls: active, drainTimeoutMs: DRAIN_TIMEOUT_MS }, 'Shutting down');
+
+  // Marks the instance draining first, so `/health` starts failing and no new call is
+  // routed here while the existing ones finish.
+  const { drained, forced } = await app.callRegistry.drain(DRAIN_TIMEOUT_MS);
+  if (active > 0) {
+    app.log.info({ drained, forced }, 'Finished draining live calls');
+  }
+
   await app.close();
   await pool.end();
 }

@@ -1,4 +1,11 @@
-import type { AdminUser, AgentConfig, AuditEvent, Business, CallRecord } from '../../domain/models.js';
+import type {
+  AdminUser,
+  AgentConfig,
+  AuditEvent,
+  Business,
+  CallRecord,
+  CallTranscriptTurn,
+} from '../../domain/models.js';
 import type { CallPreview } from './call-preview.js';
 import type { SettingGroup, SettingView } from '../../platform/settings.js';
 import type { ProviderStatus } from '../../realtime/provider-catalog.js';
@@ -30,12 +37,33 @@ export interface HomeData {
   recentCalls: CallRecord[];
   providers: ProviderStatus[];
   recentAudit: AuditEvent[];
+  /** False for a business-scoped administrator, who owns no platform-wide surface. */
+  platformScoped?: boolean;
 }
 
 export function homePage(data: HomeData): string {
   const activeBusinesses = data.businesses.filter((item) => item.active).length;
   const liveAgents = [...data.agents.values()].filter((agent) => agent.enabled).length;
   const configuredProviders = data.providers.filter((provider) => provider.configured);
+  const platformScoped = data.platformScoped ?? true;
+
+  // Provider credentials and the tenant list are the platform's, so a scoped
+  // administrator is shown neither the panel nor a link that would answer 403.
+  const providerPanel = platformScoped
+    ? `<h2>Providers</h2>
+<div class="panel">
+  <p class="muted">${
+    configuredProviders.length
+      ? `Configured: ${configuredProviders.map((provider) => escapeHtml(provider.label)).join(', ')}.`
+      : 'No execution provider has platform credentials yet. Calls answer with the static greeting.'
+  }</p>
+  <a class="button secondary" href="/dashboard/providers">Provider status</a>
+</div>
+`
+    : '';
+  const createBusiness = platformScoped
+    ? `<div class="actions"><a class="button" href="/dashboard/businesses/new">Create business</a></div>`
+    : '';
 
   return `<h1>Dashboard</h1>
 <p class="lede">Callora is the source of truth for every business, agent, and provider choice below.</p>
@@ -46,19 +74,10 @@ export function homePage(data: HomeData): string {
   ${stat(String(data.callCount), 'Calls recorded')}
 </div>
 
-<h2>Providers</h2>
-<div class="panel">
-  <p class="muted">${
-    configuredProviders.length
-      ? `Configured: ${configuredProviders.map((provider) => escapeHtml(provider.label)).join(', ')}.`
-      : 'No execution provider has platform credentials yet. Calls answer with the static greeting.'
-  }</p>
-  <a class="button secondary" href="/dashboard/providers">Provider status</a>
-</div>
-
+${providerPanel}
 <h2>Businesses</h2>
 ${businessTable(data.businesses, data.agents)}
-<div class="actions"><a class="button" href="/dashboard/businesses/new">Create business</a></div>
+${createBusiness}
 
 <h2>Recent calls</h2>
 ${callTable(data.recentCalls, data.businesses)}
@@ -77,12 +96,18 @@ export function businessListPage(
   businesses: Business[],
   agents: Map<string, AgentConfig>,
   notice?: string,
+  platformScoped = true,
 ): string {
+  // Creating a tenant is the platform administrator's job, so a scoped administrator is
+  // not offered a button that would answer 403.
+  const createBusiness = platformScoped
+    ? `<div class="actions"><a class="button" href="/dashboard/businesses/new">Create business</a></div>`
+    : '';
   return `<h1>Businesses</h1>
 <p class="lede">Each business is a Callora tenant: its own number, greeting, agent, and provider.</p>
 ${flash('ok', notice)}
 ${businessTable(businesses, agents)}
-<div class="actions"><a class="button" href="/dashboard/businesses/new">Create business</a></div>`;
+${createBusiness}`;
 }
 
 function businessTable(businesses: Business[], agents: Map<string, AgentConfig>): string {
@@ -430,13 +455,18 @@ function callTable(calls: CallRecord[], businesses: Business[]): string {
 <tbody>${rows}</tbody></table></div>`;
 }
 
-export function callDetailPage(call: CallRecord, business: Business | null): string {
+export function callDetailPage(
+  call: CallRecord,
+  business: Business | null,
+  transcript: CallTranscriptTurn[] = [],
+): string {
   const rows: [string, string][] = [
     ['Call id', call.id],
     ['Business', business ? business.name : call.businessId],
     ['Twilio CallSid', call.twilioCallSid],
     ['Twilio StreamSid', call.twilioStreamSid ?? '—'],
-    ['Provider session id', call.openaiSessionId ?? '—'],
+    ['Provider', call.provider ?? '—'],
+    ['Provider session id', call.providerSessionId ?? '—'],
     ['From', call.fromNumber ?? 'unknown'],
     ['To', call.toNumber],
     ['Status', call.status],
@@ -455,7 +485,33 @@ export function callDetailPage(call: CallRecord, business: Business | null): str
 <div class="panel table-scroll"><table><tbody>${rows
     .map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td class="mono">${escapeHtml(value)}</td></tr>`)
     .join('')}</tbody></table></div>
+${renderTranscript(transcript)}
 <div class="actions"><a class="button secondary" href="/dashboard/calls">Back to calls</a></div>`;
+}
+
+/**
+ * The conversation itself. Transcripts used to exist only as log lines, so the people who
+ * run a business could never actually read what their agent said.
+ */
+function renderTranscript(transcript: CallTranscriptTurn[]): string {
+  if (transcript.length === 0) {
+    return `<h2>Transcript</h2>
+<div class="panel"><p class="lede">No transcript was recorded for this call.</p></div>`;
+  }
+
+  const rows = transcript
+    .map(
+      (turn) => `<tr>
+  <td>${escapeHtml(turn.speaker === 'caller' ? 'Caller' : 'Agent')}</td>
+  <td>${escapeHtml(turn.content)}</td>
+</tr>`,
+    )
+    .join('');
+
+  return `<h2>Transcript</h2>
+<div class="panel table-scroll"><table>
+<thead><tr><th>Speaker</th><th>Said</th></tr></thead>
+<tbody>${rows}</tbody></table></div>`;
 }
 
 export interface ProviderPageData {

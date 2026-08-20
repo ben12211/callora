@@ -1,6 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { hashPassword } from '../../auth/passwords.js';
-import { CSRF_FIELD_NAME, SESSION_COOKIE_NAME, csrfTokenMatches, type AuthenticatedActor } from '../../auth/sessions.js';
+import {
+  CSRF_FIELD_NAME,
+  SESSION_COOKIE_NAME,
+  canAccessBusiness,
+  csrfTokenMatches,
+  isPlatformActor,
+  type AuthenticatedActor,
+} from '../../auth/sessions.js';
 import type { AgentConfig, Business } from '../../domain/models.js';
 import { SETTING_CATALOG, SettingsValidationError } from '../../platform/settings.js';
 import { PROVIDER_CATALOG, providerStatuses } from '../../realtime/provider-catalog.js';
@@ -9,6 +16,7 @@ import { defaultAgentConfig } from '../api-routes.js';
 import { AGENT_AUDIT_FIELDS, AUDIT_ACTIONS, BUSINESS_AUDIT_FIELDS, changedFields } from '../audit.js';
 import { clearCookie, readCookie, setCookie } from '../cookies.js';
 import type { ControlPlaneDependencies } from '../dependencies.js';
+import { LOGIN_RATE_LIMIT, RateLimiter } from '../rate-limit.js';
 import {
   agentConfigSchema,
   changePasswordSchema,
@@ -67,6 +75,9 @@ export async function registerDashboardRoutes(
   dependencies: ControlPlaneDependencies,
 ): Promise<void> {
   const { config, store, platform, auth, audit } = dependencies;
+  // One window per source address, in this process. See `rate-limit.ts` for what that
+  // does and does not buy across replicas.
+  const loginLimiter = new RateLimiter(LOGIN_RATE_LIMIT);
   // A dev stack served over plain HTTP would drop a Secure cookie, so it follows the
   // scheme the deployment actually advertises rather than a hard-coded value.
   const secureCookies = config.publicBaseUrl.startsWith('https://');
@@ -90,6 +101,7 @@ export async function registerDashboardRoutes(
         currentPath: request.url.split('?')[0] ?? request.url,
         userLabel: actor.user?.name ?? actor.label,
         csrfToken: actor.session?.csrfToken ?? '',
+        role: actor.role,
         body,
       }),
       status,
@@ -110,6 +122,50 @@ export async function registerDashboardRoutes(
     }
     return actor;
   };
+
+  /**
+   * Authorization for the dashboard, which is a separate surface from `/api` and needs
+   * the same rules. A platform actor passes every check, so a deployment with only
+   * platform accounts behaves exactly as it did before roles existed.
+   */
+  const requirePlatform = (
+    actor: AuthenticatedActor,
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): boolean => {
+    if (isPlatformActor(actor)) {
+      return true;
+    }
+    void page(
+      reply,
+      request,
+      actor,
+      'Not available',
+      notFoundPage('This page belongs to the platform administrator.'),
+      403,
+    );
+    return false;
+  };
+
+  /**
+   * A business that is not this actor's is reported as absent rather than forbidden:
+   * whether another tenant exists on this platform is not theirs to learn.
+   */
+  const requireBusinessAccess = (
+    actor: AuthenticatedActor,
+    businessId: string,
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): boolean => {
+    if (canAccessBusiness(actor, businessId)) {
+      return true;
+    }
+    void page(reply, request, actor, 'Not found', notFoundPage('That business does not exist.'), 404);
+    return false;
+  };
+
+  const visibleBusinesses = (actor: AuthenticatedActor, businesses: Business[]): Business[] =>
+    businesses.filter((business) => canAccessBusiness(actor, business.id));
 
   /** Every state-changing dashboard post carries the session's own CSRF token. */
   const checkCsrf = (actor: AuthenticatedActor, request: FastifyRequest, reply: FastifyReply): boolean => {
@@ -142,6 +198,24 @@ export async function registerDashboardRoutes(
   });
 
   app.post('/dashboard/login', async (request, reply) => {
+    // Equal timing between an unknown address and a wrong password is only worth
+    // anything if the number of guesses is bounded.
+    const throttle = loginLimiter.check(request.ip);
+    if (!throttle.allowed) {
+      app.log.warn({ ip: request.ip }, 'Rate limited dashboard sign-in attempts');
+      return html(
+        reply.header('retry-after', String(throttle.retryAfterSeconds)),
+        renderPage({
+          title: 'Sign in',
+          currentPath: '/dashboard/login',
+          body: loginPage({
+            error: `Too many sign-in attempts. Try again in ${Math.ceil(throttle.retryAfterSeconds / 60)} minute(s).`,
+          }),
+        }),
+        429,
+      );
+    }
+
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) {
       return html(
@@ -171,10 +245,12 @@ export async function registerDashboardRoutes(
       );
     }
 
+    // A real user who mistyped a few times is not left throttled after signing in.
+    loginLimiter.reset(request.ip);
     const { token } = await auth.startSession(user);
     setCookie(reply, SESSION_COOKIE_NAME, token, cookieOptions);
     await audit.record(
-      { id: user.id, label: user.email, kind: 'session' },
+      { id: user.id, label: user.email, kind: 'session', role: user.role, businessId: user.businessId },
       {
         action: AUDIT_ACTIONS.adminLoggedIn,
         entityType: 'admin',
@@ -197,12 +273,15 @@ export async function registerDashboardRoutes(
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
     await platform.refreshIfStale();
-    const businesses = await store.listBusinesses();
+    const businesses = visibleBusinesses(actor, await store.listBusinesses());
+    const scope = isPlatformActor(actor) ? undefined : (actor.businessId ?? '');
     const [agents, callCount, recentCalls, recentAudit] = await Promise.all([
       agentsByBusiness(businesses),
-      store.countCalls(),
-      store.listCalls({ limit: 10, offset: 0 }),
-      store.listAuditEvents({ limit: 10, offset: 0 }),
+      store.countCalls(scope),
+      store.listCalls({ ...(scope ? { businessId: scope } : {}), limit: 10, offset: 0 }),
+      store.listAuditEvents(
+        scope ? { entityId: scope, limit: 10, offset: 0 } : { limit: 10, offset: 0 },
+      ),
     ]);
     return page(
       reply,
@@ -216,6 +295,7 @@ export async function registerDashboardRoutes(
         recentCalls,
         recentAudit,
         providers: providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment()),
+        platformScoped: isPlatformActor(actor),
       }),
     );
   });
@@ -223,14 +303,16 @@ export async function registerDashboardRoutes(
   app.get('/dashboard/businesses', async (request, reply) => {
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
-    const businesses = await store.listBusinesses();
+    const businesses = visibleBusinesses(actor, await store.listBusinesses());
     const agents = await agentsByBusiness(businesses);
-    return page(reply, request, actor, 'Businesses', businessListPage(businesses, agents, readQueryString(request, 'notice')));
+    return page(reply, request, actor, 'Businesses', businessListPage(businesses, agents, readQueryString(request, 'notice'), isPlatformActor(actor)));
   });
 
   app.get('/dashboard/businesses/new', async (request, reply) => {
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
+    // Creating a tenant is the platform administrator's job, not a tenant's own.
+    if (!requirePlatform(actor, request, reply)) return reply;
     return page(
       reply,
       request,
@@ -243,6 +325,7 @@ export async function registerDashboardRoutes(
   app.post('/dashboard/businesses', async (request, reply) => {
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
+    if (!requirePlatform(actor, request, reply)) return reply;
     if (!checkCsrf(actor, request, reply)) return reply;
 
     const body = request.body as Record<string, unknown>;
@@ -303,6 +386,7 @@ export async function registerDashboardRoutes(
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
     const { id } = request.params as { id: string };
+    if (!requireBusinessAccess(actor, id, request, reply)) return reply;
     const business = await store.getBusinessById(id).catch(() => null);
     if (!business) {
       return page(reply, request, actor, 'Not found', notFoundPage('That business does not exist.'), 404);
@@ -336,6 +420,7 @@ export async function registerDashboardRoutes(
     if (!checkCsrf(actor, request, reply)) return reply;
 
     const { id } = request.params as { id: string };
+    if (!requireBusinessAccess(actor, id, request, reply)) return reply;
     const body = request.body as Record<string, unknown>;
     const parsed = updateBusinessSchema.safeParse({
       name: body['name'],
@@ -383,6 +468,7 @@ export async function registerDashboardRoutes(
     if (!checkCsrf(actor, request, reply)) return reply;
 
     const { id } = request.params as { id: string };
+    if (!requireBusinessAccess(actor, id, request, reply)) return reply;
     const body = request.body as Record<string, unknown>;
     const parsed = agentConfigSchema.safeParse({
       enabled: checkbox(body, 'enabled'),
@@ -467,6 +553,7 @@ export async function registerDashboardRoutes(
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
     const { id } = request.params as { id: string };
+    if (!requireBusinessAccess(actor, id, request, reply)) return reply;
     const business = await store.getBusinessById(id).catch(() => null);
     if (!business) {
       return page(reply, request, actor, 'Not found', notFoundPage('That business does not exist.'), 404);
@@ -505,8 +592,12 @@ export async function registerDashboardRoutes(
     if (!actor) return reply;
     const businessId = readQueryString(request, 'businessId');
     const offset = readQueryNumber(request, 'offset', 0);
-    const businesses = await store.listBusinesses();
-    const known = businessId && businesses.some((business) => business.id === businessId) ? businessId : undefined;
+    const businesses = visibleBusinesses(actor, await store.listBusinesses());
+    const requested =
+      businessId && businesses.some((business) => business.id === businessId) ? businessId : undefined;
+    // A scoped administrator is always filtered to their own business, however the query
+    // string is written.
+    const known = isPlatformActor(actor) ? requested : (actor.businessId ?? '');
     const calls = await store.listCalls({
       ...(known ? { businessId: known } : {}),
       limit: CALL_PAGE_SIZE,
@@ -532,16 +623,20 @@ export async function registerDashboardRoutes(
     if (!actor) return reply;
     const { id } = request.params as { id: string };
     const call = await store.getCallById(id).catch(() => null);
-    if (!call) {
+    // A call belonging to another business is reported as absent, not as forbidden.
+    if (!call || !canAccessBusiness(actor, call.businessId)) {
       return page(reply, request, actor, 'Not found', notFoundPage('That call does not exist.'), 404);
     }
     const business = await store.getBusinessById(call.businessId);
-    return page(reply, request, actor, 'Call detail', callDetailPage(call, business));
+    const transcript = await store.listTranscript(call.id).catch(() => []);
+    return page(reply, request, actor, 'Call detail', callDetailPage(call, business, transcript));
   });
 
   app.get('/dashboard/providers', async (request, reply) => {
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
+    // Provider credentials are the platform's, shared across every tenant.
+    if (!requirePlatform(actor, request, reply)) return reply;
     await platform.refreshIfStale();
     return page(
       reply,
@@ -568,6 +663,7 @@ export async function registerDashboardRoutes(
   app.post('/dashboard/providers', async (request, reply) => {
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
+    if (!requirePlatform(actor, request, reply)) return reply;
     if (!checkCsrf(actor, request, reply)) return reply;
 
     // Decide what to write against the current stored state, not against whatever this
@@ -628,7 +724,13 @@ export async function registerDashboardRoutes(
     const actor = await requireSession(request, reply);
     if (!actor) return reply;
     const offset = readQueryNumber(request, 'offset', 0);
-    const events = await store.listAuditEvents({ limit: AUDIT_PAGE_SIZE, offset });
+    // The audit history spans every tenant, so a scoped administrator sees only the
+    // entries about their own business.
+    const events = await store.listAuditEvents(
+      isPlatformActor(actor)
+        ? { limit: AUDIT_PAGE_SIZE, offset }
+        : { entityId: actor.businessId ?? '', limit: AUDIT_PAGE_SIZE, offset },
+    );
     return page(reply, request, actor, 'Audit history', auditPage(events, AUDIT_PAGE_SIZE, offset));
   });
 
@@ -643,8 +745,12 @@ export async function registerDashboardRoutes(
       'Settings',
       settingsPage({
         user: actor.user,
-        admins: await store.listAdminUsers(),
-        providers: providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment()),
+        // Who else administers this platform is not a tenant's business; their own
+        // account, and their own password, still are.
+        admins: isPlatformActor(actor) ? await store.listAdminUsers() : [actor.user],
+        providers: isPlatformActor(actor)
+          ? providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment())
+          : [],
         publicBaseUrl: config.publicBaseUrl,
         platformDefault: platform.defaultProvider(),
         sessionTtlHours: config.auth.sessionTtlHours,

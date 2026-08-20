@@ -1,0 +1,14 @@
+{
+  // Test files are excluded from the build, which meant they were never type-checked at
+  // all: a fixture could drift from the interface it stands in for and only fail at
+  // runtime, or not at all. `pnpm typecheck` covers both this and the build config.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "allowlist.example.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { AdminAuthConfig } from '../config.js';
 import type { DataStore } from '../db/store.js';
-import type { AdminSession, AdminUser } from '../domain/models.js';
+import type { AdminRole, AdminSession, AdminUser } from '../domain/models.js';
 import { burnPasswordComparison, verifyPassword } from './passwords.js';
 
 export const SESSION_COOKIE_NAME = 'callora_session';
@@ -17,8 +17,30 @@ export interface AuthenticatedActor {
   label: string;
   /** How the request proved who it is. API keys are machine callers and have no session. */
   kind: 'session' | 'api-key';
+  /**
+   * What this actor may reach. The `ADMIN_API_KEY` machine credential is a platform
+   * credential, so it stays platform-scoped.
+   */
+  role: AdminRole;
+  /** The single business a `business` actor is confined to; null for platform actors. */
+  businessId: string | null;
   session?: AdminSession;
   user?: AdminUser;
+}
+
+/** True when the actor may reach every tenant and the platform's own settings. */
+export function isPlatformActor(actor: AuthenticatedActor): boolean {
+  return actor.role === 'platform';
+}
+
+/**
+ * Whether this actor may touch one business.
+ *
+ * Deliberately a single function: authorization spread across call sites is authorization
+ * that gets forgotten at one of them.
+ */
+export function canAccessBusiness(actor: AuthenticatedActor, businessId: string): boolean {
+  return isPlatformActor(actor) || actor.businessId === businessId;
 }
 
 export class AuthService {
@@ -67,6 +89,8 @@ export class AuthService {
       id: found.user.id,
       label: found.user.email,
       kind: 'session',
+      role: found.user.role,
+      businessId: found.user.businessId,
       session: found.session,
       user: found.user,
     };
@@ -85,7 +109,9 @@ export class AuthService {
       return null;
     }
     const matches = timingSafeEqual(Buffer.from(presented, 'utf8'), Buffer.from(expected, 'utf8'));
-    return matches ? { id: null, label: 'api-key', kind: 'api-key' } : null;
+    return matches
+      ? { id: null, label: 'api-key', kind: 'api-key', role: 'platform', businessId: null }
+      : null;
   }
 
   public sessionTtlHours(): number {

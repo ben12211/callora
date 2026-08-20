@@ -68,6 +68,11 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # Covers the test files too, which the build config excludes: a fixture that drifts
+      # from the interface it stands in for otherwise fails only at runtime, or not at all.
+      - name: Typecheck
+        run: pnpm typecheck
+
       - name: Test
         run: pnpm test
 

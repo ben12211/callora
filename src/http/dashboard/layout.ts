@@ -18,16 +18,23 @@ export function escapeHtml(value: unknown): string {
 export interface NavigationItem {
   href: string;
   label: string;
+  /** Hidden from a business-scoped administrator, who cannot open it. */
+  platformOnly?: boolean;
 }
 
 export const NAVIGATION: readonly NavigationItem[] = [
   { href: '/dashboard', label: 'Home' },
   { href: '/dashboard/businesses', label: 'Businesses' },
   { href: '/dashboard/calls', label: 'Calls' },
-  { href: '/dashboard/providers', label: 'Providers' },
+  { href: '/dashboard/providers', label: 'Providers', platformOnly: true },
   { href: '/dashboard/audit', label: 'Audit history' },
   { href: '/dashboard/settings', label: 'Settings' },
 ];
+
+/** Offering a link that answers 403 is worse than not offering it. */
+export function navigationFor(role: 'platform' | 'business'): readonly NavigationItem[] {
+  return role === 'platform' ? NAVIGATION : NAVIGATION.filter((item) => !item.platformOnly);
+}
 
 const STYLES = `
 :root {
@@ -125,6 +132,8 @@ export interface PageOptions {
   /** Absent on the login page, which renders without navigation. */
   userLabel?: string;
   csrfToken?: string;
+  /** Decides which navigation entries this administrator is offered. */
+  role?: 'platform' | 'business';
   body: string;
 }
 
@@ -132,7 +141,7 @@ export function renderPage(options: PageOptions): string {
   const nav = options.userLabel
     ? `<header class="top">
   <span class="brand">Callora Control Plane</span>
-  <nav class="top">${NAVIGATION.map(
+  <nav class="top">${navigationFor(options.role ?? 'platform').map(
     (item) =>
       `<a href="${item.href}"${isCurrent(item.href, options.currentPath) ? ' aria-current="page"' : ''}>${escapeHtml(
         item.label,

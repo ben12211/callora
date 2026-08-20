@@ -5,8 +5,19 @@ import { AuthService } from './auth/sessions.js';
 import { AuditRecorder } from './http/audit.js';
 import type { RouteDependencies } from './http/dependencies.js';
 import { registerRoutes } from './http/routes.js';
+import { MetricsRegistry } from './platform/metrics.js';
 import { createSecretBox } from './platform/secret-box.js';
 import { PlatformSettings, SETTINGS_REFRESH_INTERVAL_MS } from './platform/settings.js';
+import { CallRegistry } from './telephony/call-registry.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /** Calls this instance is bridging right now; see `call-registry.ts`. */
+    callRegistry: CallRegistry;
+    /** Call-path counters, rendered at `/metrics`. */
+    metrics: MetricsRegistry;
+  }
+}
 
 type AppDependencies = RouteDependencies;
 
@@ -77,8 +88,17 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
     });
   }
 
+  const registry = dependencies.registry ?? new CallRegistry();
+  const metrics = dependencies.metrics ?? new MetricsRegistry();
+  // Read at scrape time from the registry itself, so the gauge cannot drift from reality.
+  metrics.trackActiveCalls(() => registry.size);
+  app.decorate('callRegistry', registry);
+  app.decorate('metrics', metrics);
+
   await registerRoutes(app, {
     ...dependencies,
+    registry,
+    metrics,
     platform,
     auth: new AuthService(dependencies.store, config.auth),
     audit: new AuditRecorder(dependencies.store, app.log),

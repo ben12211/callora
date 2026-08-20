@@ -4,6 +4,8 @@ import type { DataStore } from '../../src/db/store.js';
 import type {
   AdminSession,
   AdminUser,
+  AppendTranscriptInput,
+  CallTranscriptTurn,
   AgentConfig,
   AttachRealtimeSessionInput,
   AuditEvent,
@@ -143,7 +145,8 @@ export class MemoryStore implements DataStore {
       return null;
     }
     existing.twilioStreamSid = input.twilioStreamSid ?? existing.twilioStreamSid;
-    existing.openaiSessionId = input.openaiSessionId ?? existing.openaiSessionId;
+    existing.providerSessionId = input.providerSessionId ?? existing.providerSessionId;
+    existing.provider = input.provider ?? existing.provider;
     return existing;
   }
 
@@ -163,7 +166,8 @@ export class MemoryStore implements DataStore {
       id: randomUUID(),
       ...input,
       twilioStreamSid: null,
-      openaiSessionId: null,
+      providerSessionId: null,
+      provider: null,
       durationSeconds: null,
       startedAt: now,
       endedAt: null,
@@ -204,6 +208,42 @@ export class MemoryStore implements DataStore {
     return this.calls.filter((call) => !businessId || call.businessId === businessId).length;
   }
 
+  public transcripts: CallTranscriptTurn[] = [];
+
+  public async appendTranscriptTurn(input: AppendTranscriptInput): Promise<CallTranscriptTurn> {
+    const existing = this.transcripts.find(
+      (turn) => turn.callId === input.callId && turn.turn === input.turn,
+    );
+    if (existing) {
+      existing.content = input.content;
+      return existing;
+    }
+    const stored: CallTranscriptTurn = {
+      id: `transcript-${this.transcripts.length + 1}`,
+      callId: input.callId,
+      businessId: input.businessId,
+      speaker: input.speaker,
+      content: input.content,
+      turn: input.turn,
+      createdAt: new Date(),
+    };
+    this.transcripts.push(stored);
+    return stored;
+  }
+
+  public async listTranscript(callId: string): Promise<CallTranscriptTurn[]> {
+    return this.transcripts
+      .filter((turn) => turn.callId === callId)
+      .sort((left, right) => left.turn - right.turn)
+      .map((turn) => ({ ...turn }));
+  }
+
+  public async deleteTranscriptsOlderThan(cutoff: Date): Promise<number> {
+    const before = this.transcripts.length;
+    this.transcripts = this.transcripts.filter((turn) => turn.createdAt >= cutoff);
+    return before - this.transcripts.length;
+  }
+
   public async listPlatformSettings(): Promise<PlatformSetting[]> {
     return this.platformSettings.map((setting) => ({ ...setting }));
   }
@@ -242,6 +282,8 @@ export class MemoryStore implements DataStore {
       email: input.email.toLowerCase(),
       name: input.name,
       passwordHash: input.passwordHash,
+      role: input.role ?? 'platform',
+      businessId: input.role === 'business' ? (input.businessId ?? null) : null,
       active: true,
       lastLoginAt: null,
       createdAt: now,
@@ -345,6 +387,10 @@ export const testConfig: AppConfig = {
   databaseUrl: 'postgresql://unused',
   twilioAccountSid: 'AC00000000000000000000000000000000',
   twilioAuthToken: 'test-auth-token',
+  transcriptRetentionDays: 30,
+  // Matches the default: without STREAM_TOKEN_SECRET the Twilio auth token still signs
+  // media-stream tokens, so the existing tests keep minting and verifying with it.
+  streamTokenSecrets: ['test-auth-token'],
   publicBaseUrl: 'https://voice.example.test',
   auth: { bootstrapName: 'Callora Administrator', sessionTtlHours: 12 },
   providers: {

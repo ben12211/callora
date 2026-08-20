@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import twilio from 'twilio';
 import { normalizeE164 } from '../dev/caller-allowlist.js';
 import { registerApiRoutes } from './api-routes.js';
+import { requireApiAuth, requireBusinessScope } from './auth-guard.js';
 import { registerDashboardRoutes } from './dashboard/routes.js';
 import type { ControlPlaneDependencies } from './dependencies.js';
 import { MEDIA_STREAM_PATH, registerMediaStreamRoute } from './media-stream.js';
@@ -24,14 +25,46 @@ export async function registerRoutes(
   await registerDashboardRoutes(app, dependencies);
 
   app.get('/health', async (_request, reply) => {
+    const calls = app.callRegistry.snapshot();
+    // A draining instance is deliberately unhealthy: the load balancer has to stop
+    // sending it calls while the ones it already has finish.
+    if (calls.draining) {
+      return reply.code(503).send({ status: 'draining', activeCalls: calls.active });
+    }
+
     try {
       await store.ping();
-      return { status: 'ok' };
     } catch (error) {
       app.log.error({ error }, 'Database health check failed');
-      return reply.code(503).send({ status: 'unhealthy' });
+      return reply.code(503).send({ status: 'unhealthy', reason: 'database' });
     }
+
+    // Reported, never fatal: a deployment with no provider credentials still answers
+    // calls with the static greeting, and that is a valid state to be in.
+    const providers = platform.providers();
+    const ready = Object.entries(providers)
+      .filter(([, credentials]) => credentials !== null)
+      .map(([name]) => name);
+
+    return {
+      status: 'ok',
+      activeCalls: calls.active,
+      providersReady: ready,
+    };
   });
+
+  // Behind the same credential as the rest of the management surface: the label set
+  // names businesses' providers and call volumes, which is not public information.
+  app.get(
+    '/metrics',
+    // Registered outside the /api scope, so it carries both guards explicitly.
+    { preHandler: [requireApiAuth(dependencies.auth), requireBusinessScope()] },
+    async (_request, reply) => {
+      return reply
+        .type('text/plain; version=0.0.4; charset=utf-8')
+        .send(app.metrics.render());
+    },
+  );
 
   app.post(
     '/webhooks/twilio/voice',
@@ -115,7 +148,9 @@ export async function registerRoutes(
 
       if (agent?.enabled && providerReady) {
         // <Connect><Stream> is required for bidirectional audio; <Start><Stream> is one-way.
-        const token = createStreamToken(config.twilioAuthToken, {
+        // Minted with the newest secret; the media endpoint still accepts the previous
+        // one, so introducing or rotating STREAM_TOKEN_SECRET drops no in-flight call.
+        const token = createStreamToken(config.streamTokenSecrets[0] ?? config.twilioAuthToken, {
           callSid: parsed.data.CallSid,
           businessId: business.id,
         });

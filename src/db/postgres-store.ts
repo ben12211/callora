@@ -7,7 +7,9 @@ import type {
   AttachRealtimeSessionInput,
   AuditEvent,
   Business,
+  AppendTranscriptInput,
   CallRecord,
+  CallTranscriptTurn,
   CreateAdminSessionInput,
   CreateAdminUserInput,
   CreateBusinessInput,
@@ -53,6 +55,8 @@ interface AdminUserRow {
   email: string;
   name: string;
   password_hash: string;
+  role: string;
+  business_id: string | null;
   active: boolean;
   last_login_at: Date | null;
   created_at: Date;
@@ -91,7 +95,8 @@ interface CallRow {
   business_id: string;
   twilio_call_sid: string;
   twilio_stream_sid: string | null;
-  openai_session_id: string | null;
+  provider_session_id: string | null;
+  provider: string | null;
   from_number: string | null;
   to_number: string;
   status: string;
@@ -101,6 +106,28 @@ interface CallRow {
   ended_at: Date | null;
   created_at: Date;
   updated_at: Date;
+}
+
+interface TranscriptRow {
+  id: string;
+  call_id: string;
+  business_id: string;
+  speaker: string;
+  content: string;
+  turn: number;
+  created_at: Date;
+}
+
+function mapTranscriptTurn(row: TranscriptRow): CallTranscriptTurn {
+  return {
+    id: row.id,
+    callId: row.call_id,
+    businessId: row.business_id,
+    speaker: row.speaker === 'caller' ? 'caller' : 'agent',
+    content: row.content,
+    turn: row.turn,
+    createdAt: row.created_at,
+  };
 }
 
 function mapBusiness(row: BusinessRow): Business {
@@ -121,7 +148,8 @@ function mapCall(row: CallRow): CallRecord {
     businessId: row.business_id,
     twilioCallSid: row.twilio_call_sid,
     twilioStreamSid: row.twilio_stream_sid,
-    openaiSessionId: row.openai_session_id,
+    providerSessionId: row.provider_session_id,
+    provider: row.provider,
     fromNumber: row.from_number,
     toNumber: row.to_number,
     status: row.status,
@@ -165,6 +193,8 @@ function mapAdminUser(row: AdminUserRow): AdminUser {
     email: row.email,
     name: row.name,
     passwordHash: row.password_hash,
+    role: row.role === 'business' ? 'business' : 'platform',
+    businessId: row.business_id,
     active: row.active,
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,
@@ -173,7 +203,7 @@ function mapAdminUser(row: AdminUserRow): AdminUser {
 }
 
 const adminUserColumns = `
-  id, email, name, password_hash, active, last_login_at, created_at, updated_at
+  id, email, name, password_hash, role, business_id, active, last_login_at, created_at, updated_at
 `;
 
 function mapAdminSession(row: AdminSessionRow): AdminSession {
@@ -205,7 +235,7 @@ const auditEventColumns = `
 `;
 
 const callColumns = `
-  id, business_id, twilio_call_sid, twilio_stream_sid, openai_session_id,
+  id, business_id, twilio_call_sid, twilio_stream_sid, provider_session_id, provider,
   from_number, to_number, status, direction,
   duration_seconds, started_at, ended_at, created_at, updated_at
 `;
@@ -344,11 +374,18 @@ export class PostgresStore implements DataStore {
     const result = await this.pool.query<CallRow>(
       `UPDATE calls
        SET twilio_stream_sid = COALESCE($1, twilio_stream_sid),
-           openai_session_id = COALESCE($2, openai_session_id),
+           provider_session_id = COALESCE($2, provider_session_id),
+           provider = COALESCE($3, provider),
            updated_at = now()
-       WHERE twilio_call_sid = $3 AND business_id = $4
+       WHERE twilio_call_sid = $4 AND business_id = $5
        RETURNING ${callColumns}`,
-      [input.twilioStreamSid, input.openaiSessionId, input.twilioCallSid, input.businessId],
+      [
+        input.twilioStreamSid,
+        input.providerSessionId,
+        input.provider ?? null,
+        input.twilioCallSid,
+        input.businessId,
+      ],
     );
     return result.rows[0] ? mapCall(result.rows[0]) : null;
   }
@@ -491,10 +528,18 @@ export class PostgresStore implements DataStore {
 
   public async createAdminUser(input: CreateAdminUserInput): Promise<AdminUser> {
     const result = await this.pool.query<AdminUserRow>(
-      `INSERT INTO admin_users (id, email, name, password_hash)
-       VALUES ($1, lower($2), $3, $4)
+      `INSERT INTO admin_users (id, email, name, password_hash, role, business_id)
+       VALUES ($1, lower($2), $3, $4, $5, $6)
        RETURNING ${adminUserColumns}`,
-      [randomUUID(), input.email, input.name, input.passwordHash],
+      [
+        randomUUID(),
+        input.email,
+        input.name,
+        input.passwordHash,
+        input.role ?? 'platform',
+        // The database refuses a scoped platform account and an unscoped business one.
+        input.role === 'business' ? (input.businessId ?? null) : null,
+      ],
     );
     return mapAdminUser(result.rows[0]!);
   }
@@ -552,6 +597,8 @@ export class PostgresStore implements DataStore {
         email: row.user.email,
         name: row.user.name,
         passwordHash: row.user.password_hash,
+        role: row.user.role === 'business' ? 'business' : 'platform',
+        businessId: row.user.business_id,
         active: row.user.active,
         lastLoginAt: revive(row.user.last_login_at as unknown as string | null),
         createdAt: new Date(row.user.created_at as unknown as string),
@@ -603,5 +650,33 @@ export class PostgresStore implements DataStore {
       [options.entityType ?? null, options.entityId ?? null, options.limit, options.offset],
     );
     return result.rows.map(mapAuditEvent);
+  }
+
+  public async appendTranscriptTurn(input: AppendTranscriptInput): Promise<CallTranscriptTurn> {
+    const result = await this.pool.query<TranscriptRow>(
+      `INSERT INTO call_transcripts (id, call_id, business_id, speaker, content, turn)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       -- A provider that repeats a turn must not fail the call it describes.
+       ON CONFLICT (call_id, turn) DO UPDATE SET content = EXCLUDED.content
+       RETURNING id, call_id, business_id, speaker, content, turn, created_at`,
+      [randomUUID(), input.callId, input.businessId, input.speaker, input.content, input.turn],
+    );
+    return mapTranscriptTurn(result.rows[0]!);
+  }
+
+  public async listTranscript(callId: string): Promise<CallTranscriptTurn[]> {
+    const result = await this.pool.query<TranscriptRow>(
+      `SELECT id, call_id, business_id, speaker, content, turn, created_at
+       FROM call_transcripts
+       WHERE call_id = $1
+       ORDER BY turn ASC`,
+      [callId],
+    );
+    return result.rows.map(mapTranscriptTurn);
+  }
+
+  public async deleteTranscriptsOlderThan(cutoff: Date): Promise<number> {
+    const result = await this.pool.query('DELETE FROM call_transcripts WHERE created_at < $1', [cutoff]);
+    return result.rowCount ?? 0;
   }
 }

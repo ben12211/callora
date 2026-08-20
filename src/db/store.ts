@@ -18,6 +18,8 @@ import type {
   UpsertAgentConfigInput,
   UpsertCallInput,
   UpsertPlatformSettingInput,
+  AppendTranscriptInput,
+  CallTranscriptTurn,
 } from '../domain/models.js';
 
 export interface DataStore {
@@ -37,6 +39,13 @@ export interface DataStore {
   getCallById(id: string): Promise<CallRecord | null>;
   getCallByTwilioSid(twilioCallSid: string): Promise<CallRecord | null>;
   countCalls(businessId?: string): Promise<number>;
+
+  // Conversation transcripts. Previously logged and nowhere else, which gave neither call
+  // review nor a retention policy over the caller's own words.
+  appendTranscriptTurn(input: AppendTranscriptInput): Promise<CallTranscriptTurn>;
+  listTranscript(callId: string): Promise<CallTranscriptTurn[]>;
+  /** Retention sweep. Returns how many turns were removed. */
+  deleteTranscriptsOlderThan(cutoff: Date): Promise<number>;
 
   // Platform settings written from the dashboard; an absent key means "use the environment".
   listPlatformSettings(): Promise<PlatformSetting[]>;
