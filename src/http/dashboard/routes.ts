@@ -560,7 +560,8 @@ export async function registerDashboardRoutes(
       return page(reply, request, actor, 'Not found', notFoundPage('That call does not exist.'), 404);
     }
     const business = await store.getBusinessById(call.businessId);
-    return page(reply, request, actor, 'Call detail', callDetailPage(call, business));
+    const transcript = await store.listTranscript(call.id).catch(() => []);
+    return page(reply, request, actor, 'Call detail', callDetailPage(call, business, transcript));
   });
 
   app.get('/dashboard/providers', async (request, reply) => {

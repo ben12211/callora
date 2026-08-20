@@ -220,7 +220,7 @@ describe('media stream bridge', () => {
   it('reports the stream and OpenAI session identifiers for persistence', () => {
     const twilio = new FakeChannel();
     const openai = new FakeChannel();
-    const seen: { streamSid: string | null; openaiSessionId: string | null }[] = [];
+    const seen: { streamSid: string | null; sessionId: string | null }[] = [];
     new MediaStreamBridge({
       twilio,
       openai,
@@ -232,6 +232,6 @@ describe('media stream bridge', () => {
     }).start();
 
     openStream(twilio, openai);
-    expect(seen.at(-1)).toEqual({ streamSid, openaiSessionId: 'sess_123' });
+    expect(seen.at(-1)).toEqual({ streamSid, sessionId: 'sess_123' });
   });
 });

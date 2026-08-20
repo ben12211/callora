@@ -1,4 +1,11 @@
-import type { AdminUser, AgentConfig, AuditEvent, Business, CallRecord } from '../../domain/models.js';
+import type {
+  AdminUser,
+  AgentConfig,
+  AuditEvent,
+  Business,
+  CallRecord,
+  CallTranscriptTurn,
+} from '../../domain/models.js';
 import type { CallPreview } from './call-preview.js';
 import type { SettingGroup, SettingView } from '../../platform/settings.js';
 import type { ProviderStatus } from '../../realtime/provider-catalog.js';
@@ -430,13 +437,18 @@ function callTable(calls: CallRecord[], businesses: Business[]): string {
 <tbody>${rows}</tbody></table></div>`;
 }
 
-export function callDetailPage(call: CallRecord, business: Business | null): string {
+export function callDetailPage(
+  call: CallRecord,
+  business: Business | null,
+  transcript: CallTranscriptTurn[] = [],
+): string {
   const rows: [string, string][] = [
     ['Call id', call.id],
     ['Business', business ? business.name : call.businessId],
     ['Twilio CallSid', call.twilioCallSid],
     ['Twilio StreamSid', call.twilioStreamSid ?? '—'],
-    ['Provider session id', call.openaiSessionId ?? '—'],
+    ['Provider', call.provider ?? '—'],
+    ['Provider session id', call.providerSessionId ?? '—'],
     ['From', call.fromNumber ?? 'unknown'],
     ['To', call.toNumber],
     ['Status', call.status],
@@ -455,7 +467,33 @@ export function callDetailPage(call: CallRecord, business: Business | null): str
 <div class="panel table-scroll"><table><tbody>${rows
     .map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td class="mono">${escapeHtml(value)}</td></tr>`)
     .join('')}</tbody></table></div>
+${renderTranscript(transcript)}
 <div class="actions"><a class="button secondary" href="/dashboard/calls">Back to calls</a></div>`;
+}
+
+/**
+ * The conversation itself. Transcripts used to exist only as log lines, so the people who
+ * run a business could never actually read what their agent said.
+ */
+function renderTranscript(transcript: CallTranscriptTurn[]): string {
+  if (transcript.length === 0) {
+    return `<h2>Transcript</h2>
+<div class="panel"><p class="lede">No transcript was recorded for this call.</p></div>`;
+  }
+
+  const rows = transcript
+    .map(
+      (turn) => `<tr>
+  <td>${escapeHtml(turn.speaker === 'caller' ? 'Caller' : 'Agent')}</td>
+  <td>${escapeHtml(turn.content)}</td>
+</tr>`,
+    )
+    .join('');
+
+  return `<h2>Transcript</h2>
+<div class="panel table-scroll"><table>
+<thead><tr><th>Speaker</th><th>Said</th></tr></thead>
+<tbody>${rows}</tbody></table></div>`;
 }
 
 export interface ProviderPageData {

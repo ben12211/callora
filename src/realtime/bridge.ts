@@ -58,8 +58,11 @@ export interface BridgeOptions {
   /** Transcription model for caller audio; logging only. */
   transcriptionModel?: string;
   logger: BridgeLogger;
-  /** Called once the Twilio stream and, when known, the OpenAI session are identified. */
-  onIdentifiers?: (identifiers: { streamSid: string | null; openaiSessionId: string | null }) => void;
+  /**
+   * Called once the Twilio stream and, when known, the OpenAI session are identified.
+   * `sessionId` rather than `openaiSessionId`, so all three bridges report one shape.
+   */
+  onIdentifiers?: (identifiers: { streamSid: string | null; sessionId: string | null }) => void;
   /**
    * Terminates the underlying Twilio call. The bridge supplies no identifier: the
    * caller closes over the CallSid the stream was authorized for.
@@ -68,6 +71,11 @@ export interface BridgeOptions {
   silence?: SilenceOptions;
   /** Call-quality counters; absent simply records nothing. */
   metrics?: CallMetrics;
+  /**
+   * One completed turn of the conversation. Absent keeps the previous behaviour of
+   * logging only; the bridge never waits on it and never fails a call because of it.
+   */
+  onTranscript?: (turn: { speaker: 'caller' | 'agent'; content: string }) => void;
 }
 
 /**
@@ -233,7 +241,7 @@ export class MediaStreamBridge {
           'Twilio media stream started',
         );
         this.streamOpenedAt = Date.now();
-        this.options.onIdentifiers?.({ streamSid: this.streamSid, openaiSessionId: this.openaiSessionId });
+        this.options.onIdentifiers?.({ streamSid: this.streamSid, sessionId: this.openaiSessionId });
         this.silence.restart();
         return;
       }
@@ -290,7 +298,7 @@ export class MediaStreamBridge {
             'OpenAI realtime session created',
           );
         }
-        this.options.onIdentifiers?.({ streamSid: this.streamSid, openaiSessionId: this.openaiSessionId });
+        this.options.onIdentifiers?.({ streamSid: this.streamSid, sessionId: this.openaiSessionId });
         if (!this.greeted) {
           this.greeted = true;
           this.options.openai.send(JSON.stringify(buildGreetingResponse(this.options.agent)));
@@ -455,6 +463,7 @@ export class MediaStreamBridge {
       return;
     }
     this.options.logger.info(this.logContext(), `[conversation] ${speaker}: ${text}`);
+    this.options.onTranscript?.({ speaker: speaker === 'USER' ? 'caller' : 'agent', content: text });
   }
 
   private handleFunctionCall(

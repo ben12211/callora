@@ -273,11 +273,14 @@ async function openBridge(
   let persistedSessionId: string | null = null;
 
   /**
-   * Shared by both providers. `openaiSessionId` is the existing column for the provider's
-   * own session identifier; ElevenLabs conversation ids are stored in it too rather than
-   * migrating the call table for a second provider.
+   * Shared by every provider: the call row records which backend ran it alongside that
+   * backend's own session identifier.
    */
-  const persistIdentifiers = (streamSid: string | null, sessionId: string | null): void => {
+  const persistIdentifiers = (
+    streamSid: string | null,
+    sessionId: string | null,
+    provider: string,
+  ): void => {
     if (streamSid === persistedStreamSid && sessionId === persistedSessionId) {
       return;
     }
@@ -288,12 +291,43 @@ async function openBridge(
         businessId,
         twilioCallSid: callSid,
         twilioStreamSid: persistedStreamSid,
-        openaiSessionId: persistedSessionId,
+        providerSessionId: persistedSessionId,
+        provider,
       })
       .catch((error: unknown) => {
         app.log.error(
           { businessId, callSid, error: error instanceof Error ? error.message : 'unknown error' },
           'Failed to persist realtime identifiers',
+        );
+      });
+  };
+
+  /**
+   * Persists one conversation turn.
+   *
+   * Best effort and fire-and-forget, exactly like the identifier writes above: a
+   * transcript that cannot be stored must never interrupt the call it describes. Turns
+   * are numbered in arrival order, which is what makes the stored conversation readable.
+   */
+  let turnNumber = 0;
+  const persistTurn = (turn: { speaker: 'caller' | 'agent'; content: string }): void => {
+    const callId = call?.id;
+    if (!callId) {
+      return;
+    }
+    turnNumber += 1;
+    void store
+      .appendTranscriptTurn({
+        callId,
+        businessId,
+        speaker: turn.speaker,
+        content: turn.content,
+        turn: turnNumber,
+      })
+      .catch((error: unknown) => {
+        app.log.warn(
+          { businessId, callSid, error: error instanceof Error ? error.message : 'unknown error' },
+          'Failed to persist a transcript turn',
         );
       });
   };
@@ -401,7 +435,8 @@ async function openBridge(
       logger: app.log,
       endCall,
       ...(dependencies.metrics ? { metrics: dependencies.metrics } : {}),
-      onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId),
+      onTranscript: persistTurn,
+      onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId, provider),
     });
 
     guardDuration(() => bridge.close('max-duration'), sttSocket);
@@ -442,7 +477,8 @@ async function openBridge(
       logger: app.log,
       endCall,
       ...(dependencies.metrics ? { metrics: dependencies.metrics } : {}),
-      onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId),
+      onTranscript: persistTurn,
+      onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId, provider),
     });
 
     guardDuration(() => bridge.close('max-duration'), elevenLabsSocket);
@@ -477,7 +513,8 @@ async function openBridge(
     logger: app.log,
     endCall,
     ...(dependencies.metrics ? { metrics: dependencies.metrics } : {}),
-    onIdentifiers: ({ streamSid, openaiSessionId }) => persistIdentifiers(streamSid, openaiSessionId),
+    onTranscript: persistTurn,
+    onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId, 'openai'),
   });
 
   guardDuration(() => bridge.close('max-duration'), openaiSocket);

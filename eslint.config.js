@@ -6,6 +6,13 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // Maintenance scripts are plain Node ESM, so they use Node's globals directly.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { process: 'readonly', Buffer: 'readonly', console: 'readonly' },
+    },
+  },
+  {
     files: ['**/*.ts'],
     rules: {
       '@typescript-eslint/consistent-type-imports': 'error',

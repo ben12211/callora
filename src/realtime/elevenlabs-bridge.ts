@@ -54,6 +54,11 @@ export interface ElevenLabsBridgeOptions {
   silence?: SilenceOptions;
   /** Call-quality counters; absent simply records nothing. */
   metrics?: CallMetrics;
+  /**
+   * One completed turn of the conversation. Absent keeps the previous behaviour of
+   * logging only; the bridge never waits on it and never fails a call because of it.
+   */
+  onTranscript?: (turn: { speaker: 'caller' | 'agent'; content: string }) => void;
 }
 
 function readNumber(source: Record<string, unknown>, key: string): number | undefined {
@@ -424,6 +429,7 @@ export class ElevenLabsBridge {
       return;
     }
     this.options.logger.info(this.logContext(), `[conversation] ${speaker}: ${text}`);
+    this.options.onTranscript?.({ speaker: speaker === 'USER' ? 'caller' : 'agent', content: text });
   }
 
   private handleClientToolCall(

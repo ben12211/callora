@@ -135,7 +135,10 @@ export interface CallRecord {
   businessId: string;
   twilioCallSid: string;
   twilioStreamSid: string | null;
-  openaiSessionId: string | null;
+  /** The provider's own session/conversation id, whichever provider ran the call. */
+  providerSessionId: string | null;
+  /** Which backend ran it: `openai`, `elevenlabs`, or `cartesia`. */
+  provider: string | null;
   fromNumber: string | null;
   toNumber: string;
   status: string;
@@ -168,7 +171,27 @@ export interface AttachRealtimeSessionInput {
   businessId: string;
   twilioCallSid: string;
   twilioStreamSid: string | null;
-  openaiSessionId: string | null;
+  providerSessionId: string | null;
+  provider?: string | null;
+}
+
+/** One completed turn of a conversation. */
+export interface CallTranscriptTurn {
+  id: string;
+  callId: string;
+  businessId: string;
+  speaker: 'caller' | 'agent';
+  content: string;
+  turn: number;
+  createdAt: Date;
+}
+
+export interface AppendTranscriptInput {
+  callId: string;
+  businessId: string;
+  speaker: 'caller' | 'agent';
+  content: string;
+  turn: number;
 }
 
 export interface ListCallsOptions {

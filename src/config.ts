@@ -89,6 +89,9 @@ const configSchema = z
     // token, which is what it used to be; setting this separates the two so rotating one
     // credential does not silently change the other's meaning.
     STREAM_TOKEN_SECRET: blankAsAbsent(z.string().min(16).optional()),
+    // Conversation transcripts are the caller's own words, so they are kept for a bounded
+    // time by default rather than forever. 0 disables the sweep and keeps them.
+    TRANSCRIPT_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(30),
   });
 
 /**
@@ -144,6 +147,8 @@ interface BaseConfig {
    * and a call that started before the change still has to be able to connect.
    */
   streamTokenSecrets: string[];
+  /** Days a stored transcript is kept; 0 keeps them indefinitely. */
+  transcriptRetentionDays: number;
   twilioAccountSid: string;
   publicBaseUrl: string;
   auth: AdminAuthConfig;
@@ -274,6 +279,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     logLevel: parsed.LOG_LEVEL,
     databaseUrl: parsed.DATABASE_URL,
     twilioAuthToken: parsed.TWILIO_AUTH_TOKEN,
+    transcriptRetentionDays: parsed.TRANSCRIPT_RETENTION_DAYS,
     streamTokenSecrets: parsed.STREAM_TOKEN_SECRET
       ? [parsed.STREAM_TOKEN_SECRET, parsed.TWILIO_AUTH_TOKEN]
       : [parsed.TWILIO_AUTH_TOKEN],

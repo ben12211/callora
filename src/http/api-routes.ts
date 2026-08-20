@@ -277,6 +277,21 @@ export async function registerApiRoutes(
       return { data: call };
     });
 
+    // The conversation itself. Previously it existed only as log lines, so there was no
+    // way to review a call without access to the log aggregator.
+    api.get('/api/calls/:id/transcript', async (request, reply) => {
+      const parsed = idParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        validationError(reply, parsed.error.issues);
+        return;
+      }
+      const call = await store.getCallById(parsed.data.id);
+      if (!call) {
+        return reply.code(404).send({ error: 'Call not found' });
+      }
+      return { data: await store.listTranscript(call.id) };
+    });
+
     api.get('/api/audit', async (request, reply) => {
       const parsed = auditQuerySchema.safeParse(request.query);
       if (!parsed.success) {
