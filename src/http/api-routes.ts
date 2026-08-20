@@ -4,6 +4,7 @@ import { DEFAULT_TEXT_LLM_MODEL } from '../realtime/cartesia-constants.js';
 import { providerStatuses } from '../realtime/provider-catalog.js';
 import { syncAgentToProvider } from './agent-sync.js';
 import { requireApiAuth } from './auth-guard.js';
+import { API_RATE_LIMIT, RateLimiter } from './rate-limit.js';
 import {
   AGENT_AUDIT_FIELDS,
   AUDIT_ACTIONS,
@@ -66,7 +67,21 @@ export async function registerApiRoutes(
 ): Promise<void> {
   const { store, platform, auth, audit } = dependencies;
 
+  // Bounds a runaway script or a credential-stuffing loop. Ahead of authentication, so
+  // an unauthenticated flood is rejected before it costs a session lookup.
+  const apiLimiter = new RateLimiter(API_RATE_LIMIT);
+
   app.register(async (api) => {
+    api.addHook('preHandler', async (request, reply) => {
+      const decision = apiLimiter.check(request.ip);
+      if (!decision.allowed) {
+        app.log.warn({ ip: request.ip, url: request.url }, 'Rate limited a management API request');
+        await reply
+          .code(429)
+          .header('retry-after', String(decision.retryAfterSeconds))
+          .send({ error: 'Too many requests' });
+      }
+    });
     api.addHook('preHandler', requireApiAuth(auth));
 
     api.get('/api/businesses', async () => ({ data: await store.listBusinesses() }));

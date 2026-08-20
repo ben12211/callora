@@ -9,6 +9,7 @@ import { defaultAgentConfig } from '../api-routes.js';
 import { AGENT_AUDIT_FIELDS, AUDIT_ACTIONS, BUSINESS_AUDIT_FIELDS, changedFields } from '../audit.js';
 import { clearCookie, readCookie, setCookie } from '../cookies.js';
 import type { ControlPlaneDependencies } from '../dependencies.js';
+import { LOGIN_RATE_LIMIT, RateLimiter } from '../rate-limit.js';
 import {
   agentConfigSchema,
   changePasswordSchema,
@@ -67,6 +68,9 @@ export async function registerDashboardRoutes(
   dependencies: ControlPlaneDependencies,
 ): Promise<void> {
   const { config, store, platform, auth, audit } = dependencies;
+  // One window per source address, in this process. See `rate-limit.ts` for what that
+  // does and does not buy across replicas.
+  const loginLimiter = new RateLimiter(LOGIN_RATE_LIMIT);
   // A dev stack served over plain HTTP would drop a Secure cookie, so it follows the
   // scheme the deployment actually advertises rather than a hard-coded value.
   const secureCookies = config.publicBaseUrl.startsWith('https://');
@@ -142,6 +146,24 @@ export async function registerDashboardRoutes(
   });
 
   app.post('/dashboard/login', async (request, reply) => {
+    // Equal timing between an unknown address and a wrong password is only worth
+    // anything if the number of guesses is bounded.
+    const throttle = loginLimiter.check(request.ip);
+    if (!throttle.allowed) {
+      app.log.warn({ ip: request.ip }, 'Rate limited dashboard sign-in attempts');
+      return html(
+        reply.header('retry-after', String(throttle.retryAfterSeconds)),
+        renderPage({
+          title: 'Sign in',
+          currentPath: '/dashboard/login',
+          body: loginPage({
+            error: `Too many sign-in attempts. Try again in ${Math.ceil(throttle.retryAfterSeconds / 60)} minute(s).`,
+          }),
+        }),
+        429,
+      );
+    }
+
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) {
       return html(
@@ -171,6 +193,8 @@ export async function registerDashboardRoutes(
       );
     }
 
+    // A real user who mistyped a few times is not left throttled after signing in.
+    loginLimiter.reset(request.ip);
     const { token } = await auth.startSession(user);
     setCookie(reply, SESSION_COOKIE_NAME, token, cookieOptions);
     await audit.record(
