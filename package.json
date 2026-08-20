@@ -13,6 +13,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "validate:config": "node scripts/validate-config.mjs",
     "secrets:rotate": "node scripts/rotate-secrets-key.mjs",
