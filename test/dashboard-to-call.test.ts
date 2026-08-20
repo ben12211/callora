@@ -269,11 +269,14 @@ describe('what the dashboard saves reaches the call', () => {
     });
     const elevenLabsPage = await pageFor();
 
-    // The model note for the selected provider is the visible one, and it says outright
-    // that the value goes nowhere.
+    // The model note for the selected provider is the visible one, and it describes the
+    // field the value actually reaches: the agent's reasoning model. It used to say the
+    // value went nowhere, which had stopped being true once saving wrote it onto the
+    // agent — and the speech model, which is the one that decides how a call sounds, is
+    // not this field and is not an operator's choice.
     expect(noteFor(elevenLabsPage, 'model', 'elevenlabs')).not.toContain('hidden');
-    expect(elevenLabsPage).toContain('Not used on this provider');
-    expect(elevenLabsPage).toContain('Callora never sends this to ElevenLabs');
+    expect(elevenLabsPage).toContain('Reasoning model the ElevenLabs agent runs on');
+    expect(elevenLabsPage).not.toContain('Not used on this provider');
     // The other providers' notes are rendered but out of the way.
     expect(noteFor(elevenLabsPage, 'model', 'openai')).toContain('hidden');
     expect(noteFor(elevenLabsPage, 'voice', 'cartesia')).toContain('hidden');

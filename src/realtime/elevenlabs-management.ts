@@ -1,5 +1,11 @@
 import type { AgentConfig } from '../domain/models.js';
 import { composeAgentInstructions, languageCode } from './policy.js';
+import {
+  PHONE_VOICE_SETTINGS,
+  STREAMING_LATENCY_OPTIMISATION,
+  TURN_SETTINGS,
+  defaultTtsModel,
+} from './elevenlabs-voice-defaults.js';
 
 /**
  * Writes a business's configuration into its ElevenLabs agent.
@@ -36,6 +42,14 @@ export interface AgentConfiguration {
   /** The reasoning model. On this provider it is only meaningful once written here. */
   llmModel?: string;
   voiceId?: string;
+  /** Speech model. Distinct from `llmModel`: this one decides how the words sound. */
+  ttsModel: string;
+  stability: number;
+  similarityBoost: number;
+  speed: number;
+  optimizeStreamingLatency: number;
+  turnTimeoutSeconds: number;
+  silenceEndCallTimeoutSeconds: number;
 }
 
 export type SyncResult =
@@ -52,8 +66,21 @@ export function agentConfigurationFor(agent: AgentConfig): AgentConfiguration {
     ...(language ? { language } : {}),
     ...(llmModel ? { llmModel } : {}),
     ...(voiceId ? { voiceId } : {}),
+    ttsModel: defaultTtsModel(),
+    stability: PHONE_VOICE_SETTINGS.stability,
+    similarityBoost: PHONE_VOICE_SETTINGS.similarityBoost,
+    speed: PHONE_VOICE_SETTINGS.speed,
+    optimizeStreamingLatency: STREAMING_LATENCY_OPTIMISATION,
+    turnTimeoutSeconds: TURN_SETTINGS.turnTimeoutSeconds,
+    silenceEndCallTimeoutSeconds: TURN_SETTINGS.silenceEndCallTimeoutSeconds,
   };
 }
+
+/** ElevenLabs' own tools, in the shape its API accepts. */
+const SYSTEM_TOOLS = {
+  end_call: { name: 'end_call', description: '', type: 'system', params: { system_tool_type: 'end_call' } },
+  skip_turn: { name: 'skip_turn', description: '', type: 'system', params: { system_tool_type: 'skip_turn' } },
+} as const;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -80,6 +107,14 @@ export function mergeAgentConfiguration(
   if (update.llmModel) {
     prompt['llm'] = update.llmModel;
   }
+  // The composed instructions tell the agent to hang up with `end_call`, and to stay
+  // silent with `skip_turn`. Neither exists unless it is enabled on the agent, and an
+  // agent that cannot hang up keeps asking its last question until the duration ceiling.
+  const builtInTools = asRecord(prompt['built_in_tools']);
+  builtInTools['end_call'] = SYSTEM_TOOLS.end_call;
+  builtInTools['skip_turn'] = SYSTEM_TOOLS.skip_turn;
+  prompt['built_in_tools'] = builtInTools;
+
   agent['prompt'] = prompt;
   agent['first_message'] = update.firstMessage;
   if (update.language) {
@@ -89,8 +124,18 @@ export function mergeAgentConfiguration(
 
   if (update.voiceId) {
     tts['voice_id'] = update.voiceId;
-    conversation['tts'] = tts;
   }
+  tts['model_id'] = update.ttsModel;
+  tts['stability'] = update.stability;
+  tts['similarity_boost'] = update.similarityBoost;
+  tts['speed'] = update.speed;
+  tts['optimize_streaming_latency'] = update.optimizeStreamingLatency;
+  conversation['tts'] = tts;
+
+  const turn = asRecord(conversation['turn']);
+  turn['turn_timeout'] = update.turnTimeoutSeconds;
+  turn['silence_end_call_timeout'] = update.silenceEndCallTimeoutSeconds;
+  conversation['turn'] = turn;
 
   return conversation;
 }

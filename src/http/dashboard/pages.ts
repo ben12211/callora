@@ -182,11 +182,7 @@ export interface BusinessDetailData {
 function providerHints(field: 'voice' | 'model', selected: RealtimeProvider): string {
   return REALTIME_PROVIDERS.map((id) => {
     const descriptor = PROVIDER_CATALOG[id];
-    // The one field the form offers that its provider never receives.
-    const ignored = field === 'model' && id === 'elevenlabs';
-    return `<p class="hint" data-hint="${field}" data-provider="${id}"${id === selected ? '' : ' hidden'}${
-      ignored ? ' style="color:var(--danger)"' : ''
-    }>${ignored ? 'Not used on this provider. ' : ''}${escapeHtml(
+    return `<p class="hint" data-hint="${field}" data-provider="${id}"${id === selected ? '' : ' hidden'}>${escapeHtml(
       field === 'voice' ? descriptor.voiceHint : descriptor.modelHint,
     )}</p>`;
   }).join('');

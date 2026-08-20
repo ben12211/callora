@@ -43,6 +43,38 @@ const HEBREW_SPEECH_RULES = [
   'דבר עברית מדוברת וטבעית, לא עברית פורמלית של מוקד שירות.',
   'כשלא שמעת, אמור משהו קצר כמו "מה אמרת?" או "לא שמעתי, מה אמרת?". אל תאמר ניסוחים מסורבלים כמו "לא שמעתי אותך טוב, תוכל לחזור על זה?".',
   'הימנע ממילות מילוי כמו "בשמחה", "בהחלט" ו"כמובן", אלא אם הן באמת נשמעות טבעיות במשפט.',
+  'השתמש במילים שישראלי באמת אומר בטלפון: "רגע", "שנייה", "אוקיי", "בסדר", "יאללה", "תכלס", "אין בעיה", "בוא נעשה ככה". לא "אנא", "הנני", "בכפוף ל", "על מנת".',
+  'פנה בגוף שני יחיד ובלשון לא רשמית. אל תאמר "אדוני" או "גברתי".',
+  'משפטים קצרים ושבורים כמו בדיבור אמיתי, לא משפטים כתובים עם פסיקים ארוכים.',
+  'שמור על מגדר דקדוקי אחיד לאורך כל השיחה, זה שתואם לקול שלך. אל תעבור באמצע בין "אני בודק" ל"אני בודקת".',
+];
+
+/**
+ * Anti-repetition rules.
+ *
+ * Real transcripts show the failure this prevents: a caller whose speech does not
+ * transcribe leaves the agent asking the identical question turn after turn, four times
+ * in a row, until the call hits its ceiling. Rephrasing once and then moving on is what a
+ * person does; asking again verbatim is what makes the call sound broken.
+ */
+const NO_REPETITION_RULES = [
+  'Never ask the same question twice in the same wording. If you must ask again, ask it a different, shorter way.',
+  'After two attempts at the same missing detail, stop asking for it. Move on with what you have, offer a different route, or close the call.',
+  'If you were interrupted mid-sentence, do not restart that sentence from the beginning. Continue from where the caller cut in, or answer what they just said.',
+  'Never repeat a filler or holding phrase such as "one second" or "let me check" twice in a row. Say it once, then produce the answer.',
+  'If the caller has been silent or unintelligible twice in a row, check once whether they are still there. If the next turn is also empty, say a short goodbye and end the call.',
+];
+
+/**
+ * Audio-tag rules.
+ *
+ * The v3 models accept bracketed delivery tags, and the model will emit them on its own
+ * once it has seen one. Anything malformed — a leading space, an unknown tag — is spoken
+ * aloud to the caller instead of shaping the delivery, which is worse than no tag at all.
+ */
+const DELIVERY_RULES = [
+  'Write only words that should be spoken. Never emit bracketed stage directions, emotion tags, asterisks, ellipses used as stage directions, or any markup: they are read out loud to the caller.',
+  'Convey warmth through word choice and sentence length, not through annotations.',
 ];
 
 /** ISO-639-1 code from a locale such as `he-IL`; undefined when it is not a plain code. */
@@ -101,6 +133,8 @@ export function composeAgentInstructions(options: AgentInstructionOptions): stri
     `Always speak ${agent.language}, regardless of the language the caller uses to address you.`,
     numbered('SCOPE — these rules are absolute:', SCOPE_RULES),
     numbered('PHONE STYLE:', PHONE_STYLE_RULES),
+    numbered('NEVER REPEAT YOURSELF — these rules are absolute:', NO_REPETITION_RULES),
+    numbered('DELIVERY:', DELIVERY_RULES),
     ...(languageCode(agent.language) === 'he' ? [numbered('SPOKEN HEBREW:', HEBREW_SPEECH_RULES)] : []),
     numbered('WHEN YOU DID NOT HEAR CLEARLY — these rules are absolute:', UNCLEAR_SPEECH_RULES),
     numbered('ENDING THE CALL:', END_CALL_RULES),
@@ -121,7 +155,7 @@ export function composeAgentInstructions(options: AgentInstructionOptions): stri
   }
 
   sections.push(
-    'Reminder: stay strictly within this business, default to one short sentence, ask one question at a time, never guess at speech you did not hear clearly, and use end_call to hang up.',
+    'Reminder: stay strictly within this business, default to one short sentence, ask one question at a time, never ask the same question twice in the same words, never guess at speech you did not hear clearly, never write anything that is not meant to be spoken, and use end_call to hang up.',
   );
 
   return sections.join('\n\n');

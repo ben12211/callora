@@ -38,13 +38,13 @@ export const PROVIDER_CATALOG: Record<RealtimeProvider, ProviderDescriptor> = {
     label: 'ElevenLabs Agents',
     summary: 'ElevenLabs Agents conversation driven by per-call Callora overrides.',
     voiceHint: 'ElevenLabs voice id; leave blank to keep the voice configured on the agent.',
-    // Deliberately blunt: this is the one field the form offers that its provider never
-    // receives. Sending it as a conversation override would fail the call outright unless
-    // that override is enabled on the ElevenLabs agent, so it is stored and nothing more.
+    // The reasoning model, not the speech model. Saving writes it onto the agent as its
+    // LLM; the speech model is chosen by Callora and is not an operator's decision,
+    // because the fast ElevenLabs speech models cannot speak every language on offer.
     modelHint:
-      'Callora never sends this to ElevenLabs. The model belongs to the agent in the ElevenLabs dashboard; this is a note to yourself.',
+      'Reasoning model the ElevenLabs agent runs on, for example gpt-5.6-terra. The voice model is chosen by Callora.',
     suggestedVoices: [],
-    suggestedModels: ['eleven_turbo_v2_5', 'eleven_flash_v2_5'],
+    suggestedModels: ['gpt-5.6-terra', 'gemini-2.5-flash'],
     requiredEnvironment: ['ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID'],
   },
   cartesia: {

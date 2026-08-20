@@ -6,10 +6,27 @@ import {
   agentConfigurationFor,
   mergeAgentConfiguration,
   pushAgentConfiguration,
+  type AgentConfiguration,
 } from '../src/realtime/elevenlabs-management.js';
 import { MemoryStore, agentConfig, firstBusinessId, testConfig } from './support/memory-store.js';
 
 const password = 'correct horse battery staple';
+
+/** A configuration with the voicing fields Callora always writes, for the merge tests. */
+function configuration(overrides: Partial<AgentConfiguration> = {}): AgentConfiguration {
+  return {
+    prompt: 'p',
+    firstMessage: 'g',
+    ttsModel: 'eleven_v3_conversational',
+    stability: 0.35,
+    similarityBoost: 0.75,
+    speed: 1,
+    optimizeStreamingLatency: 0,
+    turnTimeoutSeconds: 5,
+    silenceEndCallTimeoutSeconds: 25,
+    ...overrides,
+  };
+}
 const OWN_AGENT = 'agent_owned_by_this_business';
 
 const config: AppConfig = {
@@ -90,13 +107,13 @@ describe('writing the configuration into the ElevenLabs agent', () => {
         tts: { voice_id: 'old-voice', stability: 0.7 },
         turn: { turn_timeout: 9 },
       },
-      {
+      configuration({
         prompt: 'the new prompt',
         firstMessage: 'the new greeting',
         language: 'he',
         llmModel: 'new-model',
         voiceId: 'new-voice',
-      },
+      }),
     );
 
     const agent = merged['agent'] as Record<string, Record<string, unknown>>;
@@ -108,14 +125,40 @@ describe('writing the configuration into the ElevenLabs agent', () => {
 
     // Anything this build does not model survives the round trip.
     expect(agent['prompt']!['tool_ids']).toEqual(['tool_1']);
-    expect((merged['tts'] as Record<string, unknown>)['stability']).toBe(0.7);
-    expect(merged['turn']).toEqual({ turn_timeout: 9 });
+
+    // How the words are delivered is Callora's, not the ElevenLabs dashboard's: the
+    // stability and turn timeout already on the agent are replaced, not preserved.
+    const tts = merged['tts'] as Record<string, unknown>;
+    expect(tts['model_id']).toBe('eleven_v3_conversational');
+    expect(tts['stability']).toBe(0.35);
+    expect(tts['optimize_streaming_latency']).toBe(0);
+    expect(merged['turn']).toEqual({ turn_timeout: 5, silence_end_call_timeout: 25 });
+  });
+
+  it('enables the tools the composed instructions tell the agent to use', () => {
+    const merged = mergeAgentConfiguration({}, configuration());
+    const prompt = (merged['agent'] as Record<string, Record<string, unknown>>)['prompt']!;
+    const tools = prompt['built_in_tools'] as Record<string, Record<string, unknown>>;
+
+    // Without these an agent cannot hang up or stay silent, and a caller it cannot hear
+    // leaves it repeating its last question until the call hits its ceiling.
+    expect(tools['end_call']).toMatchObject({ name: 'end_call' });
+    expect(tools['skip_turn']).toMatchObject({ name: 'skip_turn' });
+  });
+
+  it('speaks every language it offers, which the fast models cannot', () => {
+    // Hebrew is served only by the v3 models. Picking a flash model here does not fail:
+    // it produces audible nonsense on the call, which is why the choice is not an
+    // operator's to make.
+    expect(agentConfigurationFor(agentConfig(firstBusinessId)).ttsModel).toBe(
+      'eleven_v3_conversational',
+    );
   });
 
   it('leaves a field alone when the business has not set it', () => {
     const merged = mergeAgentConfiguration(
       { tts: { voice_id: 'keep-me' } },
-      { prompt: 'p', firstMessage: 'g' },
+      configuration(),
     );
     expect((merged['tts'] as Record<string, unknown>)['voice_id']).toBe('keep-me');
     expect((merged['agent'] as Record<string, Record<string, unknown>>)['prompt']!['llm']).toBeUndefined();
@@ -154,7 +197,7 @@ describe('writing the configuration into the ElevenLabs agent', () => {
       apiKey: 'k',
       baseUrl: 'https://api.elevenlabs.io',
       agentId: OWN_AGENT,
-      update: { prompt: 'p', firstMessage: 'g' },
+      update: configuration(),
       fetchImpl,
     });
 
@@ -165,7 +208,7 @@ describe('writing the configuration into the ElevenLabs agent', () => {
       apiKey: 'k',
       baseUrl: 'https://api.elevenlabs.io',
       agentId: 'agent_that_does_not_exist',
-      update: { prompt: 'p', firstMessage: 'g' },
+      update: configuration(),
       fetchImpl: fakeElevenLabs({ getStatus: 404 }).fetchImpl,
     });
     expect(missing.ok).toBe(false);
@@ -177,7 +220,7 @@ describe('writing the configuration into the ElevenLabs agent', () => {
       apiKey: 'k',
       baseUrl: 'https://api.elevenlabs.io',
       agentId: OWN_AGENT,
-      update: { prompt: 'p', firstMessage: 'g' },
+      update: configuration(),
       fetchImpl: (async () => {
         throw new Error('getaddrinfo ENOTFOUND');
       }) as unknown as typeof fetch,
