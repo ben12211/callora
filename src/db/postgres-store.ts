@@ -55,6 +55,8 @@ interface AdminUserRow {
   email: string;
   name: string;
   password_hash: string;
+  role: string;
+  business_id: string | null;
   active: boolean;
   last_login_at: Date | null;
   created_at: Date;
@@ -191,6 +193,8 @@ function mapAdminUser(row: AdminUserRow): AdminUser {
     email: row.email,
     name: row.name,
     passwordHash: row.password_hash,
+    role: row.role === 'business' ? 'business' : 'platform',
+    businessId: row.business_id,
     active: row.active,
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,
@@ -199,7 +203,7 @@ function mapAdminUser(row: AdminUserRow): AdminUser {
 }
 
 const adminUserColumns = `
-  id, email, name, password_hash, active, last_login_at, created_at, updated_at
+  id, email, name, password_hash, role, business_id, active, last_login_at, created_at, updated_at
 `;
 
 function mapAdminSession(row: AdminSessionRow): AdminSession {
@@ -524,10 +528,18 @@ export class PostgresStore implements DataStore {
 
   public async createAdminUser(input: CreateAdminUserInput): Promise<AdminUser> {
     const result = await this.pool.query<AdminUserRow>(
-      `INSERT INTO admin_users (id, email, name, password_hash)
-       VALUES ($1, lower($2), $3, $4)
+      `INSERT INTO admin_users (id, email, name, password_hash, role, business_id)
+       VALUES ($1, lower($2), $3, $4, $5, $6)
        RETURNING ${adminUserColumns}`,
-      [randomUUID(), input.email, input.name, input.passwordHash],
+      [
+        randomUUID(),
+        input.email,
+        input.name,
+        input.passwordHash,
+        input.role ?? 'platform',
+        // The database refuses a scoped platform account and an unscoped business one.
+        input.role === 'business' ? (input.businessId ?? null) : null,
+      ],
     );
     return mapAdminUser(result.rows[0]!);
   }
@@ -585,6 +597,8 @@ export class PostgresStore implements DataStore {
         email: row.user.email,
         name: row.user.name,
         passwordHash: row.user.password_hash,
+        role: row.user.role === 'business' ? 'business' : 'platform',
+        businessId: row.user.business_id,
         active: row.user.active,
         lastLoginAt: revive(row.user.last_login_at as unknown as string | null),
         createdAt: new Date(row.user.created_at as unknown as string),

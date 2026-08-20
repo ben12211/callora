@@ -282,6 +282,8 @@ export class MemoryStore implements DataStore {
       email: input.email.toLowerCase(),
       name: input.name,
       passwordHash: input.passwordHash,
+      role: input.role ?? 'platform',
+      businessId: input.role === 'business' ? (input.businessId ?? null) : null,
       active: true,
       lastLoginAt: null,
       createdAt: now,

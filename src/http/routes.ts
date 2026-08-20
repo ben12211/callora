@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import twilio from 'twilio';
 import { normalizeE164 } from '../dev/caller-allowlist.js';
 import { registerApiRoutes } from './api-routes.js';
-import { requireApiAuth } from './auth-guard.js';
+import { requireApiAuth, requireBusinessScope } from './auth-guard.js';
 import { registerDashboardRoutes } from './dashboard/routes.js';
 import type { ControlPlaneDependencies } from './dependencies.js';
 import { MEDIA_STREAM_PATH, registerMediaStreamRoute } from './media-stream.js';
@@ -57,7 +57,8 @@ export async function registerRoutes(
   // names businesses' providers and call volumes, which is not public information.
   app.get(
     '/metrics',
-    { preHandler: requireApiAuth(dependencies.auth) },
+    // Registered outside the /api scope, so it carries both guards explicitly.
+    { preHandler: [requireApiAuth(dependencies.auth), requireBusinessScope()] },
     async (_request, reply) => {
       return reply
         .type('text/plain; version=0.0.4; charset=utf-8')

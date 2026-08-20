@@ -3,7 +3,8 @@ import type { AgentConfig, UpsertAgentConfigInput } from '../domain/models.js';
 import { DEFAULT_TEXT_LLM_MODEL } from '../realtime/cartesia-constants.js';
 import { providerStatuses } from '../realtime/provider-catalog.js';
 import { syncAgentToProvider } from './agent-sync.js';
-import { requireApiAuth } from './auth-guard.js';
+import { canAccessBusiness, isPlatformActor } from '../auth/sessions.js';
+import { requireApiAuth, requireBusinessScope } from './auth-guard.js';
 import { API_RATE_LIMIT, RateLimiter } from './rate-limit.js';
 import {
   AGENT_AUDIT_FIELDS,
@@ -83,8 +84,16 @@ export async function registerApiRoutes(
       }
     });
     api.addHook('preHandler', requireApiAuth(auth));
+    // Authorization, once, rather than a check inside each handler. Platform actors pass
+    // through untouched, so a deployment with only platform accounts is unchanged.
+    api.addHook('preHandler', requireBusinessScope());
 
-    api.get('/api/businesses', async () => ({ data: await store.listBusinesses() }));
+    api.get('/api/businesses', async (request) => {
+      const businesses = await store.listBusinesses();
+      // A business administrator sees exactly their own tenant, never the platform's
+      // customer list.
+      return { data: businesses.filter((business) => canAccessBusiness(request.actor!, business.id)) };
+    });
 
     api.get('/api/businesses/:id', async (request, reply) => {
       const parsed = idParamsSchema.safeParse(request.params);
@@ -261,7 +270,13 @@ export async function registerApiRoutes(
         validationError(reply, parsed.error.issues);
         return;
       }
-      return { data: await store.listCalls(parsed.data) };
+      // A scoped administrator can only ever ask about their own business, whatever the
+      // query string says.
+      const actor = request.actor!;
+      const scoped = isPlatformActor(actor)
+        ? parsed.data
+        : { ...parsed.data, businessId: actor.businessId ?? '' };
+      return { data: await store.listCalls(scoped) };
     });
 
     api.get('/api/calls/:id', async (request, reply) => {
@@ -271,7 +286,8 @@ export async function registerApiRoutes(
         return;
       }
       const call = await store.getCallById(parsed.data.id);
-      if (!call) {
+      // A call belonging to another business is reported as absent, not as forbidden.
+      if (!call || !canAccessBusiness(request.actor!, call.businessId)) {
         return reply.code(404).send({ error: 'Call not found' });
       }
       return { data: call };
@@ -286,7 +302,7 @@ export async function registerApiRoutes(
         return;
       }
       const call = await store.getCallById(parsed.data.id);
-      if (!call) {
+      if (!call || !canAccessBusiness(request.actor!, call.businessId)) {
         return reply.code(404).send({ error: 'Call not found' });
       }
       return { data: await store.listTranscript(call.id) };
@@ -298,7 +314,18 @@ export async function registerApiRoutes(
         validationError(reply, parsed.error.issues);
         return;
       }
-      return { data: await store.listAuditEvents(parsed.data) };
+      const actor = request.actor!;
+      const events = await store.listAuditEvents(parsed.data);
+      if (isPlatformActor(actor)) {
+        return { data: events };
+      }
+      // The audit history spans every tenant, so a scoped administrator sees only the
+      // entries about their own business.
+      return {
+        data: events.filter(
+          (event) => event.entityType === 'business' && event.entityId === actor.businessId,
+        ),
+      };
     });
 
     api.get('/api/me', async (request) => ({
@@ -307,6 +334,8 @@ export async function registerApiRoutes(
         id: request.actor?.id,
         label: request.actor?.label,
         name: request.actor?.user?.name ?? null,
+        role: request.actor?.role,
+        businessId: request.actor?.businessId ?? null,
       },
     }));
   });

@@ -69,11 +69,23 @@ export interface UpsertPlatformSettingInput {
   secret: boolean;
 }
 
+/**
+ * What an administrator is allowed to reach.
+ *
+ * `platform` is what every account was before per-tenant authorization existed: access to
+ * every business, call, and provider credential. `business` is scoped to exactly one
+ * tenant and can never see another's data or the platform's credentials.
+ */
+export type AdminRole = 'platform' | 'business';
+
 export interface AdminUser {
   id: string;
   email: string;
   name: string;
   passwordHash: string;
+  role: AdminRole;
+  /** Set for a `business` administrator, and null for a platform one. */
+  businessId: string | null;
   active: boolean;
   lastLoginAt: Date | null;
   createdAt: Date;
@@ -84,6 +96,8 @@ export interface CreateAdminUserInput {
   email: string;
   name: string;
   passwordHash: string;
+  role?: AdminRole;
+  businessId?: string | null;
 }
 
 export interface AdminSession {
