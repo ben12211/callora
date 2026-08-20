@@ -13,9 +13,14 @@ This push deliberately does **not** include AI, WebSockets, Twilio Media Streams
 - Signed Twilio voice webhook returning TwiML
 - Signed Twilio call-status callback
 - Business CRUD, per-business agent configuration, and read-only call APIs, all behind authentication
+- Per-tenant authorization: an administrator is either a platform administrator or scoped to exactly one business
+- Persisted conversation transcripts with a retention window
 - Per-business voice provider selection across OpenAI, ElevenLabs, and Cartesia
 - Provider status reporting and an audit trail of administrative changes
-- Database-aware health endpoint
+- Prometheus metrics at `/metrics` for the call path
+- Rate limiting on sign-in and the management API
+- Health endpoint reporting the database, live calls, and provider readiness
+- Graceful shutdown that drains live calls instead of cutting them off
 - Docker and Docker Compose setup using ARM64-compatible official images
 - Unit/API tests, ESLint, and strict TypeScript compilation
 - Small, implementation-free interfaces for future realtime AI, Media Streams, tool calling, business systems, WhatsApp, and voice providers
@@ -76,9 +81,59 @@ Useful checks:
 
 ```bash
 pnpm lint
+```
+
+```bash
+pnpm typecheck
+```
+
+```bash
 pnpm build
+```
+
+```bash
 pnpm test
 ```
+
+## Administrator roles
+
+An administrator is either a **platform** administrator, who reaches every business and
+the platform's provider credentials, or a **business** administrator, scoped to exactly
+one tenant. Accounts default to `platform`, so an existing deployment is unchanged.
+
+A business administrator sees only their own business, its calls and transcripts, and the
+audit entries about it. Creating or deleting a business, the Providers page, and
+`/metrics` stay platform-only. Asking about another tenant is answered `404` rather than
+`403`, so the platform's customer list cannot be probed.
+
+`ADMIN_API_KEY` is a platform credential and is not scoped.
+
+## Transcripts
+
+Each completed turn is stored against its call, readable on the call detail page and at
+`GET /api/calls/:id/transcript`. They are the caller's own words, so they are deleted
+after `TRANSCRIPT_RETENTION_DAYS` (default 30). Setting it to `0` keeps them indefinitely.
+
+## Metrics
+
+`GET /metrics` renders the Prometheus text format behind the same credential as the rest
+of `/api`: active calls, first-audio latency, barge-ins, call outcomes and durations, and
+how often a call fell back to the static greeting.
+
+## Rotating secrets
+
+`STREAM_TOKEN_SECRET` signs the short-lived Media Stream handshake token. Leave it unset
+and the Twilio auth token signs it, as before. Both are accepted while you introduce it,
+so no call in flight is dropped.
+
+`SECRETS_KEY` encrypts the provider credentials stored from the dashboard. To change it
+without losing them:
+
+```bash
+SECRETS_KEY_OLD=current SECRETS_KEY_NEW=replacement pnpm secrets:rotate --dry-run
+```
+
+Then run it without `--dry-run`, set `SECRETS_KEY` to the new value, and restart.
 
 For the ARM64 Oracle Linux production topology, GitHub Actions deployment, required secrets, and rollback behavior, see [DEPLOYMENT.md](./DEPLOYMENT.md).
 

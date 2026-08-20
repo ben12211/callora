@@ -1,6 +1,6 @@
 # Callora AI State
 
-Last updated: 2026-08-17
+Last updated: 2026-08-20
 
 ## Current product state
 
@@ -18,9 +18,13 @@ Agent behaviour is governed by a global Callora policy that outranks per-busines
 
 The policy also forbids guessing at unclear speech: the agent never invents a login, order, product, payment, account, or appointment context the caller did not state, asks one short clarification question instead, and treats an unclear possible goodbye as a closing. Caller audio uses `near_field` noise reduction ahead of turn detection, with the pcmu bridge unchanged.
 
-Live calls are observable in the logs: caller audio transcription is enabled for logging only, and each completed turn emits one `[conversation] USER:` / `[conversation] AI:` line tagged with `callId`, `businessId`, `callSid`, and `streamSid`. Transcripts are logged, never persisted. At `debug` level the composed agent instructions are logged once per call.
+Live calls are observable in the logs and in metrics: each completed turn emits one `[conversation] USER:` / `[conversation] AI:` line tagged with `callId`, `businessId`, `callSid`, and `streamSid`, and is also stored as a transcript turn. `/metrics` reports active calls, first-audio latency, barge-ins, call outcomes and durations, and how often a call fell back to the static greeting. At `debug` level the composed agent instructions are logged once per call.
 
-MCP, Google Calendar, CRM connectors, WhatsApp, billing, knowledge/RAG, business-facing customer accounts, the full tool system, transcript persistence, and an agent builder/versioning are intentionally not implemented. Administration is authenticated but flat: every administrator is a platform administrator, with no per-tenant authorization yet.
+Administration is now authorized as well as authenticated. `admin_users` carries a `role` (`platform` or `business`) and, for a business administrator, the single `business_id` they are confined to — a database constraint ties the two together, so the scope cannot be forgotten at a call site. The default is `platform`, so every account that existed before keeps exactly its previous access and the `ADMIN_API_KEY` machine credential stays platform-wide. A scoped administrator sees only their own business, calls, transcripts and audit entries; creating or deleting a tenant, provider credentials and `/metrics` remain platform-only. A business that is not theirs is reported as absent rather than forbidden, and affordances that would answer 403 are not rendered.
+
+Conversation transcripts are persisted in `call_transcripts`, readable on the call detail page and at `GET /api/calls/:id/transcript`, and pruned by `TRANSCRIPT_RETENTION_DAYS` (default 30 days; `0` keeps them). Writing a turn is fire-and-forget and never interrupts the call it describes.
+
+MCP, Google Calendar, CRM connectors, WhatsApp, billing, knowledge/RAG, business-facing customer accounts, the full tool system, and an agent builder/versioning are intentionally not implemented.
 
 ## Stack and architecture
 
@@ -30,7 +34,11 @@ MCP, Google Calendar, CRM connectors, WhatsApp, billing, knowledge/RAG, business
 - Vitest API tests, ESLint, strict TypeScript build
 - Control plane in `src/auth/` (scrypt passwords, sessions, bootstrap administrator), `src/http/api-routes.ts`, and `src/http/dashboard/` (layout, pages, routes); no client-side framework or build step
 - Dashboard-managed platform settings in `src/platform/` (`settings.ts` merges stored values over the environment and re-derives provider credentials; `secret-box.ts` seals them under `SECRETS_KEY`)
-- Realtime call path in `src/realtime/` (global policy, provider list, per-provider protocol builders, one bridge and one connection module per provider), `src/http/media-stream.ts`, and `src/telephony/call-terminator.ts`
+- Realtime call path in `src/realtime/` (global policy, provider list, per-provider protocol builders, one bridge and one connection module per provider), `src/http/media-stream.ts`, and `src/telephony/`
+- The Twilio side of a bridged call is shared, not copied: `src/realtime/call-leg.ts` owns the hangup sequence and the silence watchdog for all three providers, which is what stopped them drifting apart
+- `src/telephony/call-registry.ts` tracks the calls an instance is carrying, so SIGTERM drains them instead of cutting them off, and `/metrics` can report them
+- `src/platform/metrics.ts` renders the Prometheus text format at `/metrics`: first-audio latency, barge-ins, call outcomes, durations, and greeting fallbacks
+- `src/http/rate-limit.ts` bounds sign-in guesses and management API volume, in process
 - `TWILIO_ACCOUNT_SID` is required at startup: the REST client that hangs calls up is authenticated per account
 - Media Stream handshakes are authorized by a short-lived HMAC token minted by the signature-validated voice webhook
 - Future integration boundaries live in `src/future/interfaces.ts`
@@ -45,7 +53,8 @@ MCP, Google Calendar, CRM connectors, WhatsApp, billing, knowledge/RAG, business
 
 ## Next major milestones
 
-1. Add per-tenant authorization on top of the existing authentication, and business-facing accounts.
-2. Persist call transcripts (currently logs only) and add reconnect/degradation handling for the realtime path.
+1. Business-facing customer accounts on top of the per-tenant authorization that now exists.
+2. Reconnect handling inside a live call: the caller no longer gets dead air when a bridge cannot be opened, and a deploy drains rather than cutting calls off, but a provider socket that drops mid-conversation still ends the call.
 3. Add one narrow mocked tool-call workflow on top of the existing agent configuration.
 4. Integrate real business tools later; keep WhatsApp and voice cloning as separate future milestones.
+5. Move rate limiting to a shared store if the deployment ever runs enough replicas for the per-process allowance to matter.
