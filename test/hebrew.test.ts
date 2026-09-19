@@ -78,12 +78,43 @@ describe('Hebrew risk and normalization', () => {
     const result = detectHebrewPronunciationRisk("שלח WhatsApp למד״א ב-12/09/2026, טלפון 050-123-4567");
     expect(result.reasons).toEqual(expect.arrayContaining(['number', 'date', 'phone-or-id', 'geresh', 'mixed-script']));
   });
+  it.each([
+    ['המחיר ₪50.', 'המחיר 50 שקלים.'],
+    ['המחיר ₪50, תודה', 'המחיר 50 שקלים, תודה'],
+    ['זה עולה ₪1,250.50. מתאים?', 'זה עולה 1,250.50 שקלים. מתאים?'],
+    ['האם זה ₪99?', 'האם זה 99 שקלים?'],
+    ['50 ₪ בלבד.', '50 שקלים בלבד.'],
+    ['הנחה של 15% היום.', 'הנחה של 15 אחוזים היום.'],
+    ['The price is ₪75, ok?', 'The price is 75 שקלים, ok?'],
+    ['שני מוצרים: ₪10 ו-₪20.', 'שני מוצרים: 10 שקלים ו-20 שקלים.'],
+  ])('leaves the punctuation after a price available to the chunker: %s', (input, expected) => {
+    expect(normalizeSpokenHebrew(input)).toBe(expected);
+  });
+
+  it('keeps a normalized price inside one chunk and still breaks on the punctuation after it', () => {
+    const chunker = new HebrewStreamingChunker();
+    expect(chunker.push(`${normalizeSpokenHebrew('זה עולה ₪1,250.50.')} ותודה רבה.`)).toEqual([
+      'זה עולה 1,250.50 שקלים.',
+      ' ותודה רבה.',
+    ]);
+  });
+
   it('adds deterministic spoken context to values', () => {
     const value = normalizeSpokenHebrew('המחיר ₪249, הנחה 10%, טלפון 050-123-4567 בשעה 14:30');
     expect(value).toContain('249 שקלים');
     expect(value).toContain('10 אחוזים');
     expect(value).toContain('מספר טלפון 0 5 0 1 2 3 4 5 6 7');
     expect(value).toContain('בשעה 14 ו-30 דקות');
+  });
+});
+
+describe('pronunciation cache bounds', () => {
+  it('evicts the oldest entry instead of growing without limit', async () => {
+    const cache = new PronunciationCache(2);
+    const frontend = new HebrewSpeechFrontend({ businessId: firstBusinessId, locale: 'he-IL', mode: 'smart', dictionary: [], cache });
+    for (const text of ['ראשון שלום', 'שני שלום', 'שלישי שלום']) await frontend.preprocess(text);
+    expect((await frontend.preprocess('ראשון שלום')).cacheHit).toBe(false);
+    expect((await frontend.preprocess('שלישי שלום')).cacheHit).toBe(true);
   });
 });
 
@@ -157,7 +188,7 @@ describe('Deepdub pronunciation rendering', () => {
 });
 
 class FakeDeepdubSocket extends EventEmitter {
-  public readyState = WebSocket.OPEN;
+  public readyState: number = WebSocket.OPEN;
   public sent: Record<string, unknown>[] = [];
   public send(payload: string): void { this.sent.push(JSON.parse(payload) as Record<string, unknown>); }
   public close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }

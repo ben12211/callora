@@ -251,6 +251,8 @@ export class CartesiaBridge {
       this.keepaliveTimer = null;
     }
     this.turnAbort?.abort();
+    this.awaitingTtsDone.clear();
+    this.ttsRequestStartedAt.clear();
 
     this.options.logger.info(
       { ...this.logContext(), reason },
@@ -404,7 +406,7 @@ export class CartesiaBridge {
     }).catch((error: unknown) => {
       this.options.logger.warn({ ...this.logContext(), error: error instanceof Error ? error.message : 'unknown error' }, 'Speech preprocessing failed; continuing with plain text');
       if (!this.closed && (this.activeContextId === contextId || !transcript)) {
-        void new PassthroughSpeechPreprocessor().preprocess(transcript).then((plain) => this.ttsSession.send(contextId, plain, more));
+        return new PassthroughSpeechPreprocessor().preprocess(transcript).then((plain) => { this.ttsSession.send(contextId, plain, more); });
       }
     });
   }
@@ -481,6 +483,7 @@ export class CartesiaBridge {
       this.options.metrics?.event?.(this.providerName(), 'tts_cancelled');
       // Its `done` may never arrive now, so it must not hold up a later hangup.
       this.awaitingTtsDone.delete(abandoned);
+      this.ttsRequestStartedAt.delete(abandoned);
     }
     this.turnAbort?.abort();
 
