@@ -264,7 +264,8 @@ update_runtime_secrets() {
   local twilio_account_sid twilio_auth_token openai_api_key allow_list temp_env
   local voice_provider elevenlabs_api_key elevenlabs_agent_id
   local cartesia_api_key cartesia_voice_id
-  local admin_email admin_password admin_api_key
+  local deepdub_api_key deepdub_voice_id renikud_url
+  local admin_email admin_password admin_api_key secrets_key
 
   IFS= read -r twilio_account_sid
   IFS= read -r twilio_auth_token
@@ -291,11 +292,21 @@ update_runtime_secrets() {
   IFS= read -r admin_email || true
   IFS= read -r admin_password || true
   IFS= read -r admin_api_key || true
-  # Encrypts the credentials entered in the dashboard. Optional, and deliberately last: an
-  # older workflow sends nothing, which must leave whatever key the server already has
-  # untouched, because replacing it would make every stored credential unreadable.
+  # Encrypts the credentials entered in the dashboard. Optional: an older workflow sends
+  # nothing, which must leave whatever key the server already has untouched, because
+  # replacing it would make every stored credential unreadable.
   secrets_key=''
   IFS= read -r secrets_key || true
+  # Deepdub, appended after everything above for the same reason every block before it was:
+  # a workflow that does not send these lines leaves them empty instead of shifting the
+  # meaning of the lines it does send. An empty RENIKUD_URL simply leaves the optional
+  # pronunciation sidecar switched off.
+  deepdub_api_key=''
+  deepdub_voice_id=''
+  renikud_url=''
+  IFS= read -r deepdub_api_key || true
+  IFS= read -r deepdub_voice_id || true
+  IFS= read -r renikud_url || true
   [[ -n "$voice_provider" ]] || voice_provider=openai
 
   [[ "$twilio_account_sid" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
@@ -307,9 +318,9 @@ update_runtime_secrets() {
     return 1
   }
   case "$voice_provider" in
-    openai|elevenlabs|cartesia) ;;
+    openai|elevenlabs|cartesia|deepdub) ;;
     *)
-      log 'VOICE_PROVIDER must be one of openai, elevenlabs, or cartesia.'
+      log 'VOICE_PROVIDER must be one of openai, elevenlabs, cartesia, or deepdub.'
       return 1
       ;;
   esac
@@ -341,6 +352,13 @@ update_runtime_secrets() {
       # Cartesia covers speech only; the reasoning turn runs on the OpenAI text model.
       check_secret OPENAI_API_KEY "$openai_api_key" || return 1
       ;;
+    deepdub)
+      check_secret DEEPDUB_API_KEY "$deepdub_api_key" || return 1
+      check_secret DEEPDUB_VOICE_ID "$deepdub_voice_id" || return 1
+      # Deepdub speaks; Cartesia supplies streaming Hebrew STT and OpenAI the reasoning turn.
+      check_secret CARTESIA_API_KEY "$cartesia_api_key" || return 1
+      check_secret OPENAI_API_KEY "$openai_api_key" || return 1
+      ;;
   esac
   if [[ ${#missing_secrets[@]} -gt 0 ]]; then
     log "Not supplied by the pipeline: ${missing_secrets[*]}. They must be stored in the dashboard under Providers, or calls will answer with the static greeting."
@@ -369,10 +387,15 @@ update_runtime_secrets() {
     log 'ALLOW_LIST must be empty or a comma-separated list of E.164 numbers.'
     return 1
   }
-  [[ -f "$ENV_FILE" ]] || {
-    log "$ENV_FILE is missing; create the production application environment before deploying."
-    return 1
-  }
+  # The secrets handed to this function are enough to seed the file from nothing, so a
+  # first deployment onto a freshly bootstrapped VM is not a dead end. What it cannot
+  # invent are the host-specific settings that deliberately never leave the VM, so those
+  # are reported by name once the file is written instead of being refused up front.
+  local baseline="$ENV_FILE"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    log "$ENV_FILE does not exist yet; creating it from the credentials the pipeline supplied."
+    baseline=/dev/null
+  fi
 
   temp_env="$(mktemp "$APP_DIR/.env.XXXXXX")"
   trap 'rm -f -- "$temp_env"' RETURN
@@ -389,10 +412,13 @@ update_runtime_secrets() {
     !/^[[:space:]]*ELEVENLABS_AGENT_ID[[:space:]]*=/ &&
     !/^[[:space:]]*CARTESIA_API_KEY[[:space:]]*=/ &&
     !/^[[:space:]]*CARTESIA_VOICE_ID[[:space:]]*=/ &&
+    !/^[[:space:]]*DEEPDUB_API_KEY[[:space:]]*=/ &&
+    !/^[[:space:]]*DEEPDUB_VOICE_ID[[:space:]]*=/ &&
+    !/^[[:space:]]*RENIKUD_URL[[:space:]]*=/ &&
     !/^[[:space:]]*ADMIN_EMAIL[[:space:]]*=/ &&
     !/^[[:space:]]*ADMIN_PASSWORD[[:space:]]*=/ &&
     !/^[[:space:]]*ADMIN_API_KEY[[:space:]]*=/
-  ' "$ENV_FILE" > "$temp_env"
+  ' "$baseline" > "$temp_env"
   printf 'TWILIO_ACCOUNT_SID=%s\n' "$twilio_account_sid" >> "$temp_env"
   printf 'TWILIO_AUTH_TOKEN=%s\n' "$twilio_auth_token" >> "$temp_env"
   printf 'OPENAI_API_KEY=%s\n' "$openai_api_key" >> "$temp_env"
@@ -402,6 +428,9 @@ update_runtime_secrets() {
   printf 'ELEVENLABS_AGENT_ID=%s\n' "$elevenlabs_agent_id" >> "$temp_env"
   printf 'CARTESIA_API_KEY=%s\n' "$cartesia_api_key" >> "$temp_env"
   printf 'CARTESIA_VOICE_ID=%s\n' "$cartesia_voice_id" >> "$temp_env"
+  printf 'DEEPDUB_API_KEY=%s\n' "$deepdub_api_key" >> "$temp_env"
+  printf 'DEEPDUB_VOICE_ID=%s\n' "$deepdub_voice_id" >> "$temp_env"
+  printf 'RENIKUD_URL=%s\n' "$renikud_url" >> "$temp_env"
   printf 'ADMIN_EMAIL=%s\n' "$admin_email" >> "$temp_env"
   printf 'ADMIN_PASSWORD=%s\n' "$admin_password" >> "$temp_env"
   printf 'ADMIN_API_KEY=%s\n' "$admin_api_key" >> "$temp_env"
@@ -411,6 +440,23 @@ update_runtime_secrets() {
   chmod 0600 "$temp_env"
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN
+
+  # Compose treats these as mandatory, and none of them can come from the pipeline: the
+  # database credentials and the public URL are host-specific by design. Naming the ones
+  # that are absent here turns an opaque "variable is not set" from `docker compose` at
+  # deploy time into one actionable message, with the rest of the file already written.
+  local -a missing_host_settings=()
+  local setting
+  for setting in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL PUBLIC_BASE_URL; do
+    grep -Eq "^[[:space:]]*$setting[[:space:]]*=[[:space:]]*[^[:space:]]" "$ENV_FILE" \
+      || missing_host_settings+=("$setting")
+  done
+  if [[ ${#missing_host_settings[@]} -gt 0 ]]; then
+    log "$ENV_FILE is missing the host-specific settings: ${missing_host_settings[*]}."
+    log "Add them on the VM (see 'Production application environment on the VM' in DEPLOYMENT.md), then re-run this deployment. The credentials from the pipeline have already been written."
+    return 1
+  fi
+
   if [[ -n "$allow_list" ]]; then
     log "Runtime credentials updated for the $voice_provider voice provider; caller allowlist is active."
   else

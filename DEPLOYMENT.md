@@ -82,7 +82,7 @@ SECRETS_KEY=replace-with-a-long-random-string
 
 `SECRETS_KEY` encrypts the provider credentials entered on the dashboard's **Providers** page. Generate it once with `openssl rand -base64 32`, and treat it as permanent: rotating it leaves every credential stored in Callora unreadable, and each one has to be entered again. It is only replaced on the server when the deployment supplies a value, so a pipeline that does not send one leaves the existing key alone. Without it the dashboard still manages every non-secret setting, but API keys have to come from this file.
 
-`VOICE_PROVIDER` sets the default provider for newly created agents and accepts only `openai` (the default), `elevenlabs`, or `cartesia`. Each business chooses its own provider in the dashboard, and any provider whose credentials are present — here or saved in the dashboard — becomes selectable there. Selecting `cartesia` additionally requires `OPENAI_API_KEY`, because Cartesia supplies speech but not reasoning. Only the selected provider's credentials matter: an OpenAI deployment can leave both `ELEVENLABS_*` values empty, and an ElevenLabs deployment can leave `OPENAI_API_KEY` empty. Credentials missing here are reported by the deployment and at startup, not treated as a failure, since they may already be stored in the dashboard; until they exist in one of the two places, calls answer with the business's static greeting.
+`VOICE_PROVIDER` sets the default provider for newly created agents and accepts only `openai` (the default), `elevenlabs`, `cartesia`, or `deepdub`. Each business chooses its own provider in the dashboard, and any provider whose credentials are present — here or saved in the dashboard — becomes selectable there. Selecting `cartesia` additionally requires `OPENAI_API_KEY`, because Cartesia supplies speech but not reasoning. Selecting `deepdub` requires `CARTESIA_API_KEY` and `OPENAI_API_KEY` as well, because Deepdub speaks while Cartesia transcribes and OpenAI reasons. Only the selected provider's credentials matter: an OpenAI deployment can leave both `ELEVENLABS_*` values empty, and an ElevenLabs deployment can leave `OPENAI_API_KEY` empty. Credentials missing here are reported by the deployment and at startup, not treated as a failure, since they may already be stored in the dashboard; until they exist in one of the two places, calls answer with the business's static greeting.
 
 `ALLOW_LIST` is optional and is overwritten from the GitHub secret on every deployment, exactly like the Twilio and OpenAI credentials — but an allowlist saved in the dashboard takes precedence over it. Set the secret to a comma-separated list of E.164 numbers to restrict who can reach the agent; clear it to allow every caller again. A malformed value fails the deployment rather than silently blocking calls.
 
@@ -95,6 +95,8 @@ chmod 0600 /opt/callora/.env
 ```
 
 If `POSTGRES_PASSWORD` contains URL-reserved characters, percent-encode the password portion in `DATABASE_URL`. The unencoded value remains in `POSTGRES_PASSWORD`. `DATABASE_URL` must use the Compose service hostname `db`.
+
+If this file does not exist yet, the first deployment creates it and writes the credentials the pipeline holds, then stops and names the host-specific settings above that it cannot know: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL` and `PUBLIC_BASE_URL`. Add those on the VM and run the deployment again. Creating the file up front, as described here, avoids that first failed run.
 
 Do not add `CALLORA_IMAGE` manually. During deployment, `deploy.sh` copies the existing server environment to a mode-0600 release file and inserts only the exact commit-SHA image. Rollback restores the previous environment and image reference.
 
@@ -115,7 +117,8 @@ Repository Secrets:
 | `OPENAI_API_KEY` | OpenAI API key with Realtime access. Required only when `VOICE_PROVIDER` is `openai` |
 | `ELEVENLABS_API_KEY` | ElevenLabs API key. Required only when `VOICE_PROVIDER` is `elevenlabs` |
 | `ELEVENLABS_AGENT_ID` | ElevenLabs agent id. Required only when `VOICE_PROVIDER` is `elevenlabs` |
-| `CARTESIA_API_KEY` | Cartesia API key. Required only when `VOICE_PROVIDER` is `cartesia` |
+| `CARTESIA_API_KEY` | Cartesia API key. Required when `VOICE_PROVIDER` is `cartesia`, and also when it is `deepdub`, which uses Cartesia for streaming Hebrew speech-to-text |
+| `DEEPDUB_API_KEY` | Deepdub API key. Required only when `VOICE_PROVIDER` is `deepdub` |
 | `ALLOW_LIST` | Optional. Comma-separated E.164 numbers allowed to reach the agent; leave unset or empty to allow every caller |
 | `ADMIN_PASSWORD` | Bootstrap dashboard password, at least 12 characters. Set together with `ADMIN_EMAIL`; leave both unset to keep the existing account and its dashboard-managed password |
 | `ADMIN_EMAIL` | Bootstrap administrator address. A Repository Variable of the same name is also accepted and preferred, since it is not sensitive |
@@ -128,8 +131,10 @@ Repository Variables:
 | --- | --- |
 | `DOCKER_HUB_USERNAME` | Docker Hub account or organization that owns the private `callora` repository |
 | `CARTESIA_VOICE_ID` | Sonic voice UUID. Required only when `VOICE_PROVIDER` is `cartesia`. Not sensitive, so a Variable is preferred; a Secret of the same name is also accepted |
+| `DEEPDUB_VOICE_ID` | Deepdub voice prompt id. Required only when `VOICE_PROVIDER` is `deepdub`. Not sensitive, so a Variable is preferred; a Secret of the same name is also accepted |
+| `RENIKUD_URL` | Optional. Base URL of the ReNikudPlus pronunciation sidecar, for example `http://renikud:8000`. Unset leaves it switched off, and Hebrew calls use Deepdub's own pronunciation |
 | `ADMIN_EMAIL` | Bootstrap administrator address. A Repository Secret of the same name is also accepted |
-| `VOICE_PROVIDER` | Optional. `openai` (default), `elevenlabs`, or `cartesia`. A Repository Secret of the same name is also accepted, but a Variable is preferred: GitHub masks secret values in workflow logs, so storing it as a secret hides the selected provider from the deployment log |
+| `VOICE_PROVIDER` | Optional. `openai` (default), `elevenlabs`, `cartesia`, or `deepdub`. A Repository Secret of the same name is also accepted, but a Variable is preferred: GitHub masks secret values in workflow logs, so storing it as a secret hides the selected provider from the deployment log |
 
 No GHCR credentials, `GITHUB_TOKEN` package permissions, GitHub environment secrets, or database secrets are used by the workflow. The deploy job continues to target the existing `production` environment so any protection rules or required reviewers remain in force; its credentials still come only from the Repository Secrets above. Twilio credentials are sent to the VM over the existing SSH connection through standard input and are never printed or included in a remote command line.
 

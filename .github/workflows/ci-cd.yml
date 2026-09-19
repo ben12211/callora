@@ -64,6 +64,11 @@ jobs:
           env VOICE_PROVIDER=cartesia \
             CARTESIA_API_KEY=validation-only CARTESIA_VOICE_ID=voice_validation \
             docker compose -f docker-compose.prod.yml config -q
+          # ...and on Deepdub, which speaks Hebrew over Cartesia STT and the OpenAI LLM turn.
+          env VOICE_PROVIDER=deepdub \
+            DEEPDUB_API_KEY=validation-only DEEPDUB_VOICE_ID=voice_validation \
+            CARTESIA_API_KEY=validation-only \
+            docker compose -f docker-compose.prod.yml config -q
 
       - name: Lint
         run: pnpm lint
@@ -171,6 +176,10 @@ jobs:
           ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
           CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
           CARTESIA_VOICE_ID: ${{ vars.CARTESIA_VOICE_ID || secrets.CARTESIA_VOICE_ID }}
+          DEEPDUB_API_KEY: ${{ secrets.DEEPDUB_API_KEY }}
+          DEEPDUB_VOICE_ID: ${{ vars.DEEPDUB_VOICE_ID || secrets.DEEPDUB_VOICE_ID }}
+          # Optional Hebrew pronunciation sidecar; unset leaves it switched off.
+          RENIKUD_URL: ${{ vars.RENIKUD_URL }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
           # Encrypts credentials entered in the dashboard. Rotating it makes every stored
           # credential unreadable, so it is set once and left alone.
@@ -232,8 +241,8 @@ jobs:
           # Only the selected provider's credentials are required, matching what the
           # application validates at startup. Unset means the default, openai.
           voice_provider = (os.environ.get('VOICE_PROVIDER') or 'openai').strip()
-          if voice_provider not in ('openai', 'elevenlabs', 'cartesia'):
-              print('VOICE_PROVIDER must be one of openai, elevenlabs, or cartesia.', file=sys.stderr)
+          if voice_provider not in ('openai', 'elevenlabs', 'cartesia', 'deepdub'):
+              print('VOICE_PROVIDER must be one of openai, elevenlabs, cartesia, or deepdub.', file=sys.stderr)
               sys.exit(1)
 
           # Reported with an underscored token rather than the raw value: when
@@ -243,6 +252,7 @@ jobs:
               'openai': 'OPEN_AI',
               'elevenlabs': 'ELEVEN_LABS',
               'cartesia': 'CARTESIA_SONIC',
+              'deepdub': 'DEEPDUB_PHANTOM',
           }[voice_provider])
 
           # A credential may be supplied here or entered in the dashboard, which stores it
@@ -253,6 +263,7 @@ jobs:
               'openai': ('OPENAI_API_KEY',),
               'elevenlabs': ('ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID'),
               'cartesia': ('CARTESIA_API_KEY', 'CARTESIA_VOICE_ID', 'OPENAI_API_KEY'),
+              'deepdub': ('DEEPDUB_API_KEY', 'DEEPDUB_VOICE_ID', 'CARTESIA_API_KEY', 'OPENAI_API_KEY'),
           }[voice_provider]:
               value = (os.environ.get(name) or '').strip()
               if not value:
@@ -367,6 +378,9 @@ jobs:
           ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
           CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
           CARTESIA_VOICE_ID: ${{ vars.CARTESIA_VOICE_ID || secrets.CARTESIA_VOICE_ID }}
+          DEEPDUB_API_KEY: ${{ secrets.DEEPDUB_API_KEY }}
+          DEEPDUB_VOICE_ID: ${{ vars.DEEPDUB_VOICE_ID || secrets.DEEPDUB_VOICE_ID }}
+          RENIKUD_URL: ${{ vars.RENIKUD_URL }}
           ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
           SECRETS_KEY: ${{ secrets.SECRETS_KEY }}
           ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || secrets.ADMIN_EMAIL }}
@@ -499,11 +513,12 @@ jobs:
           )"
 
           # Appended last, so a server still running an older deploy.sh simply ignores it.
-          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
             "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" "$ALLOW_LIST" \
             "$VOICE_PROVIDER" "$ELEVENLABS_API_KEY" "$ELEVENLABS_AGENT_ID" \
             "$CARTESIA_API_KEY" "$CARTESIA_VOICE_ID" \
-            "$ADMIN_EMAIL" "$ADMIN_PASSWORD" "$ADMIN_API_KEY" "$SECRETS_KEY" | \
+            "$ADMIN_EMAIL" "$ADMIN_PASSWORD" "$ADMIN_API_KEY" "$SECRETS_KEY" \
+            "$DEEPDUB_API_KEY" "$DEEPDUB_VOICE_ID" "$RENIKUD_URL" | \
             "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
           if ! "${SSH[@]}" "$REMOTE" \
