@@ -14,6 +14,9 @@ import { connectElevenLabsAgent } from '../realtime/elevenlabs-connection.js';
 import { connectOpenAiRealtime } from '../realtime/openai-connection.js';
 import { parseJsonObject, readObject, readString } from '../realtime/protocol.js';
 import { websocketChannel } from '../realtime/websocket-channel.js';
+import { connectDeepdub } from '../realtime/deepdub-connection.js';
+import { HebrewSpeechFrontend } from '../hebrew/speech-frontend.js';
+import { ReNikudClient } from '../hebrew/renikud-client.js';
 import type { CallRegistry } from '../telephony/call-registry.js';
 import { createCallTerminator, type CallTerminator } from '../telephony/call-terminator.js';
 import { verifyStreamToken, type StreamTokenPayload } from './stream-token.js';
@@ -374,6 +377,75 @@ async function openBridge(
 
   // The business chose the provider; the platform only supplies the credentials.
   const provider = agent.voiceProvider;
+
+  if (provider === 'deepdub') {
+    const credentials = providers.deepdub;
+    if (!credentials) {
+      app.log.error({ businessId, callSid, provider }, 'No platform credentials for the selected provider');
+      await fallbackToGreeting(app, dependencies, businessId, callSid, 'provider-unavailable');
+      socket.close(1011, 'provider unavailable');
+      return;
+    }
+    const voiceId = agent.voice.trim() || credentials.defaultVoiceId;
+    const language = cartesiaLanguage(agent);
+    const locale = agent.language.toLowerCase().startsWith('he') ? credentials.locale : agent.language;
+    const dictionaryPromise = store.listPronunciations(businessId).catch((error: unknown) => {
+      app.log.warn({ businessId, callSid, error: error instanceof Error ? error.message : 'unknown error' }, 'Pronunciation dictionary unavailable; continuing without it');
+      return [];
+    });
+    const [connections, dictionary] = await Promise.all([
+      Promise.allSettled([
+        connectCartesiaStt({ apiKey: credentials.sttApiKey, baseUrl: credentials.cartesiaWsBaseUrl, version: credentials.cartesiaVersion, model: credentials.sttModel, language }),
+        connectDeepdub({ apiKey: credentials.apiKey, url: credentials.wsUrl, model: credentials.model, voiceId, locale, firstAudioTimeoutMs: credentials.firstAudioTimeoutMs, enableLogging: credentials.enableLogging }),
+      ]),
+      dictionaryPromise,
+    ]);
+    const [sttConnection, deepdubConnection] = connections;
+    if (!sttConnection || !deepdubConnection || sttConnection.status === 'rejected' || deepdubConnection.status === 'rejected') {
+      if (sttConnection?.status === 'fulfilled') sttConnection.value.close();
+      if (deepdubConnection?.status === 'fulfilled') deepdubConnection.value.session.close();
+      const failure = sttConnection?.status === 'rejected' ? sttConnection.reason : deepdubConnection?.status === 'rejected' ? deepdubConnection.reason : new Error('Provider connection did not resolve');
+      throw failure;
+    }
+    const sttResult = sttConnection.value;
+    const deepdubResult = deepdubConnection.value;
+    const renikud = credentials.renikudUrl
+      ? new ReNikudClient({ baseUrl: credentials.renikudUrl, timeoutMs: credentials.renikudTimeoutMs })
+      : undefined;
+    const preprocessor = new HebrewSpeechFrontend({
+      businessId,
+      locale,
+      mode: agent.hebrewPronunciationMode,
+      dictionary,
+      ...(renikud ? { renikud } : {}),
+    });
+    const llmModel = agent.realtimeModel.trim() || credentials.textLlmModel;
+    app.log.info({ businessId, callSid, sttModel: credentials.sttModel, ttsModel: credentials.model, llmModel, voiceId, locale, pronunciationMode: agent.hebrewPronunciationMode, renikud: Boolean(renikud) }, 'Deepdub Hebrew pipeline opened');
+
+    const bridge = new CartesiaBridge({
+      twilio: twilioChannel,
+      stt: cartesiaSocket(sttResult),
+      ttsSession: deepdubResult.session,
+      provider: 'deepdub',
+      speechPreprocessor: preprocessor,
+      agent,
+      businessId,
+      callSid,
+      callId: call?.id ?? null,
+      callerNumber: call?.fromNumber ?? null,
+      llm: { baseUrl: credentials.textLlmBaseUrl, apiKey: credentials.textLlmApiKey, model: llmModel },
+      logger: app.log,
+      endCall,
+      ...(dependencies.metrics ? { metrics: dependencies.metrics } : {}),
+      onTranscript: persistTurn,
+      onIdentifiers: ({ streamSid, sessionId }) => persistIdentifiers(streamSid, sessionId, provider),
+    });
+    guardDuration(() => bridge.close('max-duration'), sttResult);
+    deepdubResult.socket.once('close', () => bridge.close('tts-closed'));
+    track((reason) => bridge.close(reason), 'deepdub');
+    bridge.start();
+    return;
+  }
 
   if (provider === 'cartesia') {
     const credentials = providers.cartesia;

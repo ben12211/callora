@@ -57,6 +57,16 @@ export const PROVIDER_CATALOG: Record<RealtimeProvider, ProviderDescriptor> = {
     suggestedModels: [DEFAULT_TEXT_LLM_MODEL, DEFAULT_CARTESIA_TTS_MODEL],
     requiredEnvironment: ['CARTESIA_API_KEY', 'OPENAI_API_KEY'],
   },
+  deepdub: {
+    id: 'deepdub',
+    label: 'Deepdub Phantom Z',
+    summary: 'Cartesia streaming STT and a text LLM with Deepdub realtime Hebrew TTS.',
+    voiceHint: 'Deepdub voice prompt UUID (or asset: identifier); blank uses DEEPDUB_VOICE_ID.',
+    modelHint: 'Reasoning model for the text turn. The Deepdub speech model is platform-managed.',
+    suggestedVoices: [],
+    suggestedModels: [DEFAULT_TEXT_LLM_MODEL],
+    requiredEnvironment: ['DEEPDUB_API_KEY', 'DEEPDUB_VOICE_ID', 'CARTESIA_API_KEY', 'OPENAI_API_KEY'],
+  },
 };
 
 export interface ProviderStatus extends ProviderDescriptor {
@@ -81,6 +91,7 @@ export function providerStatuses(
   const openai = credentials.openai;
   const elevenlabs = credentials.elevenlabs;
   const cartesia = credentials.cartesia;
+  const deepdub = credentials.deepdub;
 
   return REALTIME_PROVIDERS.map((id) => {
     const descriptor = PROVIDER_CATALOG[id];
@@ -104,6 +115,15 @@ export function providerStatuses(
       details['API version'] = cartesia.version;
       details['Default voice id'] = cartesia.defaultVoiceId ?? 'not set';
       details['Reasoning model'] = cartesia.textLlmModel;
+    }
+    if (id === 'deepdub' && deepdub) {
+      configured = true;
+      details['TTS model'] = deepdub.model;
+      details['Locale'] = deepdub.locale;
+      details['Default voice id'] = deepdub.defaultVoiceId;
+      details['Audio'] = 'mulaw 8000 Hz';
+      details['ReNikudPlus'] = deepdub.renikudUrl ? 'configured' : 'disabled';
+      details['Reasoning model'] = deepdub.textLlmModel;
     }
 
     return {

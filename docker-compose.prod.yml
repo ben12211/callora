@@ -57,6 +57,15 @@ services:
       # Cartesia covers speech only; the reasoning turn runs on an OpenAI text model.
       TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
       TEXT_LLM_BASE_URL: ${TEXT_LLM_BASE_URL:-}
+      DEEPDUB_API_KEY: ${DEEPDUB_API_KEY:-}
+      DEEPDUB_VOICE_ID: ${DEEPDUB_VOICE_ID:-}
+      DEEPDUB_MODEL: ${DEEPDUB_MODEL:-}
+      DEEPDUB_LOCALE: ${DEEPDUB_LOCALE:-}
+      DEEPDUB_WS_URL: ${DEEPDUB_WS_URL:-}
+      DEEPDUB_FIRST_AUDIO_TIMEOUT_MS: ${DEEPDUB_FIRST_AUDIO_TIMEOUT_MS:-50}
+      DEEPDUB_ENABLE_LOGGING: ${DEEPDUB_ENABLE_LOGGING:-false}
+      RENIKUD_URL: ${RENIKUD_URL:-}
+      RENIKUD_TIMEOUT_MS: ${RENIKUD_TIMEOUT_MS:-90}
       # Control plane. ADMIN_EMAIL and ADMIN_PASSWORD create the dashboard administrator
       # and reset its password whenever the value changes; leaving both empty keeps
       # whatever account already exists. ADMIN_API_KEY is the optional machine credential
@@ -95,6 +104,31 @@ services:
       - ALL
     restart: unless-stopped
     stop_grace_period: 30s
+
+  renikud:
+    profiles: ["renikud"]
+    image: ${RENIKUD_IMAGE:-callora-renikud:local}
+    environment:
+      RENIKUD_MODEL_PATH: /models/model_int8.onnx
+      RENIKUD_WRAPPER_PATH: /models/renikud_onnx.py
+      RENIKUD_PORT: 8787
+    volumes:
+      - ${RENIKUD_MODEL_DIR:-./.models/renikud}:/models:ro,Z
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health')"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
 
   caddy:
     image: caddy:2-alpine

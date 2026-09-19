@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { REALTIME_PROVIDERS } from '../realtime/provider.js';
+import { HEBREW_PRONUNCIATION_MODES, PRONUNCIATION_TYPES } from '../domain/models.js';
 
 export const e164Schema = z.string().regex(/^\+[1-9]\d{7,14}$/, 'must be a valid E.164 phone number');
 
@@ -37,6 +38,7 @@ export const agentConfigSchema = z
     voiceProvider: z.enum([...REALTIME_PROVIDERS]),
     // Blank means the platform-wide agent, so an existing deployment keeps its behaviour.
     elevenLabsAgentId: z.string().trim().max(120).default(''),
+    hebrewPronunciationMode: z.enum(HEBREW_PRONUNCIATION_MODES).default('smart'),
     // Blank is meaningful: it means "use whatever the provider is already configured with".
     voice: z.string().trim().max(80).default(''),
     realtimeModel: z.string().trim().min(1).max(80),
@@ -52,6 +54,13 @@ export const agentConfigSchema = z
       });
     }
   });
+
+export const pronunciationEntrySchema = z.object({
+  sourceText: z.string().trim().min(1).max(200),
+  pronunciation: z.string().trim().min(1).max(500),
+  pronunciationType: z.enum(PRONUNCIATION_TYPES),
+  locale: z.string().trim().min(2).max(16).default('he-IL'),
+});
 
 export const auditQuerySchema = z.object({
   entityType: z.string().trim().min(1).max(40).optional(),

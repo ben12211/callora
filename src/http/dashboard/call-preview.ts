@@ -143,6 +143,31 @@ export function buildCallPreview(options: {
     };
   }
 
+  if (agent.voiceProvider === 'deepdub') {
+    const credentials = providers.deepdub;
+    if (!credentials) {
+      warnings.push('The platform does not have every Deepdub, Cartesia STT, voice, and text-LLM credential required for this composed pipeline.');
+    }
+    const voiceId = agent.voice.trim() || credentials?.defaultVoiceId;
+    return {
+      providerLabel,
+      providerConfigured: credentials !== null,
+      enabled: agent.enabled,
+      fields: [
+        { label: 'Locale sent', value: agent.language.toLowerCase().startsWith('he') ? (credentials?.locale ?? 'he-IL') : agent.language },
+        { label: 'Voice prompt id', value: voiceId ?? 'missing' },
+        { label: 'Reasoning model', value: agent.realtimeModel.trim() || (credentials?.textLlmModel ?? 'unset') },
+        { label: 'Speech models', value: `${credentials?.sttModel ?? 'unset'} STT, ${credentials?.model ?? 'unset'} TTS` },
+        { label: 'Audio path', value: 'mu-law / 8000 Hz → Twilio (no Callora transcoding)' },
+        { label: 'Hebrew pronunciation', value: agent.hebrewPronunciationMode.toUpperCase() },
+        { label: 'ReNikudPlus', value: credentials?.renikudUrl ? 'optional sidecar configured' : 'disabled; native Deepdub fallback' },
+      ],
+      instructions,
+      greeting: agent.greeting,
+      warnings,
+    };
+  }
+
   const credentials = providers.openai;
   if (!credentials) {
     warnings.push(

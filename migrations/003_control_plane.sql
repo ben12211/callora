@@ -13,7 +13,7 @@ BEGIN
   ) THEN
     ALTER TABLE agent_configs
       ADD CONSTRAINT agent_configs_voice_provider_check
-      CHECK (voice_provider IN ('openai', 'elevenlabs', 'cartesia'));
+      CHECK (voice_provider IN ('openai', 'elevenlabs', 'cartesia', 'deepdub'));
   END IF;
 END
 $$;
@@ -53,7 +53,7 @@ SET voice_provider = COALESCE(NULLIF(current_setting('callora.default_voice_prov
     -- The Cartesia pipeline reasons with a chat model, not a realtime one, so a realtime
     -- snapshot left in this column would be sent to an endpoint that cannot serve it.
     realtime_model = CASE
-      WHEN COALESCE(NULLIF(current_setting('callora.default_voice_provider', true), ''), 'openai') = 'cartesia'
+      WHEN COALESCE(NULLIF(current_setting('callora.default_voice_provider', true), ''), 'openai') IN ('cartesia', 'deepdub')
         THEN COALESCE(NULLIF(current_setting('callora.default_text_llm_model', true), ''), 'gpt-4o-mini')
       ELSE realtime_model
     END;

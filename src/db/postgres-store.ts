@@ -13,9 +13,12 @@ import type {
   CreateAdminSessionInput,
   CreateAdminUserInput,
   CreateBusinessInput,
+  CreatePronunciationEntryInput,
   ListAuditEventsOptions,
   ListCallsOptions,
   PlatformSetting,
+  PronunciationEntry,
+  PronunciationType,
   RecordAuditEventInput,
   UpdateBusinessInput,
   UpdateCallStatusInput,
@@ -23,6 +26,7 @@ import type {
   UpsertCallInput,
   UpsertPlatformSettingInput,
 } from '../domain/models.js';
+import { normalizePronunciationKey } from '../hebrew/normalizer.js';
 import type { RealtimeProvider } from '../realtime/provider.js';
 import type { DataStore } from './store.js';
 
@@ -45,7 +49,20 @@ interface AgentConfigRow {
   realtime_model: string;
   voice_provider: RealtimeProvider;
   elevenlabs_agent_id: string;
+  hebrew_pronunciation_mode: AgentConfig['hebrewPronunciationMode'];
   enabled: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface PronunciationEntryRow {
+  id: string;
+  business_id: string;
+  source_text: string;
+  normalized_text: string;
+  pronunciation: string;
+  pronunciation_type: PronunciationType;
+  locale: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -176,6 +193,7 @@ function mapAgentConfig(row: AgentConfigRow): AgentConfig {
     realtimeModel: row.realtime_model,
     voiceProvider: row.voice_provider,
     elevenLabsAgentId: row.elevenlabs_agent_id,
+    hebrewPronunciationMode: row.hebrew_pronunciation_mode,
     enabled: row.enabled,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -184,8 +202,22 @@ function mapAgentConfig(row: AgentConfigRow): AgentConfig {
 
 const agentConfigColumns = `
   business_id, instructions, greeting, language, voice, realtime_model, voice_provider,
-  elevenlabs_agent_id, enabled, created_at, updated_at
+  elevenlabs_agent_id, hebrew_pronunciation_mode, enabled, created_at, updated_at
 `;
+
+function mapPronunciation(row: PronunciationEntryRow): PronunciationEntry {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    sourceText: row.source_text,
+    normalizedText: row.normalized_text,
+    pronunciation: row.pronunciation,
+    pronunciationType: row.pronunciation_type,
+    locale: row.locale,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 function mapAdminUser(row: AdminUserRow): AdminUser {
   return {
@@ -342,8 +374,8 @@ export class PostgresStore implements DataStore {
     const result = await this.pool.query<AgentConfigRow>(
       `INSERT INTO agent_configs (
          business_id, instructions, greeting, language, voice, realtime_model, voice_provider,
-         elevenlabs_agent_id, enabled
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         elevenlabs_agent_id, hebrew_pronunciation_mode, enabled
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (business_id) DO UPDATE SET
          instructions = EXCLUDED.instructions,
          greeting = EXCLUDED.greeting,
@@ -352,6 +384,7 @@ export class PostgresStore implements DataStore {
          realtime_model = EXCLUDED.realtime_model,
          voice_provider = EXCLUDED.voice_provider,
          elevenlabs_agent_id = EXCLUDED.elevenlabs_agent_id,
+         hebrew_pronunciation_mode = EXCLUDED.hebrew_pronunciation_mode,
          enabled = EXCLUDED.enabled,
          updated_at = now()
        RETURNING ${agentConfigColumns}`,
@@ -364,10 +397,50 @@ export class PostgresStore implements DataStore {
         input.realtimeModel,
         input.voiceProvider,
         input.elevenLabsAgentId,
+        input.hebrewPronunciationMode,
         input.enabled,
       ],
     );
     return mapAgentConfig(result.rows[0]!);
+  }
+
+  public async listPronunciations(businessId: string): Promise<PronunciationEntry[]> {
+    const result = await this.pool.query<PronunciationEntryRow>(
+      `SELECT id, business_id, source_text, normalized_text, pronunciation,
+              pronunciation_type, locale, created_at, updated_at
+       FROM pronunciation_entries WHERE business_id = $1
+       ORDER BY char_length(normalized_text) DESC, normalized_text`,
+      [businessId],
+    );
+    return result.rows.map(mapPronunciation);
+  }
+
+  public async createPronunciation(
+    businessId: string,
+    input: CreatePronunciationEntryInput,
+  ): Promise<PronunciationEntry> {
+    const result = await this.pool.query<PronunciationEntryRow>(
+      `INSERT INTO pronunciation_entries (
+         id, business_id, source_text, normalized_text, pronunciation, pronunciation_type, locale
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (business_id, normalized_text, locale) DO UPDATE SET
+         source_text = EXCLUDED.source_text,
+         pronunciation = EXCLUDED.pronunciation,
+         pronunciation_type = EXCLUDED.pronunciation_type,
+         updated_at = now()
+       RETURNING id, business_id, source_text, normalized_text, pronunciation,
+                 pronunciation_type, locale, created_at, updated_at`,
+      [randomUUID(), businessId, input.sourceText, normalizePronunciationKey(input.sourceText), input.pronunciation, input.pronunciationType, input.locale],
+    );
+    return mapPronunciation(result.rows[0]!);
+  }
+
+  public async deletePronunciation(businessId: string, id: string): Promise<boolean> {
+    const result = await this.pool.query(
+      'DELETE FROM pronunciation_entries WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   public async attachRealtimeSession(input: AttachRealtimeSessionInput): Promise<CallRecord | null> {

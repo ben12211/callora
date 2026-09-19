@@ -21,6 +21,7 @@
     "db:seed": "tsx src/db/seed.ts",
     "db:migrate:prod": "node dist/db/migrate.js",
     "db:seed:prod": "node dist/db/seed.js"
+    ,"benchmark:hebrew": "pnpm build && node scripts/benchmark-hebrew.mjs"
   },
   "dependencies": {
     "@fastify/formbody": "^8.0.2",

@@ -20,13 +20,15 @@ export const AUDIT_ACTIONS = {
   adminLoggedIn: 'admin.logged_in',
   adminPasswordChanged: 'admin.password_changed',
   platformSettingsUpdated: 'platform.settings_updated',
+  pronunciationUpdated: 'pronunciation.updated',
+  pronunciationDeleted: 'pronunciation.deleted',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
 
 export interface AuditWrite {
   action: AuditAction;
-  entityType: 'business' | 'agent' | 'admin' | 'platform';
+  entityType: 'business' | 'agent' | 'admin' | 'platform' | 'pronunciation';
   entityId: string | null;
   summary: string;
   details?: Record<string, unknown>;
@@ -81,6 +83,7 @@ export const AGENT_AUDIT_FIELDS = [
   'instructions',
   'voiceProvider',
   'elevenLabsAgentId',
+  'hebrewPronunciationMode',
   'voice',
   'realtimeModel',
 ] as const satisfies readonly (keyof AgentConfig & string)[];

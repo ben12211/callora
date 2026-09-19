@@ -1,5 +1,10 @@
 import type { RealtimeProvider } from '../realtime/provider.js';
 
+export const HEBREW_PRONUNCIATION_MODES = ['off', 'smart', 'strict'] as const;
+export type HebrewPronunciationMode = (typeof HEBREW_PRONUNCIATION_MODES)[number];
+export const PRONUNCIATION_TYPES = ['ipa', 'replacement'] as const;
+export type PronunciationType = (typeof PRONUNCIATION_TYPES)[number];
+
 export interface Business {
   id: string;
   name: string;
@@ -35,6 +40,8 @@ export interface AgentConfig {
    * a business owns, so a shared one is never overwritten.
    */
   elevenLabsAgentId: string;
+  /** Optional Hebrew speech assistance. SMART is the production default. */
+  hebrewPronunciationMode: HebrewPronunciationMode;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -49,7 +56,28 @@ export interface UpsertAgentConfigInput {
   realtimeModel: string;
   voiceProvider: RealtimeProvider;
   elevenLabsAgentId: string;
+  hebrewPronunciationMode: HebrewPronunciationMode;
   enabled: boolean;
+}
+
+/** A tenant-owned pronunciation override. It is never queried without businessId. */
+export interface PronunciationEntry {
+  id: string;
+  businessId: string;
+  sourceText: string;
+  normalizedText: string;
+  pronunciation: string;
+  pronunciationType: PronunciationType;
+  locale: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreatePronunciationEntryInput {
+  sourceText: string;
+  pronunciation: string;
+  pronunciationType: PronunciationType;
+  locale: string;
 }
 
 /**

@@ -33,7 +33,7 @@ const baseEnv = {
 
 describe('voice provider selection', () => {
   it('offers the supported providers and defaults to OpenAI', () => {
-    expect([...REALTIME_PROVIDERS]).toEqual(['openai', 'elevenlabs', 'cartesia']);
+    expect([...REALTIME_PROVIDERS]).toEqual(['openai', 'elevenlabs', 'cartesia', 'deepdub']);
     expect(DEFAULT_REALTIME_PROVIDER).toBe('openai');
 
     const config = loadConfig({ ...baseEnv, OPENAI_API_KEY: 'sk-test' });

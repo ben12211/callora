@@ -51,6 +51,7 @@ const config: AppConfig = {
       textLlmModel: 'gpt-4o-mini-platform',
       textLlmBaseUrl: 'https://api.openai.com/v1',
     },
+    deepdub: null,
   },
 };
 

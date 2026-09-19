@@ -160,6 +160,15 @@ export const SETTING_CATALOG: readonly SettingDescriptor[] = [
     secret: false,
     hint: 'OpenAI-compatible chat completions endpoint.',
   },
+  { key: 'DEEPDUB_API_KEY', label: 'API key', group: 'deepdub', secret: true, hint: 'Server-side Deepdub API key; never sent to Twilio or the browser.' },
+  { key: 'DEEPDUB_VOICE_ID', label: 'Default voice prompt id', group: 'deepdub', secret: false, hint: 'Voice prompt UUID or asset: identifier for agents without an override.' },
+  { key: 'DEEPDUB_MODEL', label: 'TTS model', group: 'deepdub', secret: false, hint: 'Production realtime speech model. Current recommended value: dd-etts-3.0.' },
+  { key: 'DEEPDUB_LOCALE', label: 'Locale', group: 'deepdub', secret: false, hint: 'Use he-IL for Israeli Hebrew.' },
+  { key: 'DEEPDUB_WS_URL', label: 'Streaming WebSocket URL', group: 'deepdub', secret: false, hint: 'Persistent Streaming In and Streaming Out endpoint.' },
+  { key: 'DEEPDUB_FIRST_AUDIO_TIMEOUT_MS', label: 'First audio flush (ms)', group: 'deepdub', secret: false, hint: 'Maximum wait for more text before the first TTS segment is flushed.' },
+  { key: 'DEEPDUB_ENABLE_LOGGING', label: 'Provider text logging', group: 'deepdub', secret: false, hint: 'Keep false for confidential customer calls.', choices: ['false', 'true'] },
+  { key: 'RENIKUD_URL', label: 'ReNikudPlus sidecar URL', group: 'deepdub', secret: false, hint: 'Optional local URL such as http://renikud:8787. Empty disables it.' },
+  { key: 'RENIKUD_TIMEOUT_MS', label: 'ReNikudPlus timeout (ms)', group: 'deepdub', secret: false, hint: 'Aggressive live-call deadline; timeout always falls back to native Deepdub.' },
 ];
 
 const CATALOG_BY_KEY = new Map(SETTING_CATALOG.map((descriptor) => [descriptor.key, descriptor]));
@@ -262,7 +271,7 @@ export function platformValuesFromConfig(
   config: AppConfig,
   environment: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
-  const { openai, elevenlabs, cartesia } = config.providers;
+  const { openai, elevenlabs, cartesia, deepdub } = config.providers;
   const values: Record<string, string> = { VOICE_PROVIDER: config.voiceProvider };
   const set = (key: string, value: string | undefined): void => {
     if (value) {
@@ -284,6 +293,15 @@ export function platformValuesFromConfig(
   set('CARTESIA_WS_BASE_URL', cartesia?.wsBaseUrl);
   set('TEXT_LLM_MODEL', cartesia?.textLlmModel);
   set('TEXT_LLM_BASE_URL', cartesia?.textLlmBaseUrl);
+  set('DEEPDUB_API_KEY', deepdub?.apiKey);
+  set('DEEPDUB_VOICE_ID', deepdub?.defaultVoiceId);
+  set('DEEPDUB_MODEL', deepdub?.model);
+  set('DEEPDUB_LOCALE', deepdub?.locale);
+  set('DEEPDUB_WS_URL', deepdub?.wsUrl);
+  set('DEEPDUB_FIRST_AUDIO_TIMEOUT_MS', deepdub ? String(deepdub.firstAudioTimeoutMs) : undefined);
+  set('DEEPDUB_ENABLE_LOGGING', deepdub ? String(deepdub.enableLogging) : undefined);
+  set('RENIKUD_URL', deepdub?.renikudUrl);
+  set('RENIKUD_TIMEOUT_MS', deepdub ? String(deepdub.renikudTimeoutMs) : undefined);
   // The allowlist is not part of AppConfig; it is resolved at startup from this variable
   // or from the gitignored local file, which stays available as the fallback.
   set(ALLOWLIST_ENV_VAR, environment[ALLOWLIST_ENV_VAR]);

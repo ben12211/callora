@@ -20,6 +20,7 @@ export const agent: AgentConfig = {
   realtimeModel: 'gpt-realtime-2.1',
   voiceProvider: 'openai',
   elevenLabsAgentId: '',
+  hebrewPronunciationMode: 'smart',
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

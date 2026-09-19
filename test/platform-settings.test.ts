@@ -21,7 +21,7 @@ const secretsKey = 'test-secrets-key-0123456789';
 const bareConfig: AppConfig = {
   ...testConfig,
   secretsKey,
-  providers: { openai: null, elevenlabs: null, cartesia: null },
+  providers: { openai: null, elevenlabs: null, cartesia: null, deepdub: null },
 };
 
 /** The same deployment, but with the OpenAI key supplied by the environment. */

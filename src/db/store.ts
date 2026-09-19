@@ -20,6 +20,8 @@ import type {
   UpsertPlatformSettingInput,
   AppendTranscriptInput,
   CallTranscriptTurn,
+  CreatePronunciationEntryInput,
+  PronunciationEntry,
 } from '../domain/models.js';
 
 export interface DataStore {
@@ -32,6 +34,9 @@ export interface DataStore {
   deleteBusiness(id: string): Promise<Business | null>;
   getAgentConfig(businessId: string): Promise<AgentConfig | null>;
   upsertAgentConfig(businessId: string, input: UpsertAgentConfigInput): Promise<AgentConfig>;
+  listPronunciations(businessId: string): Promise<PronunciationEntry[]>;
+  createPronunciation(businessId: string, input: CreatePronunciationEntryInput): Promise<PronunciationEntry>;
+  deletePronunciation(businessId: string, id: string): Promise<boolean>;
   upsertCall(input: UpsertCallInput): Promise<CallRecord>;
   attachRealtimeSession(input: AttachRealtimeSessionInput): Promise<CallRecord | null>;
   updateCallStatus(input: UpdateCallStatusInput): Promise<CallRecord | null>;

@@ -7,5 +7,6 @@ export default defineConfig({
     // turned that into flaky failures that said nothing about the code.
     testTimeout: 20_000,
     hookTimeout: 20_000,
+    exclude: ['.claude/**', 'node_modules/**', 'dist/**'],
   },
 });

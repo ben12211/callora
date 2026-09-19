@@ -5,6 +5,7 @@ import type {
   Business,
   CallRecord,
   CallTranscriptTurn,
+  PronunciationEntry,
 } from '../../domain/models.js';
 import type { CallPreview } from './call-preview.js';
 import type { SettingGroup, SettingView } from '../../platform/settings.js';
@@ -169,6 +170,7 @@ export interface BusinessDetailData {
   calls: CallRecord[];
   providers: ProviderStatus[];
   audit: AuditEvent[];
+  pronunciations: PronunciationEntry[];
   csrfToken: string;
   notice?: string;
   error?: string;
@@ -289,6 +291,13 @@ ${flash('error', data.error)}
   <input id="realtimeModel" name="realtimeModel" type="text" required maxlength="80" list="model-suggestions" value="${escapeHtml(
     agent?.realtimeModel ?? 'gpt-realtime-2.1',
   )}" />
+  <label for="hebrewPronunciationMode">Hebrew pronunciation</label>
+  <select id="hebrewPronunciationMode" name="hebrewPronunciationMode">
+    ${(['off', 'smart', 'strict'] as const)
+      .map((mode) => `<option value="${mode}"${(agent?.hebrewPronunciationMode ?? 'smart') === mode ? ' selected' : ''}>${mode.toUpperCase()}${mode === 'smart' ? ' — recommended' : ''}</option>`)
+      .join('')}
+  </select>
+  <p class="hint">OFF trusts the provider. SMART adds cached dictionary and selective assistance. STRICT assists every Hebrew chunk.</p>
   <datalist id="model-suggestions">${REALTIME_PROVIDERS.flatMap((id) =>
     PROVIDER_CATALOG[id].suggestedModels.map((model) => `<option value="${escapeHtml(model)}"></option>`),
   ).join('')}</datalist>
@@ -299,6 +308,23 @@ ${flash('error', data.error)}
   </div>
   ${PROVIDER_HINT_SCRIPT}
 </form>
+
+<h2>Pronunciation dictionary</h2>
+<p class="muted">Entries belong only to this business. Use IPA for an exact phonetic override, or replacement for a safer spoken spelling.</p>
+<form class="panel" method="post" action="/dashboard/businesses/${escapeHtml(business.id)}/pronunciations">
+  ${csrfField(csrfToken)}
+  <label for="sourceText">Text</label>
+  <input id="sourceText" name="sourceText" type="text" required maxlength="200" placeholder="ז'בוטינסקי" />
+  <label for="pronunciation">Pronunciation</label>
+  <input id="pronunciation" name="pronunciation" type="text" required maxlength="500" placeholder="ʒabotˈinski" />
+  <label for="pronunciationType">Type</label>
+  <select id="pronunciationType" name="pronunciationType"><option value="ipa">IPA</option><option value="replacement">Text replacement</option></select>
+  <input name="locale" type="hidden" value="he-IL" />
+  <div class="actions"><button type="submit">Save pronunciation</button></div>
+</form>
+<div class="panel">
+  ${data.pronunciations.length === 0 ? '<p class="muted">No custom pronunciations yet.</p>' : `<table><thead><tr><th>Text</th><th>Pronunciation</th><th>Type</th><th></th></tr></thead><tbody>${data.pronunciations.map((entry) => `<tr><td>${escapeHtml(entry.sourceText)}</td><td class="mono">${escapeHtml(entry.pronunciation)}</td><td>${escapeHtml(entry.pronunciationType)}</td><td><form method="post" action="/dashboard/businesses/${escapeHtml(business.id)}/pronunciations/${escapeHtml(entry.id)}/delete">${csrfField(csrfToken)}<button type="submit" class="secondary">Delete</button></form></td></tr>`).join('')}</tbody></table>`}
+</div>
 
 <h2>Recent calls</h2>
 ${callTable(data.calls, [business])}

@@ -14,9 +14,11 @@ import type {
   CreateAdminSessionInput,
   CreateAdminUserInput,
   CreateBusinessInput,
+  CreatePronunciationEntryInput,
   ListAuditEventsOptions,
   ListCallsOptions,
   PlatformSetting,
+  PronunciationEntry,
   RecordAuditEventInput,
   UpdateBusinessInput,
   UpdateCallStatusInput,
@@ -24,6 +26,7 @@ import type {
   UpsertCallInput,
   UpsertPlatformSettingInput,
 } from '../../src/domain/models.js';
+import { normalizePronunciationKey } from '../../src/hebrew/normalizer.js';
 
 export const firstBusinessId = '00000000-0000-4000-8000-000000000001';
 export const secondBusinessId = '00000000-0000-4000-8000-000000000002';
@@ -46,6 +49,7 @@ export function agentConfig(businessId: string, enabled = true): AgentConfig {
     realtimeModel: 'gpt-realtime-2.1',
     voiceProvider: 'openai',
     elevenLabsAgentId: '',
+    hebrewPronunciationMode: 'smart',
     enabled,
     createdAt: now,
     updatedAt: now,
@@ -63,6 +67,7 @@ export class MemoryStore implements DataStore {
 
   public calls: CallRecord[] = [];
   public platformSettings: PlatformSetting[] = [];
+  public pronunciations: PronunciationEntry[] = [];
   public healthy = true;
   public admins: AdminUser[] = [];
   public auditEvents: AuditEvent[] = [];
@@ -135,6 +140,30 @@ export class MemoryStore implements DataStore {
     const created: AgentConfig = { businessId, ...input, createdAt: now, updatedAt: now };
     this.agentConfigs.push(created);
     return created;
+  }
+
+  public async listPronunciations(businessId: string): Promise<PronunciationEntry[]> {
+    return this.pronunciations.filter((entry) => entry.businessId === businessId).map((entry) => ({ ...entry }));
+  }
+
+  public async createPronunciation(businessId: string, input: CreatePronunciationEntryInput): Promise<PronunciationEntry> {
+    const normalizedText = normalizePronunciationKey(input.sourceText);
+    const existing = this.pronunciations.find((entry) => entry.businessId === businessId && entry.normalizedText === normalizedText && entry.locale === input.locale);
+    if (existing) {
+      Object.assign(existing, input, { normalizedText, updatedAt: new Date() });
+      return { ...existing };
+    }
+    const now = new Date();
+    const created: PronunciationEntry = { id: randomUUID(), businessId, normalizedText, ...input, createdAt: now, updatedAt: now };
+    this.pronunciations.push(created);
+    return { ...created };
+  }
+
+  public async deletePronunciation(businessId: string, id: string): Promise<boolean> {
+    const index = this.pronunciations.findIndex((entry) => entry.businessId === businessId && entry.id === id);
+    if (index < 0) return false;
+    this.pronunciations.splice(index, 1);
+    return true;
   }
 
   public async attachRealtimeSession(input: AttachRealtimeSessionInput): Promise<CallRecord | null> {
@@ -401,6 +430,7 @@ export const testConfig: AppConfig = {
     },
     elevenlabs: null,
     cartesia: null,
+    deepdub: null,
   },
   voiceProvider: 'openai',
 };

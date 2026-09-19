@@ -1,5 +1,7 @@
 # Callora
 
+For the Deepdub Hebrew pipeline, pronunciation modes, optional ReNikudPlus sidecar, evaluation dataset, and latency benchmark, see [docs/HEBREW_VOICE.md](docs/HEBREW_VOICE.md).
+
 Callora is the Push 1 backend foundation for a multi-tenant phone customer-service platform. It is one Node.js/TypeScript service backed by PostgreSQL. Every Twilio number can use the same webhook; the service resolves the business from Twilio's incoming `To` number, records the call, and returns that business's greeting as TwiML.
 
 This push deliberately does **not** include AI, WebSockets, Twilio Media Streams, WhatsApp, voice cloning, or external CRM integrations.

@@ -49,6 +49,15 @@ services:
       CARTESIA_TTS_MODEL: ${CARTESIA_TTS_MODEL:-}
       CARTESIA_STT_MODEL: ${CARTESIA_STT_MODEL:-}
       TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
+      DEEPDUB_API_KEY: ${DEEPDUB_API_KEY:-}
+      DEEPDUB_VOICE_ID: ${DEEPDUB_VOICE_ID:-}
+      DEEPDUB_MODEL: ${DEEPDUB_MODEL:-}
+      DEEPDUB_LOCALE: ${DEEPDUB_LOCALE:-}
+      DEEPDUB_WS_URL: ${DEEPDUB_WS_URL:-}
+      DEEPDUB_FIRST_AUDIO_TIMEOUT_MS: ${DEEPDUB_FIRST_AUDIO_TIMEOUT_MS:-50}
+      DEEPDUB_ENABLE_LOGGING: ${DEEPDUB_ENABLE_LOGGING:-false}
+      RENIKUD_URL: ${RENIKUD_URL:-}
+      RENIKUD_TIMEOUT_MS: ${RENIKUD_TIMEOUT_MS:-90}
       # Control plane. These create the dashboard administrator on first start and reset
       # its password if the value changes; ADMIN_API_KEY is the optional machine
       # credential for the management API.
@@ -74,6 +83,25 @@ services:
     init: true
     restart: unless-stopped
     stop_grace_period: 30s
+
+  renikud:
+    profiles: ["renikud"]
+    build: ./services/renikud
+    environment:
+      RENIKUD_MODEL_PATH: /models/model_int8.onnx
+      RENIKUD_WRAPPER_PATH: /models/renikud_onnx.py
+      RENIKUD_PORT: 8787
+    volumes:
+      - ${RENIKUD_MODEL_DIR:-./.models/renikud}:/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health')"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
 volumes:
   postgres_data:

@@ -472,7 +472,7 @@ describe('per-business provider selection', () => {
     });
     expect(response.statusCode).toBe(200);
     const data = response.json<{ data: { id: string; configured: boolean }[] }>().data;
-    expect(data.map((provider) => provider.id)).toEqual(['openai', 'elevenlabs', 'cartesia']);
+    expect(data.map((provider) => provider.id)).toEqual(['openai', 'elevenlabs', 'cartesia', 'deepdub']);
     expect(data.find((provider) => provider.id === 'openai')?.configured).toBe(true);
     expect(data.find((provider) => provider.id === 'cartesia')?.configured).toBe(false);
     expect(JSON.stringify(data)).not.toContain('test-openai-key');
@@ -494,6 +494,7 @@ describe('per-business provider selection', () => {
         openai: null,
         elevenlabs: null,
         cartesia: null,
+        deepdub: null,
       },
       'openai',
       { ELEVENLABS_API_KEY: 'xi-test' },

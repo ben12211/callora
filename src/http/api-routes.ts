@@ -35,6 +35,7 @@ export function defaultAgentConfig(
   const { platform } = dependencies;
   const provider = platform.defaultProvider();
   const cartesia = platform.providers().cartesia;
+  const deepdub = platform.providers().deepdub;
   // Each provider reads `voice` and `realtimeModel` differently, so the starting values
   // have to come from that provider. Blank means "keep the provider's own configured
   // voice", which only OpenAI has no answer for.
@@ -42,6 +43,7 @@ export function defaultAgentConfig(
     openai: 'marin',
     elevenlabs: '',
     cartesia: cartesia?.defaultVoiceId ?? '',
+    deepdub: deepdub?.defaultVoiceId ?? '',
   }[provider];
 
   return {
@@ -51,9 +53,12 @@ export function defaultAgentConfig(
     instructions: 'Describe the business, its tone, and what it can help callers with.',
     voiceProvider: provider,
     elevenLabsAgentId: '',
+    hebrewPronunciationMode: 'smart',
     voice,
     realtimeModel:
-      provider === 'cartesia' ? (cartesia?.textLlmModel ?? DEFAULT_TEXT_LLM_MODEL) : 'gpt-realtime-2.1',
+      provider === 'cartesia' || provider === 'deepdub'
+        ? (provider === 'deepdub' ? deepdub?.textLlmModel : cartesia?.textLlmModel) ?? DEFAULT_TEXT_LLM_MODEL
+        : 'gpt-realtime-2.1',
   };
 }
 

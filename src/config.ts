@@ -8,6 +8,13 @@ import {
 } from './realtime/cartesia-constants.js';
 import { DEFAULT_TRANSCRIPTION_MODEL } from './realtime/protocol.js';
 import { DEFAULT_REALTIME_PROVIDER, REALTIME_PROVIDERS, type RealtimeProvider } from './realtime/provider.js';
+import {
+  DEFAULT_DEEPDUB_FIRST_AUDIO_TIMEOUT_MS,
+  DEFAULT_DEEPDUB_LOCALE,
+  DEFAULT_DEEPDUB_MODEL,
+  DEFAULT_DEEPDUB_WS_URL,
+  DEFAULT_RENIKUD_TIMEOUT_MS,
+} from './realtime/deepdub-constants.js';
 
 /**
  * Docker Compose and the deployment secret sync always define every provider variable,
@@ -48,6 +55,15 @@ const providerFields = {
   // speech-to-speech model, so the chat endpoint is configurable independently.
   TEXT_LLM_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_TEXT_LLM_MODEL)),
   TEXT_LLM_BASE_URL: blankAsAbsent(z.string().min(1).default('https://api.openai.com/v1')),
+  DEEPDUB_API_KEY: blankAsAbsent(z.string().min(1).optional()),
+  DEEPDUB_VOICE_ID: blankAsAbsent(z.string().min(1).optional()),
+  DEEPDUB_MODEL: blankAsAbsent(z.string().min(1).default(DEFAULT_DEEPDUB_MODEL)),
+  DEEPDUB_LOCALE: blankAsAbsent(z.string().min(2).default(DEFAULT_DEEPDUB_LOCALE)),
+  DEEPDUB_WS_URL: blankAsAbsent(z.string().min(1).default(DEFAULT_DEEPDUB_WS_URL)),
+  DEEPDUB_FIRST_AUDIO_TIMEOUT_MS: z.coerce.number().int().min(0).max(1000).default(DEFAULT_DEEPDUB_FIRST_AUDIO_TIMEOUT_MS),
+  DEEPDUB_ENABLE_LOGGING: blankAsAbsent(z.enum(['true', 'false']).default('false')),
+  RENIKUD_URL: blankAsAbsent(z.string().url().optional()),
+  RENIKUD_TIMEOUT_MS: z.coerce.number().int().min(10).max(1000).default(DEFAULT_RENIKUD_TIMEOUT_MS),
 } as const;
 
 /**
@@ -105,6 +121,8 @@ export const REQUIRED_PROVIDER_SETTINGS = {
   // Cartesia covers speech only; the reasoning turn reuses the server-side OpenAI
   // credentials, so that key is required here too.
   cartesia: ['CARTESIA_API_KEY', 'CARTESIA_VOICE_ID', 'OPENAI_API_KEY'],
+  // Deepdub supplies TTS; the proven Cartesia STT and text-LLM legs remain shared.
+  deepdub: ['DEEPDUB_API_KEY', 'DEEPDUB_VOICE_ID', 'CARTESIA_API_KEY', 'OPENAI_API_KEY'],
 } as const satisfies Record<RealtimeProvider, readonly string[]>;
 
 /**
@@ -193,10 +211,31 @@ export interface CartesiaProviderCredentials {
   textLlmBaseUrl: string;
 }
 
+export interface DeepdubProviderCredentials {
+  apiKey: string;
+  defaultVoiceId: string;
+  model: string;
+  locale: string;
+  wsUrl: string;
+  firstAudioTimeoutMs: number;
+  enableLogging: boolean;
+  renikudUrl?: string;
+  renikudTimeoutMs: number;
+  /** Shared composed-pipeline dependencies. */
+  sttApiKey: string;
+  sttModel: string;
+  cartesiaVersion: string;
+  cartesiaWsBaseUrl: string;
+  textLlmApiKey: string;
+  textLlmModel: string;
+  textLlmBaseUrl: string;
+}
+
 export interface ProviderCredentials {
   openai: OpenAiProviderCredentials | null;
   elevenlabs: ElevenLabsProviderCredentials | null;
   cartesia: CartesiaProviderCredentials | null;
+  deepdub: DeepdubProviderCredentials | null;
 }
 
 /**
@@ -252,6 +291,27 @@ function buildProviders(parsed: ProviderSettings): ProviderCredentials {
             sttModel: parsed.CARTESIA_STT_MODEL,
             version: parsed.CARTESIA_VERSION,
             wsBaseUrl: parsed.CARTESIA_WS_BASE_URL.replace(/\/$/, ''),
+            textLlmApiKey: parsed.OPENAI_API_KEY,
+            textLlmModel: parsed.TEXT_LLM_MODEL,
+            textLlmBaseUrl: parsed.TEXT_LLM_BASE_URL.replace(/\/$/, ''),
+          }
+        : null,
+    deepdub:
+      parsed.DEEPDUB_API_KEY && parsed.DEEPDUB_VOICE_ID && parsed.CARTESIA_API_KEY && parsed.OPENAI_API_KEY
+        ? {
+            apiKey: parsed.DEEPDUB_API_KEY,
+            defaultVoiceId: parsed.DEEPDUB_VOICE_ID,
+            model: parsed.DEEPDUB_MODEL,
+            locale: parsed.DEEPDUB_LOCALE,
+            wsUrl: parsed.DEEPDUB_WS_URL,
+            firstAudioTimeoutMs: parsed.DEEPDUB_FIRST_AUDIO_TIMEOUT_MS,
+            enableLogging: parsed.DEEPDUB_ENABLE_LOGGING === 'true',
+            ...(parsed.RENIKUD_URL ? { renikudUrl: parsed.RENIKUD_URL.replace(/\/$/, '') } : {}),
+            renikudTimeoutMs: parsed.RENIKUD_TIMEOUT_MS,
+            sttApiKey: parsed.CARTESIA_API_KEY,
+            sttModel: parsed.CARTESIA_STT_MODEL,
+            cartesiaVersion: parsed.CARTESIA_VERSION,
+            cartesiaWsBaseUrl: parsed.CARTESIA_WS_BASE_URL.replace(/\/$/, ''),
             textLlmApiKey: parsed.OPENAI_API_KEY,
             textLlmModel: parsed.TEXT_LLM_MODEL,
             textLlmBaseUrl: parsed.TEXT_LLM_BASE_URL.replace(/\/$/, ''),

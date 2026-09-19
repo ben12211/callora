@@ -38,7 +38,7 @@ const cartesiaEnv = {
 
 describe('cartesia provider selection', () => {
   it('is offered alongside the existing providers', () => {
-    expect([...REALTIME_PROVIDERS]).toEqual(['openai', 'elevenlabs', 'cartesia']);
+    expect([...REALTIME_PROVIDERS]).toEqual(['openai', 'elevenlabs', 'cartesia', 'deepdub']);
   });
 
   it('selects cartesia with its own credentials and sane defaults', () => {

@@ -1,4 +1,5 @@
 import type { AgentConfig } from '../domain/models.js';
+import { performance } from 'node:perf_hooks';
 import type { CallMetrics } from '../platform/metrics.js';
 import {
   HangupSequence,
@@ -11,10 +12,12 @@ import {
 import type { CartesiaSocket } from './cartesia-connection.js';
 import {
   STT_CLOSE_COMMAND,
-  buildTtsCancel,
-  buildTtsChunk,
   cartesiaLanguage,
 } from './cartesia-protocol.js';
+import { HebrewStreamingChunker } from '../hebrew/chunker.js';
+import { PassthroughSpeechPreprocessor } from '../hebrew/speech-frontend.js';
+import type { SpeechPreprocessor } from '../hebrew/types.js';
+import { CartesiaTtsSession, type SpeechSynthesisSession } from './tts-session.js';
 import { composeAgentInstructions, stillThereLine } from './policy.js';
 import {
   END_CALL_TOOL_NAME,
@@ -53,14 +56,19 @@ const END_CALL_TOOL: ChatToolDefinition = {
 export interface CartesiaBridgeOptions {
   twilio: MessageChannel;
   stt: CartesiaSocket;
-  tts: CartesiaSocket;
+  /** Legacy Cartesia socket, adapted into the generic TTS session internally. */
+  tts?: CartesiaSocket;
+  /** Any streaming TTS implementation (Deepdub uses this path). */
+  ttsSession?: SpeechSynthesisSession;
   agent: AgentConfig;
   businessId: string;
   callSid: string;
   callId?: string | null;
   callerNumber?: string | null;
-  ttsModel: string;
-  voiceId: string;
+  ttsModel?: string;
+  voiceId?: string;
+  provider?: 'cartesia' | 'deepdub';
+  speechPreprocessor?: SpeechPreprocessor;
   llm: { baseUrl: string; apiKey: string; model: string };
   logger: BridgeLogger;
   onIdentifiers?: (identifiers: { streamSid: string | null; sessionId: string | null }) => void;
@@ -95,6 +103,10 @@ export class CartesiaBridge {
   /** When the Twilio stream opened, and whether the caller has heard anything yet. */
   private streamOpenedAt: number | null = null;
   private reportedFirstAudio = false;
+  private callerSpeechStartedAt: number | null = null;
+  private userSpeechEndedAt: number | null = null;
+  private llmRequestStartedAt: number | null = null;
+  private ttsRequestStartedAt = new Map<string, number>();
   private pendingMarks = 0;
 
   /** Conversation so far, seeded with the composed Callora policy. */
@@ -117,12 +129,27 @@ export class CartesiaBridge {
   private readonly awaitingTtsDone = new Set<string>();
 
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly ttsSession: SpeechSynthesisSession;
+  private readonly speechPreprocessor: SpeechPreprocessor;
+  private speechQueue: Promise<void> = Promise.resolve();
 
   /** Shared with every other provider bridge: see `call-leg.ts`. */
   private readonly hangup: HangupSequence;
   private readonly silence: SilenceWatchdog;
 
   public constructor(private readonly options: CartesiaBridgeOptions) {
+    if (options.ttsSession) {
+      this.ttsSession = options.ttsSession;
+    } else if (options.tts && options.ttsModel && options.voiceId) {
+      this.ttsSession = new CartesiaTtsSession(options.tts, {
+        model: options.ttsModel,
+        voiceId: options.voiceId,
+        language: cartesiaLanguage(options.agent),
+      });
+    } else {
+      throw new Error('A streaming TTS session or complete Cartesia TTS configuration is required');
+    }
+    this.speechPreprocessor = options.speechPreprocessor ?? new PassthroughSpeechPreprocessor();
     this.hangup = new HangupSequence({
       businessId: options.businessId,
       callSid: options.callSid,
@@ -151,7 +178,7 @@ export class CartesiaBridge {
   }
 
   public start(): void {
-    const { twilio, stt, tts, agent, businessId, callSid, callerNumber, logger } = this.options;
+    const { twilio, stt, agent, businessId, callSid, callerNumber, logger } = this.options;
 
     this.history.push({
       role: 'system',
@@ -175,11 +202,11 @@ export class CartesiaBridge {
       this.close('stt-error');
     });
 
-    tts.onMessage((raw) => this.handleTtsMessage(raw));
-    tts.onClose(() => this.close('tts-closed'));
-    tts.onError((error) => {
-      logger.error({ businessId, callSid, error: error.message }, 'Cartesia TTS error');
-      this.close('tts-error');
+    this.ttsSession.onAudio(({ contextId, data }) => this.handleTtsAudio(contextId, data));
+    this.ttsSession.onDone((contextId) => this.handleTtsDone(contextId));
+    this.ttsSession.onClose(() => this.close('tts-closed'));
+    this.ttsSession.onError((error) => {
+      logger.error({ businessId, callSid, code: error.code, reason: error.message }, `${this.providerName()} TTS error`);
     });
 
     // The language and greeting are tenant configuration, not secrets, and are the first
@@ -192,11 +219,15 @@ export class CartesiaBridge {
         ttsModel: this.options.ttsModel,
         firstMessage: agent.greeting,
       },
-      'Starting Cartesia pipeline',
+      `Starting ${this.providerName()} composed pipeline`,
     );
 
     this.keepaliveTimer = setInterval(() => this.sendSttKeepalive(), STT_KEEPALIVE_MS);
     this.keepaliveTimer.unref?.();
+  }
+
+  private providerName(): 'cartesia' | 'deepdub' {
+    return this.options.provider ?? 'cartesia';
   }
 
   private logContext(): Record<string, unknown> {
@@ -234,7 +265,7 @@ export class CartesiaBridge {
         // The socket is already going away; closing it below is enough.
       }
       this.options.stt.close();
-      this.options.tts.close();
+      this.ttsSession.close();
     }
   }
 
@@ -270,7 +301,7 @@ export class CartesiaBridge {
           return;
         }
         this.options.logger.info({ ...this.logContext() }, 'Twilio media stream started');
-        this.options.onIdentifiers?.({ streamSid: this.streamSid, sessionId: null });
+        this.options.onIdentifiers?.({ streamSid: this.streamSid, sessionId: this.ttsSession.sessionId() });
         this.streamOpenedAt = Date.now();
         this.speakGreeting();
         this.silence.restart();
@@ -341,18 +372,41 @@ export class CartesiaBridge {
     if (!more) {
       this.awaitingTtsDone.add(contextId);
     }
-    this.options.tts.sendText(
-      JSON.stringify(
-        buildTtsChunk({
-          model: this.options.ttsModel,
-          voiceId: this.options.voiceId,
-          contextId,
-          transcript,
-          language: cartesiaLanguage(this.options.agent),
-          continue: more,
-        }),
-      ),
-    );
+    if (!this.options.speechPreprocessor) {
+      this.ttsSession.send(contextId, {
+        originalText: transcript,
+        spokenText: transcript,
+        locale: '',
+        mode: 'off',
+        spans: [],
+        source: 'off',
+        riskReasons: [],
+        processingMs: 0,
+        cacheHit: false,
+      }, more);
+      return;
+    }
+    this.speechQueue = this.speechQueue.then(async () => {
+      if (this.closed || (this.activeContextId !== contextId && transcript)) return;
+      if (transcript) this.options.metrics?.event?.(this.providerName(), 'pronunciation_started');
+      const preparation = transcript
+        ? await this.speechPreprocessor.preprocess(transcript, this.turnAbort?.signal)
+        : await new PassthroughSpeechPreprocessor().preprocess('');
+      if (this.closed || (this.activeContextId !== contextId && transcript)) return;
+      this.options.metrics?.event?.(this.providerName(), 'tts_request_started');
+      if (!this.ttsRequestStartedAt.has(contextId)) this.ttsRequestStartedAt.set(contextId, performance.now());
+      if (preparation.processingMs > 0) this.options.metrics?.timing?.(this.providerName(), 'pronunciation', preparation.processingMs, { source: preparation.source, cache: String(preparation.cacheHit) });
+      if (transcript) {
+        this.options.metrics?.event?.(this.providerName(), 'pronunciation_completed', { source: preparation.source });
+        if (preparation.cacheHit) this.options.metrics?.event?.(this.providerName(), 'pronunciation_cache_hit');
+      }
+      this.ttsSession.send(contextId, preparation, more);
+    }).catch((error: unknown) => {
+      this.options.logger.warn({ ...this.logContext(), error: error instanceof Error ? error.message : 'unknown error' }, 'Speech preprocessing failed; continuing with plain text');
+      if (!this.closed && (this.activeContextId === contextId || !transcript)) {
+        void new PassthroughSpeechPreprocessor().preprocess(transcript).then((plain) => this.ttsSession.send(contextId, plain, more));
+      }
+    });
   }
 
   private handleSttMessage(raw: string): void {
@@ -370,8 +424,13 @@ export class CartesiaBridge {
     if (!isFinal) {
       // A partial with actual words is the earliest reliable sign the caller has
       // started talking, which is what barge-in has to key on.
-      if (text.trim() && this.agentSpeaking) {
-        this.handleBargeIn();
+      if (text.trim()) {
+        if (this.callerSpeechStartedAt === null) {
+          this.callerSpeechStartedAt = performance.now();
+          this.options.metrics?.event?.(this.providerName(), 'user_speech_started');
+          this.options.metrics?.event?.(this.providerName(), 'stt_first_partial');
+        }
+        if (this.agentSpeaking) this.handleBargeIn();
       }
       return;
     }
@@ -383,6 +442,11 @@ export class CartesiaBridge {
       return;
     }
     this.callerBuffer = '';
+    this.userSpeechEndedAt = performance.now();
+    this.options.metrics?.event?.(this.providerName(), 'user_speech_ended');
+    this.options.metrics?.event?.(this.providerName(), 'stt_final');
+    if (this.callerSpeechStartedAt !== null) this.options.metrics?.timing?.(this.providerName(), 'stt_utterance', this.userSpeechEndedAt - this.callerSpeechStartedAt);
+    this.callerSpeechStartedAt = null;
     // The caller spoke: silence escalation starts over from scratch.
     this.silence.reset();
     this.logTranscript('USER', utterance);
@@ -402,17 +466,19 @@ export class CartesiaBridge {
       return;
     }
     this.reportedFirstAudio = true;
-    this.options.metrics?.firstAudio('cartesia', Date.now() - this.streamOpenedAt);
+    this.options.metrics?.firstAudio(this.providerName(), Date.now() - this.streamOpenedAt);
   }
 
   private handleBargeIn(): void {
-    this.options.metrics?.bargeIn('cartesia');
+    this.options.metrics?.bargeIn(this.providerName());
+    this.options.metrics?.event?.(this.providerName(), 'interruption_detected');
     const abandoned = this.activeContextId;
     this.activeContextId = null;
     this.agentSpeaking = false;
 
     if (abandoned) {
-      this.options.tts.sendText(JSON.stringify(buildTtsCancel(abandoned)));
+      this.ttsSession.cancel(abandoned);
+      this.options.metrics?.event?.(this.providerName(), 'tts_cancelled');
       // Its `done` may never arrive now, so it must not hold up a later hangup.
       this.awaitingTtsDone.delete(abandoned);
     }
@@ -420,6 +486,7 @@ export class CartesiaBridge {
 
     if (this.streamSid) {
       this.options.twilio.send(JSON.stringify(buildTwilioClear(this.streamSid)));
+      this.options.metrics?.event?.(this.providerName(), 'audio_queue_cleared');
     }
     this.pendingMarks = 0;
 
@@ -442,25 +509,14 @@ export class CartesiaBridge {
     this.turnAbort = abort;
     const contextId = this.nextContext();
     const streamChat = this.options.streamChat ?? streamChatCompletion;
+    this.llmRequestStartedAt = performance.now();
+    this.options.metrics?.event?.(this.providerName(), 'llm_request_started');
 
     // Sonic synthesises per fragment, so pushing raw tokens would chop prosody. Holding
     // back to a clause boundary keeps speech natural while still starting long before
     // the reply is finished.
-    let pending = '';
-    const flush = (force: boolean): void => {
-      if (abort.signal.aborted) {
-        return;
-      }
-      const boundary = force ? pending.length : Math.max(...['. ', '! ', '? ', ', ', '\n', '׃', '، '].map((mark) => pending.lastIndexOf(mark) + mark.length));
-      if (boundary <= 0) {
-        return;
-      }
-      const ready = pending.slice(0, boundary);
-      pending = pending.slice(boundary);
-      if (ready.trim()) {
-        this.sendTtsChunk(contextId, ready, true);
-      }
-    };
+    const chunker = new HebrewStreamingChunker();
+    let reportedSpeakableChunk = false;
 
     let result;
     try {
@@ -472,8 +528,18 @@ export class CartesiaBridge {
         tools: [END_CALL_TOOL],
         signal: abort.signal,
         onTextDelta: (delta) => {
-          pending += delta;
-          flush(false);
+          if (this.llmRequestStartedAt !== null) {
+            this.options.metrics?.timing?.(this.providerName(), 'llm_first_token', performance.now() - this.llmRequestStartedAt);
+            this.options.metrics?.event?.(this.providerName(), 'llm_first_token');
+            this.llmRequestStartedAt = null;
+          }
+          for (const ready of chunker.push(delta)) {
+            if (!reportedSpeakableChunk) {
+              reportedSpeakableChunk = true;
+              this.options.metrics?.event?.(this.providerName(), 'llm_first_speakable_chunk');
+            }
+            this.sendTtsChunk(contextId, ready, true);
+          }
         },
       });
     } catch (error) {
@@ -493,9 +559,7 @@ export class CartesiaBridge {
       return;
     }
 
-    if (pending) {
-      flush(true);
-    }
+    for (const ready of chunker.finish()) this.sendTtsChunk(contextId, ready, true);
     // Closing the context tells Sonic the utterance is complete.
     this.sendTtsChunk(contextId, '', false);
 
@@ -515,59 +579,31 @@ export class CartesiaBridge {
     }
   }
 
-  private handleTtsMessage(raw: string): void {
-    if (this.closed) {
-      return;
+  private handleTtsAudio(contextId: string, data: string): void {
+    if (this.closed || !this.streamSid || contextId !== this.activeContextId) return;
+    this.reportFirstAudio();
+    const ttsStarted = this.ttsRequestStartedAt.get(contextId);
+    if (ttsStarted !== undefined) {
+      this.options.metrics?.timing?.(this.providerName(), 'tts_first_audio', performance.now() - ttsStarted);
+      this.options.metrics?.event?.(this.providerName(), 'tts_first_audio_received');
+      this.options.metrics?.event?.(this.providerName(), 'twilio_first_audio_sent');
+      this.ttsRequestStartedAt.delete(contextId);
     }
-    const message = parseJsonObject(raw);
-    if (!message) {
-      return;
+    if (this.userSpeechEndedAt !== null) {
+      this.options.metrics?.timing?.(this.providerName(), 'speech_end_to_twilio_audio', performance.now() - this.userSpeechEndedAt);
+      this.userSpeechEndedAt = null;
     }
+    this.options.twilio.send(JSON.stringify(buildTwilioMedia(this.streamSid, data)));
+    this.options.twilio.send(JSON.stringify(buildTwilioMark(this.streamSid)));
+    this.pendingMarks += 1;
+    this.agentSpeaking = true;
+  }
 
-    switch (readString(message, 'type')) {
-      case 'chunk': {
-        const contextId = readString(message, 'context_id');
-        const data = readString(message, 'data');
-        // Cancel does not stop an in-flight generation, so audio from an abandoned
-        // context keeps arriving. Forwarding it would talk over the caller.
-        if (!data || !this.streamSid || contextId !== this.activeContextId) {
-          return;
-        }
-        this.reportFirstAudio();
-        this.options.twilio.send(JSON.stringify(buildTwilioMedia(this.streamSid, data)));
-        this.options.twilio.send(JSON.stringify(buildTwilioMark(this.streamSid)));
-        this.pendingMarks += 1;
-        this.agentSpeaking = true;
-        return;
-      }
-      case 'done': {
-        const contextId = readString(message, 'context_id');
-        if (contextId) {
-          this.awaitingTtsDone.delete(contextId);
-        }
-        // A context that finished without producing audio never gets a mark, so without
-        // this the agent would be recorded as speaking for the rest of the call — which
-        // would keep the silence watchdog permanently disarmed.
-        if (this.pendingMarks === 0 && this.awaitingTtsDone.size === 0) {
-          this.agentSpeaking = false;
-        }
-        this.hangup.terminateWhenDrained();
-        return;
-      }
-      case 'error': {
-        this.options.logger.error(
-          {
-            ...this.logContext(),
-            code: readString(message, 'error_code'),
-            reason: readString(message, 'message') ?? readString(message, 'title'),
-          },
-          'Cartesia TTS reported an error',
-        );
-        return;
-      }
-      default:
-        return;
-    }
+  private handleTtsDone(contextId: string): void {
+    if (this.closed) return;
+    this.awaitingTtsDone.delete(contextId);
+    if (this.pendingMarks === 0 && this.awaitingTtsDone.size === 0) this.agentSpeaking = false;
+    this.hangup.terminateWhenDrained();
   }
 
   private logTranscript(speaker: 'USER' | 'AI', transcript: string): void {

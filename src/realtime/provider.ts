@@ -8,7 +8,7 @@
  * assembled from three streams — Cartesia STT, a text LLM, and Cartesia Sonic TTS — and
  * is the only provider where Callora itself owns the turn loop.
  */
-export const REALTIME_PROVIDERS = ['openai', 'elevenlabs', 'cartesia'] as const;
+export const REALTIME_PROVIDERS = ['openai', 'elevenlabs', 'cartesia', 'deepdub'] as const;
 
 export type RealtimeProvider = (typeof REALTIME_PROVIDERS)[number];
 

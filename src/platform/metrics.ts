@@ -121,6 +121,10 @@ export interface CallMetrics {
   firstAudio(provider: string, latencyMs: number): void;
   /** The caller talked over the agent. */
   bargeIn(provider: string): void;
+  /** One named lifecycle point, without conversation text or audio. */
+  event?(provider: string, name: string, labels?: Labels): void;
+  /** Monotonic duration for one realtime stage. */
+  timing?(provider: string, stage: string, latencyMs: number, labels?: Labels): void;
 }
 
 export class MetricsRegistry implements CallMetrics {
@@ -143,6 +147,15 @@ export class MetricsRegistry implements CallMetrics {
   private readonly firstAudioLatency = new Histogram(
     'callora_first_audio_latency_ms',
     'Milliseconds between the media stream opening and the caller hearing the agent.',
+    LATENCY_BUCKETS_MS,
+  );
+  private readonly realtimeEvents = new Counter(
+    'callora_realtime_events_total',
+    'Realtime voice lifecycle events, without transcript or audio content.',
+  );
+  private readonly stageLatency = new Histogram(
+    'callora_realtime_stage_latency_ms',
+    'Monotonic duration of a realtime voice pipeline stage.',
     LATENCY_BUCKETS_MS,
   );
   private readonly callDuration = new Histogram(
@@ -179,6 +192,14 @@ export class MetricsRegistry implements CallMetrics {
     this.bargeIns.increment({ provider });
   }
 
+  public event(provider: string, name: string, labels: Labels = {}): void {
+    this.realtimeEvents.increment({ provider, event: name, ...labels });
+  }
+
+  public timing(provider: string, stage: string, latencyMs: number, labels: Labels = {}): void {
+    this.stageLatency.observe(latencyMs, { provider, stage, ...labels });
+  }
+
   public render(): string {
     const lines = [
       '# HELP callora_calls_active Calls this instance is bridging right now.',
@@ -189,6 +210,8 @@ export class MetricsRegistry implements CallMetrics {
       ...this.fallbacks.render(),
       ...this.bargeIns.render(),
       ...this.firstAudioLatency.render(),
+      ...this.realtimeEvents.render(),
+      ...this.stageLatency.render(),
       ...this.callDuration.render(),
     ];
     return `${lines.join('\n')}\n`;

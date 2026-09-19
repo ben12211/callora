@@ -22,6 +22,7 @@ import {
   changePasswordSchema,
   createBusinessSchema,
   loginSchema,
+  pronunciationEntrySchema,
   updateBusinessSchema,
 } from '../schemas.js';
 import { buildCallPreview } from './call-preview.js';
@@ -391,10 +392,11 @@ export async function registerDashboardRoutes(
     if (!business) {
       return page(reply, request, actor, 'Not found', notFoundPage('That business does not exist.'), 404);
     }
-    const [agent, calls, auditEvents] = await Promise.all([
+    const [agent, calls, auditEvents, pronunciations] = await Promise.all([
       store.getAgentConfig(business.id),
       store.listCalls({ businessId: business.id, limit: 10, offset: 0 }),
       store.listAuditEvents({ entityId: business.id, limit: 15, offset: 0 }),
+      store.listPronunciations(business.id),
     ]);
     return page(
       reply,
@@ -406,6 +408,7 @@ export async function registerDashboardRoutes(
         agent,
         calls,
         audit: auditEvents,
+        pronunciations,
         providers: providerStatuses(platform.providers(), platform.defaultProvider(), platform.environment()),
         csrfToken: actor.session?.csrfToken ?? '',
         ...(readQueryString(request, 'notice') ? { notice: readQueryString(request, 'notice')! } : {}),
@@ -479,6 +482,7 @@ export async function registerDashboardRoutes(
       elevenLabsAgentId: body['elevenLabsAgentId'] ?? '',
       voice: body['voice'] ?? '',
       realtimeModel: body['realtimeModel'],
+      hebrewPronunciationMode: body['hebrewPronunciationMode'] ?? 'smart',
     });
     if (!parsed.success) {
       return reply.redirect(
@@ -542,6 +546,48 @@ export async function registerDashboardRoutes(
       )}`,
       303,
     );
+  });
+
+  app.post('/dashboard/businesses/:id/pronunciations', async (request, reply) => {
+    const actor = await requireSession(request, reply);
+    if (!actor) return reply;
+    if (!checkCsrf(actor, request, reply)) return reply;
+    const { id } = request.params as { id: string };
+    if (!requireBusinessAccess(actor, id, request, reply)) return reply;
+    const parsed = pronunciationEntrySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.redirect(`/dashboard/businesses/${id}?error=${encodeURIComponent(firstIssueMessage(parsed.error.issues))}`, 303);
+    }
+    const business = await store.getBusinessById(id);
+    if (!business) return page(reply, request, actor, 'Not found', notFoundPage('That business does not exist.'), 404);
+    const entry = await store.createPronunciation(id, parsed.data);
+    await audit.record(actor, {
+      action: AUDIT_ACTIONS.pronunciationUpdated,
+      entityType: 'pronunciation',
+      entityId: entry.id,
+      summary: `Updated pronunciation for ${business.name}: ${entry.sourceText}`,
+      details: { businessId: id, pronunciationType: entry.pronunciationType, locale: entry.locale },
+    });
+    return reply.redirect(`/dashboard/businesses/${id}?notice=Pronunciation+saved.`, 303);
+  });
+
+  app.post('/dashboard/businesses/:id/pronunciations/:entryId/delete', async (request, reply) => {
+    const actor = await requireSession(request, reply);
+    if (!actor) return reply;
+    if (!checkCsrf(actor, request, reply)) return reply;
+    const { id, entryId } = request.params as { id: string; entryId: string };
+    if (!requireBusinessAccess(actor, id, request, reply)) return reply;
+    const deleted = await store.deletePronunciation(id, entryId);
+    if (deleted) {
+      await audit.record(actor, {
+        action: AUDIT_ACTIONS.pronunciationDeleted,
+        entityType: 'pronunciation',
+        entityId: entryId,
+        summary: 'Deleted a business pronunciation entry',
+        details: { businessId: id },
+      });
+    }
+    return reply.redirect(`/dashboard/businesses/${id}?notice=${deleted ? 'Pronunciation+deleted.' : 'Pronunciation+not+found.'}`, 303);
   });
 
   /**
