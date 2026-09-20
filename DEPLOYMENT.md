@@ -199,6 +199,8 @@ Caddy is the last container a deployment starts, so a port already taken by some
 
 It reports and refuses; it never stops anything. A container holding :80 may be the stack currently serving the site, and it may own the database volume, so what happens to it is a decision for a person and not for a deployment.
 
+Caddy is then checked again after it starts. Compose reuses a container whose configuration has not changed, so a Caddy container created by a deployment that failed to bind the ports can be started by the next one without ever binding them — and then everything reports healthy, because Caddy's health check runs inside the container, while nothing answers from outside the VM. If the ports are not held, the deployment recreates Caddy once and checks again. A public health check that still fails says whether Caddy holds the ports, which separates a Docker problem from a VCN, NSG, firewalld, or DNS one.
+
 ## Rollback behavior
 
 Before changing the running application, `/opt/callora/deploy.sh` saves the prior image reference and production configuration. Configuration is replaced by writing a staging file next to the destination and renaming it, so `/opt/callora/.env` is always either the old file or the new one — a full disk can no longer truncate it halfway through a rollback. If image pull, Caddy validation, migration, container startup, or any health check fails, it restores the previous backend and Caddy configuration. On a failed first deployment it stops the app containers, restores the original server environment, and preserves PostgreSQL and its volume.

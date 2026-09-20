@@ -386,9 +386,29 @@ wait_for_healthy() {
   return 1
 }
 
+# Compose reuses a container whose configuration has not changed, which means Caddy can
+# come up as an existing container that never bound the host ports - the last deployment
+# failed to bind them, and this one only started it again. Everything then reports
+# healthy, because Caddy's own health check runs inside the container, and nothing at all
+# answers from outside. Nowhere else does "running" differ this far from "serving".
+caddy_publishes_ports() {
+  local id published port
+
+  id="$(compose ps -q caddy 2>/dev/null)" || return 1
+  [[ -n "$id" ]] || return 1
+
+  published="$(docker inspect --format \
+    '{{range $port, $binding := .NetworkSettings.Ports}}{{if $binding}}{{$port}} {{end}}{{end}}' \
+    "$id" 2>/dev/null || true)"
+
+  for port in "${PUBLISHED_PORTS[@]}"; do
+    [[ "$published" == *"$port/tcp"* ]] || return 1
+  done
+}
+
 wait_for_public_health() {
   local attempts="${1:-30}"
-  local caddy_id public_base_url
+  local caddy_id public_base_url last_error=''
 
   caddy_id="$(compose ps -q caddy)"
   [[ -n "$caddy_id" ]] || {
@@ -406,14 +426,21 @@ wait_for_public_health() {
     return 1
   }
 
+  # Every attempt printing the same refusal buries the one line that explains it.
   for ((attempt = 1; attempt <= attempts; attempt++)); do
-    if curl --fail --silent --show-error --max-time 5 -- "${public_base_url%/}/health" >/dev/null; then
-      return 0
-    fi
+    last_error="$(curl --fail --silent --show-error --max-time 5 \
+      -- "${public_base_url%/}/health" 2>&1 >/dev/null)" && return 0
     sleep 5
   done
 
-  log 'The public health endpoint did not become ready.'
+  log "The public health endpoint did not become ready: ${last_error:-no response}."
+  if caddy_publishes_ports; then
+    log 'Caddy does hold ports 80 and 443 on the VM, so this is outside Docker: check the'
+    log 'Oracle Cloud VCN or NSG ingress rules, firewalld on the host, and that the'
+    log 'PUBLIC_BASE_URL hostname resolves to this VM.'
+  else
+    log 'Caddy is not holding ports 80 and 443 on the VM, so nothing can reach it.'
+  fi
   return 1
 }
 
@@ -601,6 +628,16 @@ deploy_release() {
   log 'Starting or refreshing the HTTPS reverse proxy.'
   compose up -d --no-deps caddy
   wait_for_healthy caddy 60
+  if ! caddy_publishes_ports; then
+    # Recreating is what Compose would have done had it known the container was wrong.
+    log 'Caddy came up without the host ports; recreating it.'
+    compose up -d --no-deps --force-recreate caddy
+    wait_for_healthy caddy 60
+    caddy_publishes_ports || {
+      log 'Caddy still does not publish ports 80 and 443 on this host.'
+      return 1
+    }
+  fi
 
   compose exec -T backend node -e \
     "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
