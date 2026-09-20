@@ -10,10 +10,13 @@ readonly CADDY_FILE="$APP_DIR/Caddyfile"
 readonly ROLLBACK_DIR="$APP_DIR/.rollback"
 readonly LAST_IMAGE_FILE="$APP_DIR/.last-successful-image"
 readonly LOCK_FILE=/tmp/callora-deploy.lock
-# Unpacking a release needs room for the download and the extracted layers at the same
-# time. Below this, `docker pull` dies partway through writing a layer, which is how a
-# deployment ends up with neither the new release nor enough room to restore the old one.
-readonly REQUIRED_FREE_MIB=3072
+# Unpacking a release needs room for the compressed download and the extracted layers at
+# the same time; short of that, `docker pull` dies partway through writing a layer, which
+# is how a deployment ends up with neither the new release nor room to restore the old
+# one. How much that is depends on the image, so it is measured from the release already
+# on the host rather than fixed at a number someone guessed.
+readonly FREE_MIB_PER_IMAGE=2
+readonly MIN_FREE_MIB=1024
 # Container logs were never rotated, so on a small boot volume they outgrow the images by
 # far. Anything past this is truncated when a deployment would otherwise be refused.
 readonly LOG_TRUNCATE_ABOVE_KIB=51200
@@ -22,6 +25,22 @@ readonly HOST_SETTINGS=(POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL
 
 log() {
   printf '[callora-deploy] %s\n' "$*"
+}
+
+required_free_mib() {
+  local last_image='' bytes='' required
+
+  if [[ -f "$LAST_IMAGE_FILE" ]]; then
+    IFS= read -r last_image < "$LAST_IMAGE_FILE" || true
+  fi
+  if [[ -n "$last_image" ]]; then
+    bytes="$(docker image inspect --format '{{.Size}}' "$last_image" 2>/dev/null || true)"
+  fi
+  [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+
+  required=$((bytes / 1048576 * FREE_MIB_PER_IMAGE))
+  ((required >= MIN_FREE_MIB)) || required=$MIN_FREE_MIB
+  printf '%s\n' "$required"
 }
 
 compose() {
@@ -54,13 +73,14 @@ storage_filesystems() {
 
 # Prints the filesystems that are short of room, and returns non-zero if any of them is.
 cramped_filesystems() {
+  local required="$1"
   local path avail
   local -a cramped=()
 
   while IFS= read -r path; do
     avail="$(available_mib "$path")"
     [[ -n "$avail" ]] || continue
-    if ((avail < REQUIRED_FREE_MIB)); then
+    if ((avail < required)); then
       cramped+=("$path has ${avail} MiB free")
     fi
   done < <(storage_filesystems)
@@ -70,25 +90,49 @@ cramped_filesystems() {
   return 1
 }
 
+# The maintenance below needs a shell with root's view of the host, and pulling an image
+# is precisely what a disk with no room cannot do. So it runs in whatever is already here,
+# or it does not run.
+local_helper_image() {
+  local candidate
+  for candidate in caddy:2-alpine postgres:16-alpine alpine:latest busybox:latest; do
+    if docker image inspect "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# `docker system df` only ever accounts for Docker's own files. When those come to a small
+# fraction of a full disk - which is exactly what happened here, 2.3 GB of images on a
+# disk with 28 GB used - the answer is somewhere outside Docker, and finding it should not
+# require anyone to SSH in. Mounted read-only; this only measures.
+report_largest_directories() {
+  local helper line
+
+  helper="$(local_helper_image)" || return 0
+
+  log 'Largest directories on the root filesystem (MiB):'
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && log "  $line"
+  done < <(docker run --rm --network none --user 0:0 --security-opt label=disable \
+    --volume /:/host:ro --entrypoint sh "$helper" -c \
+    'cd /host && du -x -m -d 3 . 2>/dev/null | sort -n | tail -20' 2>/dev/null || true)
+}
+
 # Docker offers no way to truncate the log of a container that is running, and the files
 # are root-owned under its data root, so reaching them without stopping the site takes a
 # throwaway container. Best effort by design: it runs only when reclaiming images was not
-# enough, and only with an image already on the host, because pulling one is the very
-# thing that has no room. Truncating in place is what `logrotate -copytruncate` does; the
-# daemon keeps appending to the same file afterwards.
+# enough. Truncating in place is what `logrotate -copytruncate` does; the daemon keeps
+# appending to the same file afterwards.
 truncate_oversized_container_logs() {
-  local docker_root helper='' candidate
+  local docker_root helper
 
   docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
   [[ -n "$docker_root" ]] || docker_root=/var/lib/docker
 
-  for candidate in caddy:2-alpine postgres:16-alpine alpine:latest busybox:latest; do
-    if docker image inspect "$candidate" >/dev/null 2>&1; then
-      helper="$candidate"
-      break
-    fi
-  done
-  [[ -n "$helper" ]] || {
+  helper="$(local_helper_image)" || {
     log 'No image is available locally to reclaim container logs with; skipping.'
     return 0
   }
@@ -104,18 +148,20 @@ truncate_oversized_container_logs() {
 }
 
 ensure_disk_space() {
-  local shortfall
+  local required shortfall
 
-  shortfall="$(cramped_filesystems)" && return 0
-  log "Still short of room after reclaiming images: $shortfall."
+  required="$(required_free_mib)"
+  shortfall="$(cramped_filesystems "$required")" && return 0
+  log "Still short of the ${required} MiB a release needs: $shortfall."
   truncate_oversized_container_logs
-  shortfall="$(cramped_filesystems)" && return 0
+  shortfall="$(cramped_filesystems "$required")" && return 0
 
-  log "Not enough disk space to unpack a release: $shortfall; ${REQUIRED_FREE_MIB} MiB are needed."
+  log "Not enough disk space to unpack a release: $shortfall; ${required} MiB are needed."
   log 'Grow the boot volume, or free space on the VM, then re-run the deployment.'
   # The run that refuses to deploy is also the run that has to say what is holding the
   # disk, or the next step is somebody guessing over SSH.
   report_disk_usage
+  report_largest_directories
   return 1
 }
 
@@ -221,9 +267,19 @@ recover_missing_settings() {
   done
 
   [[ ${#recovered[@]} -eq 0 ]] || \
-    log "Recovered from the previous release, by name only: ${recovered[*]}."
-  [[ ${#unrecovered[@]} -eq 0 ]] || \
-    log "Not recoverable from this server: ${unrecovered[*]}."
+    log "Restored from this server (names only, never values): ${recovered[*]}."
+
+  # Only the settings the stack cannot start without are worth reporting. A SECRETS_KEY
+  # that is absent everywhere means this server simply never had one, which is a
+  # supported way to run and not a failed recovery.
+  local -a missing_required=()
+  for setting in "${unrecovered[@]}"; do
+    case " ${HOST_SETTINGS[*]} " in
+      *" $setting "*) missing_required+=("$setting") ;;
+    esac
+  done
+  [[ ${#missing_required[@]} -eq 0 ]] || \
+    log "Not recoverable from this server: ${missing_required[*]}."
 }
 
 # install(1) writes straight into the destination, so a failure partway through - a full
