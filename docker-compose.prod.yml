@@ -1,5 +1,15 @@
 name: callora
 
+# Nothing rotated container logs before this, and the backend narrates every call turn to
+# stdout. On a boot volume this size the logs outgrow the images, and the deployment that
+# runs out of room is the one that unpacks the next release. Ten megabytes times three
+# files per service keeps a useful amount of history and a bounded amount of disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
@@ -8,6 +18,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    logging: *logging
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -79,6 +90,7 @@ services:
       ALLOW_LIST: ${ALLOW_LIST:-}
       DB_STARTUP_RETRIES: 30
       DB_STARTUP_RETRY_DELAY_SECONDS: 2
+    logging: *logging
     expose:
       - "3000"
     networks:
@@ -112,6 +124,7 @@ services:
       RENIKUD_MODEL_PATH: /models/model_int8.onnx
       RENIKUD_WRAPPER_PATH: /models/renikud_onnx.py
       RENIKUD_PORT: 8787
+    logging: *logging
     volumes:
       - ${RENIKUD_MODEL_DIR:-./.models/renikud}:/models:ro,Z
     networks:
@@ -134,6 +147,7 @@ services:
     image: caddy:2-alpine
     environment:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+    logging: *logging
     ports:
       - "80:80"
       - "443:443"

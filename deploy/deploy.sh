@@ -14,6 +14,11 @@ readonly LOCK_FILE=/tmp/callora-deploy.lock
 # time. Below this, `docker pull` dies partway through writing a layer, which is how a
 # deployment ends up with neither the new release nor enough room to restore the old one.
 readonly REQUIRED_FREE_MIB=3072
+# Container logs were never rotated, so on a small boot volume they outgrow the images by
+# far. Anything past this is truncated when a deployment would otherwise be refused.
+readonly LOG_TRUNCATE_ABOVE_KIB=51200
+# The settings that deliberately never leave the VM, so the pipeline cannot re-send them.
+readonly HOST_SETTINGS=(POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL PUBLIC_BASE_URL)
 
 log() {
   printf '[callora-deploy] %s\n' "$*"
@@ -47,7 +52,8 @@ storage_filesystems() {
   fi
 }
 
-ensure_disk_space() {
+# Prints the filesystems that are short of room, and returns non-zero if any of them is.
+cramped_filesystems() {
   local path avail
   local -a cramped=()
 
@@ -59,11 +65,66 @@ ensure_disk_space() {
     fi
   done < <(storage_filesystems)
 
-  [[ ${#cramped[@]} -eq 0 ]] || {
-    log "Not enough disk space to unpack a release: ${cramped[*]}; ${REQUIRED_FREE_MIB} MiB are needed."
-    log 'Free space on the VM or grow the boot volume, then re-run the deployment.'
-    return 1
+  [[ ${#cramped[@]} -eq 0 ]] && return 0
+  printf '%s\n' "${cramped[*]}"
+  return 1
+}
+
+# Docker offers no way to truncate the log of a container that is running, and the files
+# are root-owned under its data root, so reaching them without stopping the site takes a
+# throwaway container. Best effort by design: it runs only when reclaiming images was not
+# enough, and only with an image already on the host, because pulling one is the very
+# thing that has no room. Truncating in place is what `logrotate -copytruncate` does; the
+# daemon keeps appending to the same file afterwards.
+truncate_oversized_container_logs() {
+  local docker_root helper='' candidate
+
+  docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [[ -n "$docker_root" ]] || docker_root=/var/lib/docker
+
+  for candidate in caddy:2-alpine postgres:16-alpine alpine:latest busybox:latest; do
+    if docker image inspect "$candidate" >/dev/null 2>&1; then
+      helper="$candidate"
+      break
+    fi
+  done
+  [[ -n "$helper" ]] || {
+    log 'No image is available locally to reclaim container logs with; skipping.'
+    return 0
   }
+
+  log "Truncating container logs larger than $((LOG_TRUNCATE_ABOVE_KIB / 1024)) MiB."
+  # label=disable because relabelling Docker's own data root would be worse than the
+  # problem; this container is removed the moment the find returns.
+  docker run --rm --network none --user 0:0 --security-opt label=disable \
+    --volume "$docker_root/containers:/containers" \
+    --entrypoint sh "$helper" -c \
+    "find /containers -name '*-json.log' -size +${LOG_TRUNCATE_ABOVE_KIB}k -exec truncate -s 0 {} ';'" \
+    >/dev/null 2>&1 || log 'Container logs could not be reclaimed; continuing.'
+}
+
+ensure_disk_space() {
+  local shortfall
+
+  shortfall="$(cramped_filesystems)" && return 0
+  log "Still short of room after reclaiming images: $shortfall."
+  truncate_oversized_container_logs
+  shortfall="$(cramped_filesystems)" && return 0
+
+  log "Not enough disk space to unpack a release: $shortfall; ${REQUIRED_FREE_MIB} MiB are needed."
+  log 'Grow the boot volume, or free space on the VM, then re-run the deployment.'
+  # The run that refuses to deploy is also the run that has to say what is holding the
+  # disk, or the next step is somebody guessing over SSH.
+  report_disk_usage
+  return 1
+}
+
+report_disk_usage() {
+  local path
+  while IFS= read -r path; do
+    log "$(df -Ph -- "$path" 2>/dev/null | awk 'NR == 2 { printf "%s: %s of %s used, %s free", "'"$path"'", $3, $2, $4 }')"
+  done < <(storage_filesystems)
+  docker system df 2>/dev/null || true
 }
 
 # Every release is pulled under its own immutable commit-SHA tag, so the host gained a
@@ -94,6 +155,75 @@ reclaim_disk_space() {
   docker builder prune --force >/dev/null 2>&1 || true
   # Never prune volumes here, under any filter: the PostgreSQL named volume is the
   # production database.
+}
+
+setting_present() {
+  local name="$1" file="$2"
+  [[ -f "$file" ]] && grep -Eq "^[[:space:]]*$name[[:space:]]*=[[:space:]]*[^[:space:]]" "$file"
+}
+
+# Reads a value out of a container the stack is still running. `docker compose` cannot be
+# used here: it interpolates the very file that is missing the values, and fails first.
+container_setting() {
+  local service="$1" name="$2" id
+
+  id="$(docker ps --all --quiet \
+    --filter 'label=com.docker.compose.project=callora' \
+    --filter "label=com.docker.compose.service=$service" 2>/dev/null | head -n 1)"
+  [[ -n "$id" ]] || return 0
+
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id" 2>/dev/null |
+    sed -n "s/^$name=//p" | head -n 1
+}
+
+# The host-only settings are recoverable from the backup a failed deployment left behind,
+# and from the containers still running with them - which is the whole reason a lost .env
+# does not have to mean a hand-typed database password. Copying the backup's line verbatim
+# keeps a value with spaces, quoting or a `$` in it byte-for-byte what it was.
+recover_missing_settings() {
+  local setting value service
+  local -a recovered=() unrecovered=()
+
+  for setting in "$@"; do
+    setting_present "$setting" "$ENV_FILE" && continue
+
+    value=''
+    if [[ -f "$ROLLBACK_DIR/.env" ]]; then
+      value="$(sed -n "s/^[[:space:]]*$setting[[:space:]]*=/$setting=/p" "$ROLLBACK_DIR/.env" | head -n 1)"
+    fi
+
+    if [[ -z "$value" ]]; then
+      case "$setting" in
+        POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB) service=db ;;
+        DATABASE_URL|SECRETS_KEY) service=backend ;;
+        PUBLIC_BASE_URL) service=caddy ;;
+        *) service='' ;;
+      esac
+      if [[ -n "$service" ]]; then
+        value="$(container_setting "$service" "$setting")"
+        # A resolved value is written back unquoted, so only take one that survives the
+        # round trip through an env file untouched. Anything else is reported instead of
+        # being written as something subtly different from what the server is using.
+        if [[ -n "$value" && "$value" =~ ^[^[:space:]\$\#\\\"\']+$ ]]; then
+          value="$setting=$value"
+        else
+          value=''
+        fi
+      fi
+    fi
+
+    if [[ -n "$value" ]]; then
+      printf '%s\n' "$value" >> "$ENV_FILE"
+      recovered+=("$setting")
+    else
+      unrecovered+=("$setting")
+    fi
+  done
+
+  [[ ${#recovered[@]} -eq 0 ]] || \
+    log "Recovered from the previous release, by name only: ${recovered[*]}."
+  [[ ${#unrecovered[@]} -eq 0 ]] || \
+    log "Not recoverable from this server: ${unrecovered[*]}."
 }
 
 # install(1) writes straight into the destination, so a failure partway through - a full
@@ -551,15 +681,23 @@ update_runtime_secrets() {
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN
 
+  # A deployment that ran out of disk used to leave this file truncated, taking the
+  # host-only settings with it. They are put back from the server itself rather than
+  # asking somebody to retype a database password that PostgreSQL's volume still expects.
+  # An empty SECRETS_KEY from the pipeline means "keep this server's key", which after a
+  # truncation means recovering it too, or every stored credential becomes unreadable.
+  local -a recoverable=("${HOST_SETTINGS[@]}")
+  [[ -n "$secrets_key" ]] || recoverable+=(SECRETS_KEY)
+  recover_missing_settings "${recoverable[@]}"
+
   # Compose treats these as mandatory, and none of them can come from the pipeline: the
   # database credentials and the public URL are host-specific by design. Naming the ones
   # that are absent here turns an opaque "variable is not set" from `docker compose` at
   # deploy time into one actionable message, with the rest of the file already written.
   local -a missing_host_settings=()
   local setting
-  for setting in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL PUBLIC_BASE_URL; do
-    grep -Eq "^[[:space:]]*$setting[[:space:]]*=[[:space:]]*[^[:space:]]" "$ENV_FILE" \
-      || missing_host_settings+=("$setting")
+  for setting in "${HOST_SETTINGS[@]}"; do
+    setting_present "$setting" "$ENV_FILE" || missing_host_settings+=("$setting")
   done
   if [[ ${#missing_host_settings[@]} -gt 0 ]]; then
     log "$ENV_FILE is missing the host-specific settings: ${missing_host_settings[*]}."
@@ -613,6 +751,9 @@ main() {
       [[ $# -eq 1 ]] || { log 'Usage: deploy.sh reclaim'; exit 2; }
       reclaim_disk_space
       log "Disk space reclaimed; $(available_mib "$APP_DIR") MiB free on $APP_DIR."
+      # Printed every deployment: when the disk fills again, the run that failed is also
+      # the run that says what was holding the space.
+      report_disk_usage
       ;;
     *)
       log 'Usage: deploy.sh {deploy IMAGE|confirm|rollback|update-secrets|reclaim}'

@@ -27,6 +27,24 @@ dnf -y install dnf-plugins-core ca-certificates curl util-linux
 dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
 dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
+# Docker's default is to never rotate a container log, which on a boot volume this size
+# ends as a deployment that cannot unpack the next release. The Compose file sets this per
+# service as well; this covers anything started outside it. An existing file is left alone
+# rather than overwritten, since it may have been tuned on purpose.
+if [[ ! -f /etc/docker/daemon.json ]]; then
+  install -d -m 0755 /etc/docker
+  cat > /etc/docker/daemon.json <<'JSON'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+JSON
+  chmod 0644 /etc/docker/daemon.json
+fi
+
 systemctl enable --now docker
 usermod -aG docker "$deploy_user"
 

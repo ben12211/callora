@@ -167,9 +167,11 @@ The image and deploy jobs run only for push events on `main`, depend on the succ
 
 Every release is pulled under its own immutable commit-SHA tag, so the VM gains a whole image per deployment. Nothing used to remove one, and a boot volume that filled up between releases failed the deployment in the worst possible place: partway through unpacking a layer, with the live configuration already replaced.
 
-Each deployment now reclaims before it touches anything. Superseded `*/callora:<sha>` images, dangling images, the build cache, and containers left behind by earlier runs are removed; the incoming release, the release a rollback would restore, and anything a running container still uses are all kept. Volumes are never pruned, under any filter, because the PostgreSQL named volume is the production database.
+Container logs were the other half of it, and on a boot volume this size the larger half: Docker never rotates a log on its own, and the backend narrates every call turn to stdout. Every service in `docker-compose.prod.yml` now caps its log at 10 MB across 3 files, and `deploy/bootstrap-oracle-linux.sh` writes the same defaults into `/etc/docker/daemon.json` for anything started outside Compose. A container keeps its old, unbounded log file until it is next recreated, which the deployment does anyway.
 
-After reclaiming, the deployment checks that `/opt/callora`, Docker's data root, and `/var/lib/containerd` each have at least 3 GiB free. Short of that it stops before the previous release is replaced, so the site keeps serving while the space is sorted out.
+Each deployment reclaims before it touches anything. Superseded `*/callora:<sha>` images, dangling images, the build cache, and containers left behind by earlier runs are removed; the incoming release, the release a rollback would restore, and anything a running container still uses are all kept. Volumes are never pruned, under any filter, because the PostgreSQL named volume is the production database.
+
+After reclaiming, the deployment checks that `/opt/callora`, Docker's data root, and `/var/lib/containerd` each have at least 3 GiB free. If they do not, it truncates any container log over 50 MB — in place, the way `logrotate -copytruncate` does, using an image already on the host so nothing has to be pulled onto a full disk — and checks once more. Short of that it stops before the previous release is replaced, so the site keeps serving while the space is sorted out, and prints `df` and `docker system df` so the failing run is also the one that says what is holding the disk.
 
 Reclaiming can also be run on its own, which is the first thing to try on a host that has already filled up:
 
@@ -180,6 +182,14 @@ bash /opt/callora/deploy.sh reclaim
 ```
 
 If that is not enough, the boot volume needs to grow; images are not what is filling it.
+
+## Recovering a lost environment file
+
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, and `PUBLIC_BASE_URL` deliberately never leave the VM, so the pipeline cannot re-send them if `/opt/callora/.env` is lost. Before the atomic writes described below, a rollback on a full disk could truncate that file and take them with it.
+
+`update-secrets` now puts them back on its own, from two places that still have them: `/opt/callora/.rollback/.env`, the backup the failed deployment took, whose lines are copied back byte for byte; and failing that, the containers still running with the values, read with `docker inspect`. `SECRETS_KEY` is recovered the same way when the pipeline did not send one, since an empty one means "keep this server's key" and losing it makes every credential stored in the dashboard unreadable.
+
+Only settings that are actually missing are written, only names are ever logged, and a value read from a container is used only if it survives an env file unquoted — anything else is reported by name rather than written back as something subtly different from what the server is running on.
 
 ## Rollback behavior
 
