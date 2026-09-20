@@ -8,7 +8,12 @@ readonly COMPOSE_FILE="$APP_DIR/docker-compose.prod.yml"
 readonly ENV_FILE="$APP_DIR/.env"
 readonly CADDY_FILE="$APP_DIR/Caddyfile"
 readonly ROLLBACK_DIR="$APP_DIR/.rollback"
+readonly LAST_IMAGE_FILE="$APP_DIR/.last-successful-image"
 readonly LOCK_FILE=/tmp/callora-deploy.lock
+# Unpacking a release needs room for the download and the extracted layers at the same
+# time. Below this, `docker pull` dies partway through writing a layer, which is how a
+# deployment ends up with neither the new release nor enough room to restore the old one.
+readonly REQUIRED_FREE_MIB=3072
 
 log() {
   printf '[callora-deploy] %s\n' "$*"
@@ -16,6 +21,95 @@ log() {
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+}
+
+available_mib() {
+  local path="$1"
+
+  # df needs a path that exists; a file written later lands on its parent's filesystem,
+  # so walking up answers the same question.
+  while [[ ! -e "$path" && "$path" == */?* ]]; do
+    path="${path%/*}"
+    [[ -n "$path" ]] || path=/
+  done
+
+  df -Pk -- "$path" 2>/dev/null | awk 'NR == 2 { printf "%d\n", $4 / 1024 }'
+}
+
+storage_filesystems() {
+  local docker_root
+  docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  printf '%s\n' "$APP_DIR" "${docker_root:-/var/lib/docker}"
+  # containerd holds the snapshots a pull unpacks into, and that is not always the same
+  # filesystem as Docker's own data root.
+  if [[ -d /var/lib/containerd ]]; then
+    printf '%s\n' /var/lib/containerd
+  fi
+}
+
+ensure_disk_space() {
+  local path avail
+  local -a cramped=()
+
+  while IFS= read -r path; do
+    avail="$(available_mib "$path")"
+    [[ -n "$avail" ]] || continue
+    if ((avail < REQUIRED_FREE_MIB)); then
+      cramped+=("$path has ${avail} MiB free")
+    fi
+  done < <(storage_filesystems)
+
+  [[ ${#cramped[@]} -eq 0 ]] || {
+    log "Not enough disk space to unpack a release: ${cramped[*]}; ${REQUIRED_FREE_MIB} MiB are needed."
+    log 'Free space on the VM or grow the boot volume, then re-run the deployment.'
+    return 1
+  }
+}
+
+# Every release is pulled under its own immutable commit-SHA tag, so the host gained a
+# whole image per deployment and nothing ever removed one. Reclaiming is part of
+# deploying: a disk that fills between releases takes the site down at the worst moment,
+# during the pull, with the live configuration already replaced.
+reclaim_disk_space() {
+  local keep_image="${1:-}"
+  local last_image='' image
+
+  if [[ -f "$LAST_IMAGE_FILE" ]]; then
+    IFS= read -r last_image < "$LAST_IMAGE_FILE" || true
+  fi
+
+  # Only containers left behind by earlier deployments; anything from this one is younger.
+  docker container prune --force --filter until=24h >/dev/null 2>&1 || true
+
+  while IFS= read -r image; do
+    [[ -n "$image" && "$image" != *'<none>'* ]] || continue
+    # The incoming release and the one a rollback would restore both stay.
+    [[ "$image" != "$keep_image" && "$image" != "$last_image" ]] || continue
+    # The daemon refuses to remove an image a container still uses, which is the second
+    # guard on whatever is serving traffic right now.
+    docker image rm -- "$image" >/dev/null 2>&1 || true
+  done < <(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter 'reference=*/callora:*' 2>/dev/null)
+
+  docker image prune --force >/dev/null 2>&1 || true
+  docker builder prune --force >/dev/null 2>&1 || true
+  # Never prune volumes here, under any filter: the PostgreSQL named volume is the
+  # production database.
+}
+
+# install(1) writes straight into the destination, so a failure partway through - a full
+# disk above all - leaves the live file truncated. That is how a failed rollback erased
+# the production .env. Staging beside the destination and renaming means the file on disk
+# is either the old one or the new one, never half of either.
+install_atomic() {
+  local mode="$1" source="$2" target="$3"
+  local staged
+
+  staged="$(mktemp "$target.XXXXXX")" || return 1
+  if ! install -m "$mode" -- "$source" "$staged"; then
+    rm -f -- "$staged"
+    return 1
+  fi
+  mv -f -- "$staged" "$target"
 }
 
 wait_for_healthy() {
@@ -145,20 +239,25 @@ backup_current() {
 }
 
 install_incoming() {
-  install -m 0600 "$INCOMING_DIR/callora.env" "$ENV_FILE"
-  install -m 0644 "$INCOMING_DIR/docker-compose.prod.yml" "$COMPOSE_FILE"
-  install -m 0644 "$INCOMING_DIR/Caddyfile" "$CADDY_FILE"
-  install -m 0755 "$INCOMING_DIR/deploy.sh" "$APP_DIR/deploy.sh"
+  install_atomic 0600 "$INCOMING_DIR/callora.env" "$ENV_FILE"
+  install_atomic 0644 "$INCOMING_DIR/docker-compose.prod.yml" "$COMPOSE_FILE"
+  install_atomic 0644 "$INCOMING_DIR/Caddyfile" "$CADDY_FILE"
+  install_atomic 0755 "$INCOMING_DIR/deploy.sh" "$APP_DIR/deploy.sh"
 }
 
 perform_rollback() {
   trap - ERR
   log 'Rolling back application configuration and backend image.'
 
+  # A deployment that failed because the disk was full leaves a rollback needing a few
+  # kilobytes of that same disk to write the previous configuration back. Reclaim first,
+  # or the recovery path fails for the exact reason the deployment did.
+  reclaim_disk_space
+
   if [[ -f "$ROLLBACK_DIR/previous-release" ]]; then
-    install -m 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE" || return 1
-    install -m 0644 "$ROLLBACK_DIR/docker-compose.prod.yml" "$COMPOSE_FILE" || return 1
-    install -m 0644 "$ROLLBACK_DIR/Caddyfile" "$CADDY_FILE" || return 1
+    install_atomic 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE" || return 1
+    install_atomic 0644 "$ROLLBACK_DIR/docker-compose.prod.yml" "$COMPOSE_FILE" || return 1
+    install_atomic 0644 "$ROLLBACK_DIR/Caddyfile" "$CADDY_FILE" || return 1
     compose up -d db || return 1
     wait_for_healthy db 60 || return 1
     compose up -d --no-deps backend || return 1
@@ -171,7 +270,7 @@ perform_rollback() {
 
   if [[ -f "$ROLLBACK_DIR/first-deploy" && -f "$ENV_FILE" && -f "$COMPOSE_FILE" ]]; then
     compose stop backend caddy 2>/dev/null || true
-    install -m 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE" || return 1
+    install_atomic 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE" || return 1
     log 'First deployment stopped; PostgreSQL and its named volume were preserved.'
     return 0
   fi
@@ -186,6 +285,17 @@ deploy_release() {
 
   prepare_incoming_env "$new_image"
   validate_incoming "$new_image"
+
+  # Both of these run before anything live is replaced, so a host without room for this
+  # release simply keeps serving the previous one, instead of failing mid-pull with its
+  # configuration already swapped.
+  log 'Reclaiming disk space held by superseded releases.'
+  reclaim_disk_space "$new_image"
+  ensure_disk_space || {
+    log 'Refusing to deploy; the running release has not been touched.'
+    return 1
+  }
+
   backup_current
   install_incoming
 
@@ -246,8 +356,8 @@ confirm_release() {
 
   compose config --images |
     grep -E '^[a-z0-9]+([._-][a-z0-9]+)*/callora:[0-9a-f]{40}$' |
-    head -n 1 > "$APP_DIR/.last-successful-image"
-  chmod 0600 "$APP_DIR/.last-successful-image"
+    head -n 1 > "$LAST_IMAGE_FILE"
+  chmod 0600 "$LAST_IMAGE_FILE"
   rm -rf -- "$ROLLBACK_DIR"
   log 'Deployment confirmed.'
 }
@@ -497,8 +607,15 @@ main() {
       [[ $# -eq 1 ]] || { log 'Usage: deploy.sh update-secrets'; exit 2; }
       update_runtime_secrets
       ;;
+    reclaim)
+      # Callable on its own so a host that has already filled up can be made writable
+      # again before the deployment starts writing to it.
+      [[ $# -eq 1 ]] || { log 'Usage: deploy.sh reclaim'; exit 2; }
+      reclaim_disk_space
+      log "Disk space reclaimed; $(available_mib "$APP_DIR") MiB free on $APP_DIR."
+      ;;
     *)
-      log 'Usage: deploy.sh {deploy IMAGE|confirm|rollback|update-secrets}'
+      log 'Usage: deploy.sh {deploy IMAGE|confirm|rollback|update-secrets|reclaim}'
       exit 2
       ;;
   esac

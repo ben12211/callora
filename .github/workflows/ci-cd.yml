@@ -483,6 +483,10 @@ jobs:
             "${SSH[@]}" "$REMOTE" \
               "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
           "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
+          # Before anything else writes to the VM. A host that filled up during an earlier
+          # release cannot complete even the small .env update below, so the deployment
+          # would fail before reaching the step that would have reclaimed the space.
+          "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh reclaim' || true
           ADMIN_EMAIL="$(python3 - <<'PY'
           import os
           import sys

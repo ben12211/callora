@@ -153,18 +153,37 @@ A successful push to `main` then:
 5. Connects to `USER@IP` over SSH on port 22.
 6. Logs in to Docker Hub on the VM with `DOCKER_HUB_USERNAME` and `DOCKER_HUB_TOKEN` over standard input.
 7. Copies only the production Compose file, Caddyfile, and deploy script to `/opt/callora`.
-8. Injects the exact SHA image into a copy of the existing server environment and pulls that image.
-9. Starts or verifies PostgreSQL without replacing its fixed named volume.
-10. Validates Caddy and runs advisory-locked, transactional migrations plus the idempotent seed before replacing the backend.
-11. Deploys the existing backend/PostgreSQL/Caddy Compose stack.
-12. Waits for PostgreSQL, backend, Caddy, internal backend `/health`, and public HTTPS `/health` checks.
-13. Confirms the release only after every health gate passes, then logs out of Docker Hub on the VM.
+8. Reclaims the disk space held by superseded releases, and refuses to start if the host still lacks room to unpack the new one.
+9. Injects the exact SHA image into a copy of the existing server environment and pulls that image.
+10. Starts or verifies PostgreSQL without replacing its fixed named volume.
+11. Validates Caddy and runs advisory-locked, transactional migrations plus the idempotent seed before replacing the backend.
+12. Deploys the existing backend/PostgreSQL/Caddy Compose stack.
+13. Waits for PostgreSQL, backend, Caddy, internal backend `/health`, and public HTTPS `/health` checks.
+14. Confirms the release only after every health gate passes, then logs out of Docker Hub on the VM.
 
 The image and deploy jobs run only for push events on `main`, depend on the successful quality job, and are serialized per branch. Production is always deployed by commit SHA, never by `latest`.
 
+## Disk space
+
+Every release is pulled under its own immutable commit-SHA tag, so the VM gains a whole image per deployment. Nothing used to remove one, and a boot volume that filled up between releases failed the deployment in the worst possible place: partway through unpacking a layer, with the live configuration already replaced.
+
+Each deployment now reclaims before it touches anything. Superseded `*/callora:<sha>` images, dangling images, the build cache, and containers left behind by earlier runs are removed; the incoming release, the release a rollback would restore, and anything a running container still uses are all kept. Volumes are never pruned, under any filter, because the PostgreSQL named volume is the production database.
+
+After reclaiming, the deployment checks that `/opt/callora`, Docker's data root, and `/var/lib/containerd` each have at least 3 GiB free. Short of that it stops before the previous release is replaced, so the site keeps serving while the space is sorted out.
+
+Reclaiming can also be run on its own, which is the first thing to try on a host that has already filled up:
+
+```bash
+df -h /var
+docker system df
+bash /opt/callora/deploy.sh reclaim
+```
+
+If that is not enough, the boot volume needs to grow; images are not what is filling it.
+
 ## Rollback behavior
 
-Before changing the running application, `/opt/callora/deploy.sh` saves the prior image reference and production configuration. If image pull, Caddy validation, migration, container startup, or any health check fails, it restores the previous backend and Caddy configuration. On a failed first deployment it stops the app containers, restores the original server environment, and preserves PostgreSQL and its volume.
+Before changing the running application, `/opt/callora/deploy.sh` saves the prior image reference and production configuration. Configuration is replaced by writing a staging file next to the destination and renaming it, so `/opt/callora/.env` is always either the old file or the new one — a full disk can no longer truncate it halfway through a rollback. If image pull, Caddy validation, migration, container startup, or any health check fails, it restores the previous backend and Caddy configuration. On a failed first deployment it stops the app containers, restores the original server environment, and preserves PostgreSQL and its volume.
 
 Database migrations are never automatically reversed because doing so could destroy data. New migrations must therefore be backward-compatible with the previous application image. The old backend remains running while the new image is pulled and migrations execute; only the final single-container replacement creates a brief application restart.
 
@@ -176,6 +195,8 @@ docker compose --env-file .env -f docker-compose.prod.yml ps
 docker compose --env-file .env -f docker-compose.prod.yml logs --tail=200 backend
 docker compose --env-file .env -f docker-compose.prod.yml logs --tail=200 caddy
 docker volume inspect callora_postgres_data
+df -h /var /opt
+docker system df
 ```
 
 Do not run `docker compose down --volumes` in production.
