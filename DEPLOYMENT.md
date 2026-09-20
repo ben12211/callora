@@ -193,6 +193,12 @@ If that is not enough, the boot volume needs to grow; images are not what is fil
 
 Only settings that are actually missing are written, only names are ever logged, and a value read from a container is used only if it survives an env file unquoted — anything else is reported by name rather than written back as something subtly different from what the server is running on.
 
+## Ports 80 and 443
+
+Caddy is the last container a deployment starts, so a port already taken by something else used to surface as a daemon error at the very end — after the backend had been replaced. The deployment now checks first, before it touches the live configuration, and names every container publishing 80 or 443 that does not belong to the `callora` Compose project, with its image and project.
+
+It reports and refuses; it never stops anything. A container holding :80 may be the stack currently serving the site, and it may own the database volume, so what happens to it is a decision for a person and not for a deployment.
+
 ## Rollback behavior
 
 Before changing the running application, `/opt/callora/deploy.sh` saves the prior image reference and production configuration. Configuration is replaced by writing a staging file next to the destination and renaming it, so `/opt/callora/.env` is always either the old file or the new one — a full disk can no longer truncate it halfway through a rollback. If image pull, Caddy validation, migration, container startup, or any health check fails, it restores the previous backend and Caddy configuration. On a failed first deployment it stops the app containers, restores the original server environment, and preserves PostgreSQL and its volume.

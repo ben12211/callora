@@ -22,6 +22,11 @@ readonly MIN_FREE_MIB=1024
 readonly LOG_TRUNCATE_ABOVE_KIB=51200
 # The settings that deliberately never leave the VM, so the pipeline cannot re-send them.
 readonly HOST_SETTINGS=(POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL PUBLIC_BASE_URL)
+# `name:` in the Compose file. Containers carrying this project label are this release's.
+readonly COMPOSE_PROJECT=callora
+# The ports Caddy takes on the host, and the last thing a deployment does. A conflict here
+# is found after the backend has already been replaced, so it is checked at the start.
+readonly PUBLISHED_PORTS=(80 443)
 
 log() {
   printf '[callora-deploy] %s\n' "$*"
@@ -115,7 +120,9 @@ report_largest_directories() {
 
   log 'Largest directories on the root filesystem (MiB):'
   while IFS= read -r line; do
-    [[ -n "$line" ]] && log "  $line"
+    if [[ -n "$line" ]]; then
+      log "  $line"
+    fi
   done < <(docker run --rm --network none --user 0:0 --security-opt label=disable \
     --volume /:/host:ro --entrypoint sh "$helper" -c \
     'cd /host && du -x -m -d 3 . 2>/dev/null | sort -n | tail -20' 2>/dev/null || true)
@@ -201,6 +208,63 @@ reclaim_disk_space() {
   docker builder prune --force >/dev/null 2>&1 || true
   # Never prune volumes here, under any filter: the PostgreSQL named volume is the
   # production database.
+}
+
+# Reported as-is, never acted on: a container publishing :80 may well be the stack that
+# is currently serving the site, and deciding what happens to it is not a deployment's
+# call to make.
+conflicting_port_containers() {
+  local port id project name image
+  local -a conflicts=()
+
+  for port in "${PUBLISHED_PORTS[@]}"; do
+    while IFS= read -r id; do
+      [[ -n "$id" ]] || continue
+      project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$id" 2>/dev/null || true)"
+      # Our own containers are replaced by Compose in the ordinary way.
+      [[ "$project" != "$COMPOSE_PROJECT" ]] || continue
+      name="$(docker inspect --format '{{.Name}}' "$id" 2>/dev/null || true)"
+      image="$(docker inspect --format '{{.Config.Image}}' "$id" 2>/dev/null || true)"
+      conflicts+=("${name#/} on :$port (${image:-unknown image}${project:+, Compose project $project})")
+    done < <(docker ps --quiet --filter "publish=$port" 2>/dev/null)
+  done
+
+  [[ ${#conflicts[@]} -eq 0 ]] && return 0
+  printf '%s\n' "${conflicts[@]}"
+  return 1
+}
+
+ensure_ports_available() {
+  local conflicts line
+
+  conflicts="$(conflicting_port_containers)" && return 0
+
+  log 'Another stack on this VM already publishes the ports this release needs:'
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+      log "  $line"
+    fi
+  done <<<"$conflicts"
+  log 'Callora cannot bind ports 80 and 443 while those containers hold them, and stopping'
+  log 'something a deployment does not own - it may be serving the site, and it may own the'
+  log 'database - is a decision for a person. Resolve it on the VM, then deploy again.'
+  report_containers
+  return 1
+}
+
+# Printed whenever a deployment fails, because most of what goes wrong on a host that has
+# been deployed to many times is explained by what is already running on it.
+report_containers() {
+  local line
+
+  log 'Containers on this host:'
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+      log "  $line"
+    fi
+  done < <(docker ps --all \
+    --format '{{.Names}} | {{.Image}} | {{.Status}} | {{.Ports}} | {{.Label "com.docker.compose.project"}}' \
+    2>/dev/null || true)
 }
 
 setting_present() {
@@ -444,6 +508,15 @@ perform_rollback() {
     install_atomic 0600 "$ROLLBACK_DIR/.env" "$ENV_FILE" || return 1
     install_atomic 0644 "$ROLLBACK_DIR/docker-compose.prod.yml" "$COMPOSE_FILE" || return 1
     install_atomic 0644 "$ROLLBACK_DIR/Caddyfile" "$CADDY_FILE" || return 1
+
+    # A backup is not automatically a release that can start: one taken while the server
+    # was itself recovering from a truncated .env has no CALLORA_IMAGE to go back to.
+    # Restoring the files is still right; pretending the containers came back is not.
+    compose config -q 2>/dev/null || {
+      log 'The previous configuration was restored but cannot start on its own; the containers were left as they are.'
+      return 1
+    }
+
     compose up -d db || return 1
     wait_for_healthy db 60 || return 1
     compose up -d --no-deps backend || return 1
@@ -481,6 +554,10 @@ deploy_release() {
     log 'Refusing to deploy; the running release has not been touched.'
     return 1
   }
+  ensure_ports_available || {
+    log 'Refusing to deploy; the running release has not been touched.'
+    return 1
+  }
 
   backup_current
   install_incoming
@@ -489,6 +566,7 @@ deploy_release() {
     local exit_code=$?
     local line="$1"
     log "Deployment failed near line $line."
+    report_containers
     perform_rollback || log 'Automatic rollback could not restore a previous release.'
     exit "$exit_code"
   }
