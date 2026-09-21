@@ -142,6 +142,7 @@ export class CartesiaBridge {
       if (this.streamSid) this.options.twilio.send(JSON.stringify(buildTwilioMedia(this.streamSid, payload)));
     },
     sendMark: () => {
+      this.logPlayout('played');
       if (!this.streamSid) return;
       this.options.twilio.send(JSON.stringify(buildTwilioMark(this.streamSid)));
       this.pendingMarks += 1;
@@ -547,6 +548,7 @@ export class CartesiaBridge {
     this.callerVoice.reset();
 
     // Local audio first: nothing queued for the old reply may reach Twilio after the clear.
+    if (!this.playout.idle) this.logPlayout('cleared');
     this.playout.clear();
     this.playoutContextId = null;
     if (abandoned) {
@@ -694,9 +696,14 @@ export class CartesiaBridge {
     const stats = this.replyStats.get(contextId);
     if (!stats) return;
     this.replyStats.delete(contextId);
+    this.options.logger.info({ ...this.logContext(), outcome, ...stats.summary() }, 'Agent audio delivered');
+  }
+
+  /** What the paced playout sent to Twilio for one reply, logged when it ends. */
+  private logPlayout(outcome: 'played' | 'cleared'): void {
     this.options.logger.info(
-      { ...this.logContext(), outcome, ...stats.summary(), playout: { ...this.playout.takeStats(), depthMs: Math.round(this.playout.depthMs) } },
-      'Agent audio delivered',
+      { ...this.logContext(), outcome, ...this.playout.takeStats(), depthMs: Math.round(this.playout.depthMs) },
+      'Agent audio played out',
     );
   }
 
