@@ -147,6 +147,8 @@ services:
     image: caddy:2-alpine
     environment:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     logging: *logging
     ports:
       - "80:80"

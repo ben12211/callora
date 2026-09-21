@@ -12,3 +12,9 @@
 		format json
 	}
 }
+
+# Anything else on plain HTTP (the bare IP, unknown hosts) belongs to the other stack on this
+# VM, which used to sit behind the host's nginx until Caddy took over ports 80 and 443.
+:80 {
+	reverse_proxy {$FALLBACK_UPSTREAM:host.docker.internal:8080}
+}
