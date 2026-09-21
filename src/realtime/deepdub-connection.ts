@@ -21,24 +21,52 @@ function escapeXml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function replaceAllLiteral(value: string, source: string, replacement: string): string {
-  return value.split(source).join(replacement);
+const LATIN = /[A-Za-z]/;
+
+/** Finds every occurrence of `source`; Latin words match regardless of case ("paybox"). */
+function findAll(text: string, source: string): number[] {
+  const haystack = LATIN.test(source) ? text.toLowerCase() : text;
+  const needle = LATIN.test(source) ? source.toLowerCase() : source;
+  const found: number[] = [];
+  for (let index = haystack.indexOf(needle); index !== -1; index = haystack.indexOf(needle, index + needle.length)) found.push(index);
+  return found;
 }
 
-/** Deepdub owns SSML rendering; generic preprocessing never emits provider markup. */
+/**
+ * Deepdub owns SSML rendering; generic preprocessing never emits provider markup.
+ *
+ * Spans are applied longest first, and each one claims the characters it covers: a
+ * shorter span inside text another span already rendered is skipped. Without that, a
+ * word inside a clause-level <phoneme> would be wrapped again, the nested SSML would be
+ * rejected, and the retry would speak the plain text with every pronunciation dropped.
+ */
 export function renderDeepdubText(preparation: SpeechPreparation): string {
-  let rendered = escapeXml(preparation.spokenText);
+  const text = preparation.spokenText;
+  const claimed: Array<{ start: number; end: number; output: string }> = [];
   for (const span of [...preparation.spans].sort((a, b) => b.sourceText.length - a.sourceText.length)) {
-    const source = escapeXml(span.sourceText);
-    if (!source || !rendered.includes(source)) continue;
-    if (span.type === 'replacement') {
-      rendered = replaceAllLiteral(rendered, source, escapeXml(span.pronunciation));
-      continue;
+    if (!span.sourceText) continue;
+    if (span.type !== 'replacement' && !IPA.test(span.pronunciation)) continue;
+    for (const start of findAll(text, span.sourceText)) {
+      const end = start + span.sourceText.length;
+      if (claimed.some((region) => start < region.end && end > region.start)) continue;
+      const original = escapeXml(text.slice(start, end));
+      claimed.push({
+        start,
+        end,
+        output: span.type === 'replacement'
+          ? escapeXml(span.pronunciation)
+          : `<phoneme alphabet="ipa" ph="${escapeXml(span.pronunciation)}">${original}</phoneme>`,
+      });
     }
-    if (!IPA.test(span.pronunciation)) continue;
-    rendered = replaceAllLiteral(rendered, source, `<phoneme alphabet="ipa" ph="${escapeXml(span.pronunciation)}">${source}</phoneme>`);
   }
-  return rendered;
+  claimed.sort((a, b) => a.start - b.start);
+  let rendered = '';
+  let cursor = 0;
+  for (const region of claimed) {
+    rendered += escapeXml(text.slice(cursor, region.start)) + region.output;
+    cursor = region.end;
+  }
+  return rendered + escapeXml(text.slice(cursor));
 }
 
 export class DeepdubTtsSession implements SpeechSynthesisSession {

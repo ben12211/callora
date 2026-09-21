@@ -131,7 +131,7 @@ describe('Hebrew speech frontend', () => {
     const frontend = new HebrewSpeechFrontend({ businessId: firstBusinessId, locale: 'he-IL', mode: 'smart', dictionary: [], renikud: renikud(fetchImpl), cache: new PronunciationCache() });
     expect((await frontend.preprocess('שלום לכולם')).source).toBe('native');
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect((await frontend.preprocess('שלח ל-PayBox')).source).toBe('renikud');
+    expect((await frontend.preprocess('התור שלך ב-21/09/2026')).source).toBe('renikud');
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
@@ -268,5 +268,73 @@ describe('pronunciation persistence and observability', () => {
     const dataset = JSON.parse(await readFile(new URL('../evaluation/hebrew-utterances.json', import.meta.url), 'utf8')) as Record<string, string[]>;
     expect(Object.values(dataset).flat().length).toBeGreaterThanOrEqual(100);
     expect(Object.keys(dataset).length).toBeGreaterThanOrEqual(10);
+  });
+});
+
+describe('Hebrew pipeline regressions found in the live trace', () => {
+  it.each([
+    ["אני גר ברחוב ז'בוטינסקי", 'name'],
+    ['דוקטור לוי יחזור אליך', 'name'],
+    ['מר כהן, את מוכנה?', 'name'],
+    ['הסניף ברח. הרצל', 'abbreviation'],
+    ['ההזמנה שלך AB1234 מוכנה', 'acronym'],
+  ])('flags a risk that ASCII word boundaries used to miss: %s', (text, reason) => {
+    expect(detectHebrewPronunciationRisk(text).reasons).toContain(reason);
+  });
+
+  it.each([
+    ['התור שלך ב-21/09/2026.', 'התור שלך בתאריך 21 ל-9 שנת 2026.'],
+    ['התור ב-05.03.26', 'התור בתאריך 5 ל-3 שנת 26'],
+    ['אפשר להתקשר ל-050-1234567', 'אפשר להתקשר ל-0 5 0 1 2 3 4 5 6 7'],
+    ['המשרד: 03-6123456.', 'המשרד: 0 3 6 1 2 3 4 5 6.'],
+    ['חייגו +972-52-1234567', 'חייגו 9 7 2 5 2 1 2 3 4 5 6 7'],
+    ['נתראה ב-09:00', 'נתראה ב-בשעה 9'],
+    ['בשעה 14:05', 'בשעה 14 ו-5 דקות'],
+    ['הזמנה AB-1234 מוכנה', 'מספר הזמנה A B 1 2 3 4 מוכנה'],
+  ])('speaks dates, phone numbers, times, and order ids as values: %s', (input, expected) => {
+    expect(normalizeSpokenHebrew(input)).toBe(expected);
+  });
+
+  it('keeps prices and quantities that are not phone numbers as numbers', () => {
+    expect(normalizeSpokenHebrew('המחיר ₪1,250 ל-3 חודשים')).toBe('המחיר 1,250 שקלים ל-3 חודשים');
+  });
+
+  it('speaks common English brand names in Hebrew on the fast path', async () => {
+    const fetchImpl = vi.fn(successFetch) as unknown as typeof fetch;
+    const frontend = new HebrewSpeechFrontend({ businessId: firstBusinessId, locale: 'he-IL', mode: 'smart', dictionary: [], renikud: renikud(fetchImpl), cache: new PronunciationCache() });
+    const result = await frontend.preprocess('שלחתי לך הודעה בWhatsApp או במייל');
+    expect(result).toEqual(expect.objectContaining({ spokenText: 'שלחתי לך הודעה בוואטסאפ או במייל', source: 'native' }));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('lets a business dictionary entry override the built-in spelling, whatever its case', async () => {
+    const override = { ...entry(firstBusinessId, 'PayBox'), pronunciation: 'פֵּיי בּוֹקְס', pronunciationType: 'replacement' as const };
+    const frontend = new HebrewSpeechFrontend({ businessId: firstBusinessId, locale: 'he-IL', mode: 'smart', dictionary: [override], cache: new PronunciationCache() });
+    expect(renderDeepdubText(await frontend.preprocess('אפשר לשלם ב-paybox'))).toBe('אפשר לשלם ב-פֵּיי בּוֹקְס');
+  });
+
+  it('never lets ReNikud override a business pronunciation in STRICT', async () => {
+    const fetchImpl = vi.fn(successFetch) as unknown as typeof fetch;
+    const frontend = new HebrewSpeechFrontend({ businessId: firstBusinessId, locale: 'he-IL', mode: 'strict', dictionary: [entry(firstBusinessId)], renikud: renikud(fetchImpl), cache: new PronunciationCache() });
+    const rendered = renderDeepdubText(await frontend.preprocess("אני גר בז'בוטינסקי"));
+    expect(rendered).toBe('אני גר ב<phoneme alphabet="ipa" ph="ʒabotˈinski">ז&apos;בוטינסקי</phoneme>');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('hears a dictionary edit on the next turn instead of a cached pronunciation', async () => {
+    const cache = new PronunciationCache();
+    const before = new HebrewSpeechFrontend({ businessId: firstBusinessId, locale: 'he-IL', mode: 'smart', dictionary: [], cache });
+    expect((await before.preprocess("ז'בוטינסקי")).spans).toHaveLength(0);
+    const after = new HebrewSpeechFrontend({ businessId: firstBusinessId, locale: 'he-IL', mode: 'smart', dictionary: [entry(firstBusinessId)], cache });
+    expect(await after.preprocess("ז'בוטינסקי")).toEqual(expect.objectContaining({ cacheHit: false, source: 'dictionary' }));
+  });
+
+  it('never nests pronunciation markup, which Deepdub would reject', () => {
+    const spokenText = 'אפשר לשלם בישראכרט';
+    const rendered = renderDeepdubText({ originalText: spokenText, spokenText, locale: 'he-IL', mode: 'strict', spans: [
+      { sourceText: 'ישראכרט', pronunciation: 'jisʁaˈkaʁt', type: 'ipa' },
+      { sourceText: spokenText, pronunciation: 'efˈʃaʁ leʃaˈlem bejisʁaˈkaʁt', type: 'ipa' },
+    ], source: 'renikud', riskReasons: [], processingMs: 1, cacheHit: false });
+    expect(rendered.match(/<phoneme/g)).toHaveLength(1);
   });
 });
