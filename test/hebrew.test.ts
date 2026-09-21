@@ -193,6 +193,8 @@ class FakeDeepdubSocket extends EventEmitter {
   public send(payload: string): void { this.sent.push(JSON.parse(payload) as Record<string, unknown>); }
   public close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
   public emitMessage(message: Record<string, unknown>): void { this.emit('message', Buffer.from(JSON.stringify(message)), false); }
+  /** The real Deepdub service sends its JSON, audio included, as binary frames. */
+  public emitBinaryMessage(message: Record<string, unknown>): void { this.emit('message', Buffer.from(JSON.stringify(message)), true); }
 }
 
 function preparation(text: string): SpeechPreparation {
@@ -200,6 +202,20 @@ function preparation(text: string): SpeechPreparation {
 }
 
 describe('Deepdub persistent streaming session', () => {
+  it('plays the audio Deepdub sends in binary frames', () => {
+    const socket = new FakeDeepdubSocket();
+    const session = new DeepdubTtsSession(socket as unknown as WebSocket);
+    const audio: string[] = [];
+    const done: string[] = [];
+    session.onAudio(({ data }) => audio.push(data));
+    session.onDone((contextId) => done.push(contextId));
+    session.send('turn-1', preparation('שלום'), false);
+    socket.emitBinaryMessage({ index: 0, isFinished: false, generationId: 'g', data: '/////w==' });
+    socket.emitBinaryMessage({ index: 1, isFinished: true, isFinal: true, generationId: 'g', data: 'fn5+fg==' });
+    expect(audio).toEqual(['/////w==', 'fn5+fg==']);
+    expect(done).toEqual(['turn-1']);
+  });
+
   it('streams text and closes the turn without buffering the complete assistant reply', () => {
     const socket = new FakeDeepdubSocket();
     const session = new DeepdubTtsSession(socket as unknown as WebSocket, 'connection-1');

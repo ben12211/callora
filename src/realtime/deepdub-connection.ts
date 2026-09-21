@@ -23,6 +23,11 @@ function escapeXml(value: string): string {
 
 const LATIN = /[A-Za-z]/;
 
+function rawText(data: WebSocket.RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  return Buffer.from(data as ArrayBuffer).toString('utf8');
+}
+
 /** Finds every occurrence of `source`; Latin words match regardless of case ("paybox"). */
 function findAll(text: string, source: string): number[] {
   const haystack = LATIN.test(source) ? text.toLowerCase() : text;
@@ -83,7 +88,9 @@ export class DeepdubTtsSession implements SpeechSynthesisSession {
 
   public constructor(private readonly socket: WebSocket, connectionId: string | null = null) {
     this.connectionId = connectionId;
-    socket.on('message', (data, isBinary) => { if (!isBinary) this.handle(data.toString('utf8')); });
+    // Deepdub delivers its JSON messages, audio included, in binary frames; the frame type
+    // carries no meaning, so both are parsed alike.
+    socket.on('message', (data) => this.handle(rawText(data)));
     socket.on('close', () => this.closeHandler());
     socket.on('error', (error) => this.errorHandler({ message: error.message }));
   }
@@ -158,9 +165,8 @@ export async function connectDeepdub(options: DeepdubConnectOptions): Promise<{ 
     const timer = setTimeout(() => { socket.terminate(); reject(new Error('Timed out connecting to Deepdub')); }, timeoutMs);
     const cleanup = (): void => { clearTimeout(timer); socket.off('error', onError); socket.off('message', onMessage); };
     const onError = (error: Error): void => { cleanup(); reject(error); };
-    const onMessage = (data: WebSocket.RawData, isBinary: boolean): void => {
-      if (isBinary) return;
-      const message = parseJsonObject(data.toString('utf8'));
+    const onMessage = (data: WebSocket.RawData): void => {
+      const message = parseJsonObject(rawText(data));
       if (message && readString(message, 'action') === 'status' && readString(message, 'message') === 'connected') { cleanup(); resolve(readString(message, 'connectionId') ?? null); }
     };
     socket.once('error', onError);
