@@ -84,6 +84,8 @@ describe('cartesia wire format', () => {
     const sttUrl = new URL(buildSttUrl({ baseUrl: 'wss://api.cartesia.ai', model: 'ink-whisper', version: '2026-03-01', language: 'he' }));
 
     expect(sttUrl.pathname).toBe('/stt/websocket');
+    // Keeps a Hebrew sentence whole across comma-length pauses.
+    expect(sttUrl.searchParams.get('max_silence_duration_secs')).toBe('0.5');
     expect(sttUrl.searchParams.get('encoding')).toBe('pcm_mulaw');
     expect(sttUrl.searchParams.get('sample_rate')).toBe('8000');
     expect(sttUrl.searchParams.get('language')).toBe('he');

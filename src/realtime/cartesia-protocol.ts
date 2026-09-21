@@ -40,6 +40,14 @@ export interface SttUrlOptions {
   language?: string | undefined;
 }
 
+/**
+ * Silence that ends a caller's utterance on ink-whisper. The service default cut live
+ * Hebrew calls at every comma-length pause: "בפתח | תקווה", "בשעה | שתיים וחצי". The
+ * fragment after the cut was dropped or mis-transcribed, and the agent answered the half
+ * sentence. Half a second keeps a sentence whole at the cost of that much reply latency.
+ */
+export const STT_MAX_SILENCE_SECS = 0.5;
+
 /** Query parameters are the only way to configure the STT socket; there is no init message. */
 export function buildSttUrl(options: SttUrlOptions): string {
   const url = new URL(`${options.baseUrl}/stt/websocket`);
@@ -49,6 +57,9 @@ export function buildSttUrl(options: SttUrlOptions): string {
   url.searchParams.set('cartesia_version', options.version);
   if (options.language) {
     url.searchParams.set('language', options.language);
+  }
+  if (options.model.startsWith('ink-whisper')) {
+    url.searchParams.set('max_silence_duration_secs', String(STT_MAX_SILENCE_SECS));
   }
   return url.toString();
 }
