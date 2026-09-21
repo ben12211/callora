@@ -202,6 +202,15 @@ function preparation(text: string): SpeechPreparation {
 }
 
 describe('Deepdub persistent streaming session', () => {
+  it('reports a rejected stream-config that arrived before anyone subscribed to errors', () => {
+    const socket = new FakeDeepdubSocket();
+    const session = new DeepdubTtsSession(socket as unknown as WebSocket);
+    socket.emitBinaryMessage({ action: 'error', code: 400, errorType: 'InsufficientCredits', message: 'insufficient credits' });
+    const errors: Array<{ code?: string; message: string }> = [];
+    session.onError((error) => errors.push(error));
+    expect(errors).toEqual([{ code: 'InsufficientCredits', message: 'insufficient credits' }]);
+  });
+
   it('plays the audio Deepdub sends in binary frames', () => {
     const socket = new FakeDeepdubSocket();
     const session = new DeepdubTtsSession(socket as unknown as WebSocket);

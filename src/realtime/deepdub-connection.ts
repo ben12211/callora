@@ -81,7 +81,11 @@ export class DeepdubTtsSession implements SpeechSynthesisSession {
   private readonly deferred: Array<() => void> = [];
   private audioHandler: (event: { contextId: string; data: string }) => void = () => {};
   private doneHandler: (contextId: string) => void = () => {};
-  private errorHandler: (error: { code?: string; message: string }) => void = () => {};
+  // Errors that arrive before the bridge subscribes (a rejected stream-config lands within
+  // a second of connecting) are held and replayed, not dropped: an account out of credit
+  // otherwise surfaces only as a misleading "send stream-config first" on every reply.
+  private readonly earlyErrors: Array<{ code?: string; message: string }> = [];
+  private errorHandler: (error: { code?: string; message: string }) => void = (error) => { this.earlyErrors.push(error); };
   private closeHandler: () => void = () => {};
   private lastRequest: { contextId: string; plainText: string; more: boolean; hadMarkup: boolean } | null = null;
   private retriedPlainText = false;
@@ -116,7 +120,10 @@ export class DeepdubTtsSession implements SpeechSynthesisSession {
   public close(): void { if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) this.socket.close(); }
   public onAudio(handler: (event: { contextId: string; data: string }) => void): void { this.audioHandler = handler; }
   public onDone(handler: (contextId: string) => void): void { this.doneHandler = handler; }
-  public onError(handler: (error: { code?: string; message: string }) => void): void { this.errorHandler = handler; }
+  public onError(handler: (error: { code?: string; message: string }) => void): void {
+    this.errorHandler = handler;
+    for (const error of this.earlyErrors.splice(0)) handler(error);
+  }
   public onClose(handler: () => void): void { this.closeHandler = handler; }
   public sessionId(): string | null { return this.connectionId; }
 
@@ -141,7 +148,11 @@ export class DeepdubTtsSession implements SpeechSynthesisSession {
         if (!this.lastRequest.more) this.sendJson({ action: 'end-stream' });
         return;
       }
-      this.errorHandler({ message: readString(message, 'message') ?? readString(message, 'error') ?? 'Deepdub TTS error' });
+      const errorType = readString(message, 'errorType');
+      this.errorHandler({
+        ...(errorType ? { code: errorType } : {}),
+        message: readString(message, 'message') ?? readString(message, 'error') ?? 'Deepdub TTS error',
+      });
       return;
     }
     if (message['isCancelled'] === true) {
