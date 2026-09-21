@@ -241,17 +241,22 @@ describe('cartesia bridge', () => {
     expect(stt.binary.at(-1)?.length).toBe(3);
   });
 
-  it('returns Sonic audio to Twilio with a mark for each chunk', () => {
+  it('re-cuts provider audio into 20 ms frames, in order, with one mark after the reply', () => {
     const { twilio, tts } = startCartesia();
     openStream(twilio);
     const context = lastContext(tts);
+    twilio.sent.length = 0;
+    // Uneven provider chunks: 100 + 300 + 5 bytes.
+    const chunks = [Buffer.alloc(100, 1), Buffer.alloc(300, 2), Buffer.alloc(5, 3)];
+    for (const chunk of chunks) tts.emit({ type: 'chunk', data: chunk.toString('base64'), context_id: context });
+    tts.emit({ type: 'done', context_id: context });
 
-    tts.emit({ type: 'chunk', data: 'YWdlbnQ=', context_id: context });
-
-    expect(twilio.sent).toEqual([
-      { event: 'media', streamSid, media: { payload: 'YWdlbnQ=' } },
-      { event: 'mark', streamSid, mark: { name: 'callora-assistant-audio' } },
-    ]);
+    const media = twilio.sent.filter((message) => message['event'] === 'media');
+    const frames = media.map((message) => Buffer.from(String((message['media'] as Record<string, unknown>)['payload']), 'base64'));
+    expect(frames.map((frame) => frame.length)).toEqual([160, 160, 85]);
+    expect(Buffer.concat(frames)).toEqual(Buffer.concat(chunks));
+    expect(twilio.sent.at(-1)).toEqual({ event: 'mark', streamSid, mark: { name: 'callora-assistant-audio' } });
+    expect(twilio.sent.filter((message) => message['event'] === 'mark')).toHaveLength(1);
   });
 
   it('runs a turn and streams the reply into Sonic before it is finished', async () => {
@@ -391,8 +396,8 @@ describe('cartesia bridge', () => {
       const { twilio, tts } = startCartesia();
       openStream(twilio);
       tts.emit({ type: 'chunk', data: 'YQ==', context_id: lastContext(tts) });
-      twilio.emit({ event: 'mark', mark: { name: 'played' } });
       tts.emit({ type: 'done', context_id: lastContext(tts) });
+      twilio.emit({ event: 'mark', mark: { name: 'played' } });
       twilio.sent.length = 0;
 
       sendFrames(twilio, loudFrame, 50);

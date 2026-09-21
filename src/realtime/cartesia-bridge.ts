@@ -31,6 +31,7 @@ import {
 import { streamChatCompletion, type ChatMessage, type ChatToolDefinition } from './text-llm.js';
 import { VoiceActivityDetector } from './voice-activity.js';
 import { AudioTransportStats, LevelHistogram } from './audio-transport-stats.js';
+import { TwilioPlayout } from './playout-buffer.js';
 
 /** How long after the caller was last heard they still count as mid-sentence. */
 const CALLER_VOICE_HOLD_MS = 1_500;
@@ -135,6 +136,19 @@ export class CartesiaBridge {
   private readonly levelsWhileAgentSpeaks = new LevelHistogram();
   private readonly levelsWhileAgentSilent = new LevelHistogram();
   private bargeIns = { voice: 0, partial: 0, final: 0 };
+  /** Paces agent audio to Twilio in even 20 ms frames. */
+  private readonly playout = new TwilioPlayout({
+    sendFrame: (payload) => {
+      if (this.streamSid) this.options.twilio.send(JSON.stringify(buildTwilioMedia(this.streamSid, payload)));
+    },
+    sendMark: () => {
+      if (!this.streamSid) return;
+      this.options.twilio.send(JSON.stringify(buildTwilioMark(this.streamSid)));
+      this.pendingMarks += 1;
+    },
+  });
+  /** The reply whose audio the playout is carrying, so only its `done` finishes it. */
+  private playoutContextId: string | null = null;
   /**
    * Contexts closed with `continue: false` whose `done` has not arrived yet.
    *
@@ -172,7 +186,7 @@ export class CartesiaBridge {
       logger: options.logger,
       endCall: options.endCall,
       // Sonic has to have finished generating *and* Twilio has to have played it.
-      audioDrained: () => this.awaitingTtsDone.size === 0 && this.pendingMarks === 0,
+      audioDrained: () => this.awaitingTtsDone.size === 0 && this.pendingMarks === 0 && this.playout.idle,
       onFinished: (reason) => this.close(`end-call:${reason}`),
       drainTimeoutMs: CARTESIA_DRAIN_TIMEOUT_MS,
     });
@@ -181,7 +195,7 @@ export class CartesiaBridge {
     this.silence = new SilenceWatchdog({
       ...options.silence,
       armed: () => !this.closed && !this.hangup.active && this.streamSid !== null,
-      agentSpeaking: () => this.agentSpeaking || this.pendingMarks > 0,
+      agentSpeaking: () => this.agentSpeaking || this.pendingMarks > 0 || !this.playout.idle,
       callerSpeaking: () => performance.now() - this.callerVoiceAt < CALLER_VOICE_HOLD_MS,
       onPrompt: () => {
         options.logger.info(this.logContext(), 'Caller silent; asking whether they are still on the line');
@@ -261,6 +275,7 @@ export class CartesiaBridge {
       return;
     }
     this.closed = true;
+    this.playout.clear();
     this.silence.stop();
     this.hangup.dispose();
     if (this.keepaliveTimer) {
@@ -355,7 +370,8 @@ export class CartesiaBridge {
         if (this.pendingMarks > 0) {
           this.pendingMarks -= 1;
         }
-        if (this.pendingMarks === 0) {
+        // A mark from an earlier reply can be played while the next one is still being sent.
+        if (this.pendingMarks === 0 && this.playout.idle) {
           this.agentSpeaking = false;
         }
         this.hangup.terminateWhenDrained();
@@ -530,6 +546,9 @@ export class CartesiaBridge {
     this.interrupted = true;
     this.callerVoice.reset();
 
+    // Local audio first: nothing queued for the old reply may reach Twilio after the clear.
+    this.playout.clear();
+    this.playoutContextId = null;
     if (abandoned) {
       this.logReplyStats(abandoned, 'interrupted');
       this.ttsSession.cancel(abandoned);
@@ -654,19 +673,20 @@ export class CartesiaBridge {
       stats = new AudioTransportStats();
       this.replyStats.set(contextId, stats);
     }
-    // base64 length -> decoded byte count, without decoding the payload a second time.
-    stats.record(Math.floor((data.length * 3) / 4) - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0));
-    this.options.twilio.send(JSON.stringify(buildTwilioMedia(this.streamSid, data)));
-    this.options.twilio.send(JSON.stringify(buildTwilioMark(this.streamSid)));
-    this.pendingMarks += 1;
+    const audio = Buffer.from(data, 'base64');
+    stats.record(audio.length);
+    this.playoutContextId = contextId;
+    this.playout.enqueue(audio);
     this.agentSpeaking = true;
   }
 
   private handleTtsDone(contextId: string): void {
     if (this.closed) return;
+    if (contextId === this.playoutContextId) this.playout.finish();
     this.logReplyStats(contextId, 'complete');
     this.awaitingTtsDone.delete(contextId);
-    if (this.pendingMarks === 0 && this.awaitingTtsDone.size === 0) this.agentSpeaking = false;
+    // The provider finishes long before the paced audio has been sent, let alone played.
+    if (this.pendingMarks === 0 && this.awaitingTtsDone.size === 0 && this.playout.idle) this.agentSpeaking = false;
     this.hangup.terminateWhenDrained();
   }
 
@@ -674,7 +694,10 @@ export class CartesiaBridge {
     const stats = this.replyStats.get(contextId);
     if (!stats) return;
     this.replyStats.delete(contextId);
-    this.options.logger.info({ ...this.logContext(), outcome, ...stats.summary() }, 'Agent audio delivered');
+    this.options.logger.info(
+      { ...this.logContext(), outcome, ...stats.summary(), playout: { ...this.playout.takeStats(), depthMs: Math.round(this.playout.depthMs) } },
+      'Agent audio delivered',
+    );
   }
 
   private logTranscript(speaker: 'USER' | 'AI', transcript: string): void {
