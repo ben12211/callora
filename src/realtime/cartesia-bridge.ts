@@ -31,6 +31,9 @@ import {
 import { streamChatCompletion, type ChatMessage, type ChatToolDefinition } from './text-llm.js';
 import { VoiceActivityDetector } from './voice-activity.js';
 
+/** How long after the caller was last heard they still count as mid-sentence. */
+const CALLER_VOICE_HOLD_MS = 1_500;
+
 /** Ceiling on waiting for the goodbye audio to drain before hanging up anyway. */
 export const CARTESIA_DRAIN_TIMEOUT_MS = 5_000;
 
@@ -123,6 +126,8 @@ export class CartesiaBridge {
   /** Set once the caller has cut off the current reply, so one interruption clears once. */
   private interrupted = false;
   private readonly callerVoice = new VoiceActivityDetector();
+  /** When the caller was last heard talking; -Infinity until they first are. */
+  private callerVoiceAt = Number.NEGATIVE_INFINITY;
   /**
    * Contexts closed with `continue: false` whose `done` has not arrived yet.
    *
@@ -170,6 +175,7 @@ export class CartesiaBridge {
       ...options.silence,
       armed: () => !this.closed && !this.hangup.active && this.streamSid !== null,
       agentSpeaking: () => this.agentSpeaking || this.pendingMarks > 0,
+      callerSpeaking: () => performance.now() - this.callerVoiceAt < CALLER_VOICE_HOLD_MS,
       onPrompt: () => {
         options.logger.info(this.logContext(), 'Caller silent; asking whether they are still on the line');
         this.speak(stillThereLine(options.agent));
@@ -320,10 +326,9 @@ export class CartesiaBridge {
           // base64 -> raw mu-law bytes. Not a transcode: the samples are untouched.
           const audio = Buffer.from(payload, 'base64');
           this.options.stt.sendBinary(audio);
-          if (this.agentSpeaking && !this.interrupted) {
-            if (this.callerVoice.push(audio)) this.handleBargeIn();
-          } else {
-            this.callerVoice.reset();
+          if (this.callerVoice.push(audio)) {
+            this.callerVoiceAt = performance.now();
+            if (this.agentSpeaking && !this.interrupted) this.handleBargeIn();
           }
         }
         return;

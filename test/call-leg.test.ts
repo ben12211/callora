@@ -187,6 +187,33 @@ describe('SilenceWatchdog', () => {
     }
   });
 
+  it('does not ask whether the caller is there while they are mid-sentence', () => {
+    vi.useFakeTimers();
+    try {
+      let callerTalking = true;
+      const onPrompt = vi.fn();
+      const watchdog = new SilenceWatchdog({
+        promptAfterMs: 1_000,
+        hangupAfterMs: 1_000,
+        armed: () => true,
+        agentSpeaking: () => false,
+        callerSpeaking: () => callerTalking,
+        onPrompt,
+        onHangup: () => {},
+      });
+
+      watchdog.restart();
+      vi.advanceTimersByTime(3_000);
+      expect(onPrompt).not.toHaveBeenCalled();
+
+      callerTalking = false;
+      vi.advanceTimersByTime(1_000);
+      expect(onPrompt).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('runs one stage when the provider gives no way to speak unprompted', () => {
     vi.useFakeTimers();
     try {

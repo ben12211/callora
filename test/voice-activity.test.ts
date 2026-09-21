@@ -19,4 +19,13 @@ describe('mu-law voice activity', () => {
     detector.reset();
     expect(detector.push(loud)).toBe(false);
   });
+
+  it('lets go quickly after a long monologue', () => {
+    const detector = new VoiceActivityDetector({ thresholdRms: 900, triggerMs: 100 });
+    const loud = Buffer.alloc(160, 0x10);
+    const quiet = Buffer.alloc(160, 0xff);
+    for (let index = 0; index < 500; index += 1) detector.push(loud);
+    // Capped at 200 ms of speech; two quiet 20 ms frames drain 80 ms, so three bring it under 100.
+    expect([1, 2, 3].map(() => detector.push(quiet))).toEqual([true, true, false]);
+  });
 });

@@ -53,7 +53,9 @@ export class VoiceActivityDetector {
   public push(audio: Uint8Array): boolean {
     const frameMs = audio.length / 8;
     if (mulawRms(audio) >= this.thresholdRms) {
-      this.speechMs += frameMs;
+      // Capped, so the detector lets go within a fraction of a second after a long
+      // monologue instead of draining it for as long as the caller talked.
+      this.speechMs = Math.min(this.speechMs + frameMs, 2 * this.triggerMs);
     } else {
       this.speechMs = Math.max(0, this.speechMs - 2 * frameMs);
     }

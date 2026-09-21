@@ -196,6 +196,11 @@ export interface SilenceWatchdogOptions extends SilenceOptions {
   /** True while the agent is still speaking, which is not the caller being silent. */
   agentSpeaking: () => boolean;
   /**
+   * True while the caller is audibly talking. Optional: providers whose transcript only
+   * arrives once the caller stops would otherwise ask "are you still there?" mid-sentence.
+   */
+  callerSpeaking?: () => boolean;
+  /**
    * First escalation: ask once whether the caller is still there.
    *
    * Optional, because not every provider gives Callora a way to make the agent say
@@ -257,8 +262,8 @@ export class SilenceWatchdog {
     if (!this.options.armed()) {
       return;
     }
-    // The agent is still speaking, so the caller has not actually been left in silence.
-    if (this.options.agentSpeaking()) {
+    // Someone is talking, so the caller has not actually been left in silence.
+    if (this.options.agentSpeaking() || this.options.callerSpeaking?.()) {
       this.restart();
       return;
     }
