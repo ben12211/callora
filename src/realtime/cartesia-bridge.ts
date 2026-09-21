@@ -30,6 +30,7 @@ import {
 } from './protocol.js';
 import { streamChatCompletion, type ChatMessage, type ChatToolDefinition } from './text-llm.js';
 import { VoiceActivityDetector } from './voice-activity.js';
+import { AudioTransportStats, LevelHistogram } from './audio-transport-stats.js';
 
 /** How long after the caller was last heard they still count as mid-sentence. */
 const CALLER_VOICE_HOLD_MS = 1_500;
@@ -128,6 +129,12 @@ export class CartesiaBridge {
   private readonly callerVoice = new VoiceActivityDetector();
   /** When the caller was last heard talking; -Infinity until they first are. */
   private callerVoiceAt = Number.NEGATIVE_INFINITY;
+  /** Per-reply delivery stats, logged when the reply finishes or is interrupted. */
+  private replyStats = new Map<string, AudioTransportStats>();
+  /** Caller line levels while the agent talks: noise here is what false barge-ins are made of. */
+  private readonly levelsWhileAgentSpeaks = new LevelHistogram();
+  private readonly levelsWhileAgentSilent = new LevelHistogram();
+  private bargeIns = { voice: 0, partial: 0, final: 0 };
   /**
    * Contexts closed with `continue: false` whose `done` has not arrived yet.
    *
@@ -268,6 +275,15 @@ export class CartesiaBridge {
       { ...this.logContext(), reason },
       'Realtime call bridge closed',
     );
+    this.options.logger.info(
+      {
+        ...this.logContext(),
+        bargeIns: this.bargeIns,
+        callerLevelsWhileAgentSpeaks: this.levelsWhileAgentSpeaks.summary(),
+        callerLevelsWhileAgentSilent: this.levelsWhileAgentSilent.summary(),
+      },
+      'Call audio summary',
+    );
     try {
       this.options.twilio.close();
     } finally {
@@ -326,9 +342,11 @@ export class CartesiaBridge {
           // base64 -> raw mu-law bytes. Not a transcode: the samples are untouched.
           const audio = Buffer.from(payload, 'base64');
           this.options.stt.sendBinary(audio);
-          if (this.callerVoice.push(audio)) {
+          const talking = this.callerVoice.push(audio);
+          (this.agentSpeaking ? this.levelsWhileAgentSpeaks : this.levelsWhileAgentSilent).record(this.callerVoice.lastRms);
+          if (talking) {
             this.callerVoiceAt = performance.now();
-            if (this.agentSpeaking && !this.interrupted) this.handleBargeIn();
+            if (this.agentSpeaking && !this.interrupted) this.handleBargeIn('voice');
           }
         }
         return;
@@ -449,7 +467,7 @@ export class CartesiaBridge {
           this.options.metrics?.event?.(this.providerName(), 'user_speech_started');
           this.options.metrics?.event?.(this.providerName(), 'stt_first_partial');
         }
-        if (this.agentSpeaking && !this.interrupted) this.handleBargeIn();
+        if (this.agentSpeaking && !this.interrupted) this.handleBargeIn('partial', text);
       }
       return;
     }
@@ -463,7 +481,7 @@ export class CartesiaBridge {
     // Some STT models (ink-whisper among them) send no partials at all, so a final can be
     // the first sign the caller talked over the agent. Without this the old reply keeps
     // playing and the answer to the interruption queues up behind it.
-    if (this.agentSpeaking && !this.interrupted) this.handleBargeIn();
+    if (this.agentSpeaking && !this.interrupted) this.handleBargeIn('final', utterance);
     this.callerBuffer = '';
     this.userSpeechEndedAt = performance.now();
     this.options.metrics?.event?.(this.providerName(), 'user_speech_ended');
@@ -492,7 +510,18 @@ export class CartesiaBridge {
     this.options.metrics?.firstAudio(this.providerName(), Date.now() - this.streamOpenedAt);
   }
 
-  private handleBargeIn(): void {
+  private handleBargeIn(trigger: 'voice' | 'partial' | 'final', transcript?: string): void {
+    this.bargeIns[trigger] += 1;
+    this.options.logger.info(
+      {
+        ...this.logContext(),
+        trigger,
+        callerRms: Math.round(this.callerVoice.lastRms),
+        agentAudioSentMs: this.activeContextId ? Math.round(this.replyStats.get(this.activeContextId)?.audioMs ?? 0) : 0,
+        ...(transcript ? { transcriptChars: transcript.length } : {}),
+      },
+      'Caller barge-in',
+    );
     this.options.metrics?.bargeIn(this.providerName());
     this.options.metrics?.event?.(this.providerName(), 'interruption_detected');
     const abandoned = this.activeContextId;
@@ -502,6 +531,7 @@ export class CartesiaBridge {
     this.callerVoice.reset();
 
     if (abandoned) {
+      this.logReplyStats(abandoned, 'interrupted');
       this.ttsSession.cancel(abandoned);
       this.options.metrics?.event?.(this.providerName(), 'tts_cancelled');
       // Its `done` may never arrive now, so it must not hold up a later hangup.
@@ -619,6 +649,13 @@ export class CartesiaBridge {
       this.options.metrics?.timing?.(this.providerName(), 'speech_end_to_twilio_audio', performance.now() - this.userSpeechEndedAt);
       this.userSpeechEndedAt = null;
     }
+    let stats = this.replyStats.get(contextId);
+    if (!stats) {
+      stats = new AudioTransportStats();
+      this.replyStats.set(contextId, stats);
+    }
+    // base64 length -> decoded byte count, without decoding the payload a second time.
+    stats.record(Math.floor((data.length * 3) / 4) - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0));
     this.options.twilio.send(JSON.stringify(buildTwilioMedia(this.streamSid, data)));
     this.options.twilio.send(JSON.stringify(buildTwilioMark(this.streamSid)));
     this.pendingMarks += 1;
@@ -627,9 +664,17 @@ export class CartesiaBridge {
 
   private handleTtsDone(contextId: string): void {
     if (this.closed) return;
+    this.logReplyStats(contextId, 'complete');
     this.awaitingTtsDone.delete(contextId);
     if (this.pendingMarks === 0 && this.awaitingTtsDone.size === 0) this.agentSpeaking = false;
     this.hangup.terminateWhenDrained();
+  }
+
+  private logReplyStats(contextId: string, outcome: 'complete' | 'interrupted'): void {
+    const stats = this.replyStats.get(contextId);
+    if (!stats) return;
+    this.replyStats.delete(contextId);
+    this.options.logger.info({ ...this.logContext(), outcome, ...stats.summary() }, 'Agent audio delivered');
   }
 
   private logTranscript(speaker: 'USER' | 'AI', transcript: string): void {

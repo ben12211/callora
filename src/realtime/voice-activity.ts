@@ -39,6 +39,8 @@ export class VoiceActivityDetector {
   private readonly thresholdRms: number;
   private readonly triggerMs: number;
   private speechMs = 0;
+  /** Level of the most recent frame, for logging what an interruption was triggered by. */
+  public lastRms = 0;
 
   public constructor(options: VoiceActivityOptions = {}) {
     this.thresholdRms = options.thresholdRms ?? 900;
@@ -52,7 +54,8 @@ export class VoiceActivityDetector {
    */
   public push(audio: Uint8Array): boolean {
     const frameMs = audio.length / 8;
-    if (mulawRms(audio) >= this.thresholdRms) {
+    this.lastRms = mulawRms(audio);
+    if (this.lastRms >= this.thresholdRms) {
       // Capped, so the detector lets go within a fraction of a second after a long
       // monologue instead of draining it for as long as the caller talked.
       this.speechMs = Math.min(this.speechMs + frameMs, 2 * this.triggerMs);
