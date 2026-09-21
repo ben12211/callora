@@ -346,6 +346,57 @@ describe('cartesia bridge', () => {
       expect(twilio.sent.at(-1)).toEqual({ event: 'clear', streamSid });
     });
 
+    // 160 bytes = one 20 ms Twilio frame. 0x10 decodes to a loud sample, 0xff to silence.
+    const loudFrame = Buffer.alloc(160, 0x10).toString('base64');
+    const silentFrame = Buffer.alloc(160, 0xff).toString('base64');
+    const sendFrames = (twilio: ReturnType<typeof startCartesia>['twilio'], payload: string, count: number): void => {
+      for (let index = 0; index < count; index += 1) twilio.emit({ event: 'media', media: { timestamp: String(index * 20), payload } });
+    };
+    const clears = (twilio: ReturnType<typeof startCartesia>['twilio']): number => twilio.sent.filter((message) => message['event'] === 'clear').length;
+
+    it('stops the agent as soon as the caller talks over it, before any transcript', () => {
+      const { twilio, tts } = startCartesia();
+      openStream(twilio);
+      const context = lastContext(tts);
+      tts.emit({ type: 'chunk', data: 'YQ==', context_id: context });
+      twilio.sent.length = 0;
+
+      sendFrames(twilio, loudFrame, 11);
+      expect(clears(twilio)).toBe(0);
+      sendFrames(twilio, loudFrame, 1);
+      expect(clears(twilio)).toBe(1);
+      expect(tts.text).toContainEqual({ context_id: context, cancel: true });
+
+      // The caller keeps talking and the transcript lands later: still one clear.
+      sendFrames(twilio, loudFrame, 50);
+      expect(clears(twilio)).toBe(1);
+    });
+
+    it('does not interrupt the agent for silence or a short click', () => {
+      const { twilio, tts } = startCartesia();
+      openStream(twilio);
+      tts.emit({ type: 'chunk', data: 'YQ==', context_id: lastContext(tts) });
+      twilio.sent.length = 0;
+
+      sendFrames(twilio, silentFrame, 100);
+      sendFrames(twilio, loudFrame, 3);
+      sendFrames(twilio, silentFrame, 10);
+      sendFrames(twilio, loudFrame, 3);
+      expect(clears(twilio)).toBe(0);
+    });
+
+    it('ignores caller audio while the agent is silent', () => {
+      const { twilio, tts } = startCartesia();
+      openStream(twilio);
+      tts.emit({ type: 'chunk', data: 'YQ==', context_id: lastContext(tts) });
+      twilio.emit({ event: 'mark', mark: { name: 'played' } });
+      tts.emit({ type: 'done', context_id: lastContext(tts) });
+      twilio.sent.length = 0;
+
+      sendFrames(twilio, loudFrame, 50);
+      expect(clears(twilio)).toBe(0);
+    });
+
     it('treats a final transcript over the agent as a barge-in when no partial came first', () => {
       const { twilio, stt, tts } = startCartesia();
       openStream(twilio);

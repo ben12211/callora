@@ -29,6 +29,7 @@ import {
   readString,
 } from './protocol.js';
 import { streamChatCompletion, type ChatMessage, type ChatToolDefinition } from './text-llm.js';
+import { VoiceActivityDetector } from './voice-activity.js';
 
 /** Ceiling on waiting for the goodbye audio to drain before hanging up anyway. */
 export const CARTESIA_DRAIN_TIMEOUT_MS = 5_000;
@@ -119,6 +120,9 @@ export class CartesiaBridge {
   /** Aborts an in-flight LLM turn when the caller barges in. */
   private turnAbort: AbortController | null = null;
   private agentSpeaking = false;
+  /** Set once the caller has cut off the current reply, so one interruption clears once. */
+  private interrupted = false;
+  private readonly callerVoice = new VoiceActivityDetector();
   /**
    * Contexts closed with `continue: false` whose `done` has not arrived yet.
    *
@@ -314,7 +318,13 @@ export class CartesiaBridge {
         const payload = media ? readString(media, 'payload') : undefined;
         if (payload) {
           // base64 -> raw mu-law bytes. Not a transcode: the samples are untouched.
-          this.options.stt.sendBinary(Buffer.from(payload, 'base64'));
+          const audio = Buffer.from(payload, 'base64');
+          this.options.stt.sendBinary(audio);
+          if (this.agentSpeaking && !this.interrupted) {
+            if (this.callerVoice.push(audio)) this.handleBargeIn();
+          } else {
+            this.callerVoice.reset();
+          }
         }
         return;
       }
@@ -367,6 +377,8 @@ export class CartesiaBridge {
     const contextId = `${this.options.callSid}-${this.turnCounter}`;
     this.activeContextId = contextId;
     this.agentSpeaking = true;
+    this.interrupted = false;
+    this.callerVoice.reset();
     return contextId;
   }
 
@@ -432,7 +444,7 @@ export class CartesiaBridge {
           this.options.metrics?.event?.(this.providerName(), 'user_speech_started');
           this.options.metrics?.event?.(this.providerName(), 'stt_first_partial');
         }
-        if (this.agentSpeaking) this.handleBargeIn();
+        if (this.agentSpeaking && !this.interrupted) this.handleBargeIn();
       }
       return;
     }
@@ -446,7 +458,7 @@ export class CartesiaBridge {
     // Some STT models (ink-whisper among them) send no partials at all, so a final can be
     // the first sign the caller talked over the agent. Without this the old reply keeps
     // playing and the answer to the interruption queues up behind it.
-    if (this.agentSpeaking) this.handleBargeIn();
+    if (this.agentSpeaking && !this.interrupted) this.handleBargeIn();
     this.callerBuffer = '';
     this.userSpeechEndedAt = performance.now();
     this.options.metrics?.event?.(this.providerName(), 'user_speech_ended');
@@ -481,6 +493,8 @@ export class CartesiaBridge {
     const abandoned = this.activeContextId;
     this.activeContextId = null;
     this.agentSpeaking = false;
+    this.interrupted = true;
+    this.callerVoice.reset();
 
     if (abandoned) {
       this.ttsSession.cancel(abandoned);
