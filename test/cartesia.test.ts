@@ -346,6 +346,22 @@ describe('cartesia bridge', () => {
       expect(twilio.sent.at(-1)).toEqual({ event: 'clear', streamSid });
     });
 
+    it('treats a final transcript over the agent as a barge-in when no partial came first', () => {
+      const { twilio, stt, tts } = startCartesia();
+      openStream(twilio);
+      const context = lastContext(tts);
+      tts.emit({ type: 'chunk', data: 'YQ==', context_id: context });
+      twilio.sent.length = 0;
+      tts.text.length = 0;
+
+      stt.emit({ type: 'transcript', is_final: true, text: 'רגע, רגע,' });
+
+      expect(tts.text).toContainEqual({ context_id: context, cancel: true });
+      expect(twilio.sent).toContainEqual({ event: 'clear', streamSid });
+      tts.emit({ type: 'chunk', data: 'bGF0ZQ==', context_id: context });
+      expect(twilio.sent.filter((message) => message['event'] === 'media')).toHaveLength(0);
+    });
+
     // Cartesia's cancel only stops generations that have not started; an in-flight one
     // keeps streaming. Dropping those chunks is what actually silences the agent.
     it('discards audio that arrives after the context was abandoned', () => {

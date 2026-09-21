@@ -443,6 +443,10 @@ export class CartesiaBridge {
     if (!utterance) {
       return;
     }
+    // Some STT models (ink-whisper among them) send no partials at all, so a final can be
+    // the first sign the caller talked over the agent. Without this the old reply keeps
+    // playing and the answer to the interruption queues up behind it.
+    if (this.agentSpeaking) this.handleBargeIn();
     this.callerBuffer = '';
     this.userSpeechEndedAt = performance.now();
     this.options.metrics?.event?.(this.providerName(), 'user_speech_ended');
