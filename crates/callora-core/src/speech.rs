@@ -12,7 +12,8 @@ use regex::{Captures, Regex};
 use crate::config::Gender;
 use crate::hebrew::{clock_words, count_phrase, number_words};
 
-const MONTHS: [&str; 12] = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"];
+const MONTHS: [&str; 12] =
+    ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"];
 
 struct Patterns {
     money_before: Regex,
@@ -62,20 +63,34 @@ fn money(whole: &str, cents: Option<&str>) -> String {
     out
 }
 
-/// Replace words from the business pronunciation dictionary (whole words, case-insensitive
-/// for Latin script) with their spoken form.
-pub fn apply_pronunciations<'a>(text: &str, dictionary: impl IntoIterator<Item = (&'a String, &'a String)>) -> String {
-    let mut out = text.to_string();
-    let mut entries: Vec<_> = dictionary.into_iter().collect();
-    // Longest first, so "Callora Pro" wins over "Callora".
-    entries.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()));
-    for (word, spoken) in entries {
-        let pattern = format!(r"(?i)(^|[^\p{{L}}\p{{N}}]){}($|[^\p{{L}}\p{{N}}])", regex::escape(word));
-        if let Ok(re) = Regex::new(&pattern) {
+/// A business pronunciation dictionary, compiled once: whole words (case-insensitive for
+/// Latin script) replaced by their spoken form, longest entries first.
+#[derive(Debug, Default)]
+pub struct Pronouncer {
+    rules: Vec<(Regex, String)>,
+}
+
+impl Pronouncer {
+    pub fn new<'a>(dictionary: impl IntoIterator<Item = (&'a String, &'a String)>) -> Result<Self, regex::Error> {
+        let mut entries: Vec<_> = dictionary.into_iter().collect();
+        entries.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()));
+        let rules = entries
+            .into_iter()
+            .map(|(word, spoken)| {
+                let pattern = format!(r"(?i)(^|[^\p{{L}}\p{{N}}]){}($|[^\p{{L}}\p{{N}}])", regex::escape(word));
+                Regex::new(&pattern).map(|re| (re, spoken.clone()))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { rules })
+    }
+
+    pub fn apply(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for (re, spoken) in &self.rules {
             out = re.replace_all(&out, |c: &Captures<'_>| format!("{}{}{}", &c[1], spoken, &c[2])).into_owned();
         }
+        out
     }
-    out
 }
 
 /// Hebrew spoken-form normalization. Leaves no digits behind.
@@ -128,13 +143,9 @@ pub fn normalize_hebrew(text: &str) -> String {
     p.spaces.replace_all(s.trim(), " ").into_owned()
 }
 
-/// Everything a dynamic TTS request needs done to its text.
-pub fn prepare_for_tts<'a>(
-    text: &str,
-    language: &str,
-    dictionary: impl IntoIterator<Item = (&'a String, &'a String)>,
-) -> String {
-    let text = apply_pronunciations(text, dictionary);
+/// Everything a TTS request needs done to its text.
+pub fn prepare_for_tts(text: &str, language: &str, pronouncer: &Pronouncer) -> String {
+    let text = pronouncer.apply(text);
     if language.starts_with("he") {
         normalize_hebrew(&text)
     } else {
@@ -167,6 +178,6 @@ mod tests {
         let mut d = BTreeMap::new();
         d.insert("Waze".to_string(), "וֵייז".to_string());
         d.insert("SMS".to_string(), "אס אם אס".to_string());
-        assert_eq!(apply_pronunciations("שלחתי SMS עם קישור ל-waze", &d), "שלחתי אס אם אס עם קישור ל-וֵייז");
+        assert_eq!(Pronouncer::new(&d).unwrap().apply("שלחתי SMS עם קישור ל-waze"), "שלחתי אס אם אס עם קישור ל-וֵייז");
     }
 }

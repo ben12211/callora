@@ -1,6 +1,8 @@
 //! End-to-end conversation behaviour against the real taxi business config, driven
 //! through the same path the runtime uses: fast-path understanding → engine → directives.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -136,7 +138,7 @@ fn md_example_30_meta_intent_keeps_the_pipeline() {
     let d = call.say("מעזרא 7");
     assert_eq!(place(call.slot("pickup")), "עזרא 7");
     let text = spoken(&d);
-    assert!(text.contains("לאן") , "asks only for what is missing: {text}");
+    assert!(text.contains("לאן"), "asks only for what is missing: {text}");
     assert!(!text.contains("מאיפה"), "{text}");
 }
 
@@ -278,7 +280,9 @@ fn known_customer_home_alias_and_default_pickup() {
     let b = with_desk();
     let mut engine = Engine::new(b.clone(), 3);
     let mut customer = Customer { name: Some("בניהו".into()), ..Default::default() };
-    customer.places.insert("home".into(), CustomerPlace { spoken: "הבית".into(), address: Some("הרצל 10, בני ברק".into()) });
+    customer
+        .places
+        .insert("home".into(), CustomerPlace { spoken: "הבית".into(), address: Some("הרצל 10, בני ברק".into()) });
     engine.set_customer(Some(customer));
     let greeting = engine.start();
     assert_eq!(spoken(&greeting), "אהלן בניהו, איך אפשר לעזור?");

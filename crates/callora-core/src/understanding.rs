@@ -239,7 +239,8 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
     // A bare answer to the question just asked.
     let mut answered = false;
     if let (Some(slot_id), None) = (ctx.awaiting_slot, u.meta) {
-        let switching = u.intent.as_ref().is_some_and(|i| Some(i.id.as_str()) != intent_of_pipeline(b, ctx.active_pipeline));
+        let switching =
+            u.intent.as_ref().is_some_and(|i| Some(i.id.as_str()) != intent_of_pipeline(b, ctx.active_pipeline));
         if u.slot(slot_id).is_none() && !switching {
             if let Some(cfg) = b.config.slots.get(slot_id) {
                 let answer = strip_opening_affirm(b, &norm);
@@ -270,9 +271,8 @@ fn intent_of_pipeline<'a>(b: &'a Business, pipeline: Option<&str>) -> Option<&'a
 }
 
 fn slot_in_scope(b: &Business, ctx: &Context<'_>, intent: Option<&IntentGuess>, slot_id: &str) -> bool {
-    let pipeline = ctx
-        .active_pipeline
-        .or_else(|| intent.and_then(|i| b.intent(&i.id)).and_then(|i| i.pipeline.as_deref()));
+    let pipeline =
+        ctx.active_pipeline.or_else(|| intent.and_then(|i| b.intent(&i.id)).and_then(|i| i.pipeline.as_deref()));
     pipeline.and_then(|p| b.pipeline(p)).is_some_and(|p| p.slots.iter().any(|s| s.slot == slot_id))
 }
 
@@ -304,7 +304,9 @@ fn json_to_value(cfg: &SlotConfig, value: &serde_json::Value) -> Option<SlotValu
         (SlotKind::Boolean, v) => SlotValue::Boolean { value: v.as_bool()? },
         (SlotKind::Enum, v) => SlotValue::Enum { value: v.as_str()?.to_string() },
         (SlotKind::Text, v) => SlotValue::Text { text: v.as_str()?.to_string() },
-        (SlotKind::Place, v) => SlotValue::Place { spoken: v.as_str()?.to_string(), address: None, customer_place: None },
+        (SlotKind::Place, v) => {
+            SlotValue::Place { spoken: v.as_str()?.to_string(), address: None, customer_place: None }
+        }
         (SlotKind::Time, v) => SlotValue::Time { time: serde_json::from_value(v.clone()).ok()? },
     })
 }
@@ -361,7 +363,15 @@ pub fn parse_slot_value(
             let toks = tokens(&norm);
             let n = find_numbers(&toks).first().copied()?;
             let in_range = cfg.min.is_none_or(|lo| n.value >= lo) && cfg.max.is_none_or(|hi| n.value <= hi);
-            let confidence = if in_range { if bare { 0.9 } else { 0.85 } } else { 0.2 };
+            let confidence = if in_range {
+                if bare {
+                    0.9
+                } else {
+                    0.85
+                }
+            } else {
+                0.2
+            };
             Some((SlotValue::Integer { value: n.value }, confidence))
         }
         SlotKind::Boolean => {
@@ -387,7 +397,12 @@ pub fn parse_slot_value(
     }
 }
 
-fn parse_place(b: &Business, compiled: Option<&crate::business::CompiledSlot>, norm: &str, bare: bool) -> (SlotValue, f32) {
+fn parse_place(
+    b: &Business,
+    compiled: Option<&crate::business::CompiledSlot>,
+    norm: &str,
+    bare: bool,
+) -> (SlotValue, f32) {
     let gazetteer = |text: &str| -> Option<(SlotValue, f32)> {
         b.places.iter().find(|p| p.aliases.matches_whole(text, &b.fillers)).map(|p| {
             (SlotValue::Place { spoken: p.name.clone(), address: p.address.clone(), customer_place: None }, 0.95)

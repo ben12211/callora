@@ -59,7 +59,9 @@ impl SpeechToText for Cartesia {
     async fn open(&self, language: &str) -> anyhow::Result<SttSession> {
         let mut request = self.url(language).into_client_request()?;
         request.headers_mut().insert("X-API-Key", self.api_key.parse()?);
-        let (ws, _) = tokio::time::timeout(std::time::Duration::from_secs(8), tokio_tungstenite::connect_async(request)).await??;
+        let (ws, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(8), tokio_tungstenite::connect_async(request))
+                .await??;
         let (mut sink, mut stream) = ws.split();
         let (in_tx, mut in_rx) = mpsc::channel::<SttInput>(512);
         let (ev_tx, ev_rx) = mpsc::channel::<SttEvent>(64);
@@ -143,7 +145,8 @@ mod tests {
     fn url_carries_format_language_and_silence_but_not_the_key() {
         let c = Cartesia::new("secret-key".into(), None, None, None);
         let url = c.url("he-IL");
-        assert!(url.starts_with("wss://api.cartesia.ai/stt/websocket?model=ink-whisper&encoding=pcm_mulaw&sample_rate=8000"));
+        assert!(url
+            .starts_with("wss://api.cartesia.ai/stt/websocket?model=ink-whisper&encoding=pcm_mulaw&sample_rate=8000"));
         assert!(url.contains("language=he"));
         assert!(url.contains("max_silence_duration_secs=1"));
         assert!(!url.contains("secret-key"));

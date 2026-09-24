@@ -132,7 +132,12 @@ impl Engine {
             (Some(cl), true) => cl.known_greeting.clone().unwrap_or_else(|| self.business.config.greeting.clone()),
             _ => self.business.config.greeting.clone(),
         };
-        self.say(&mut out, &greeting, RenderContext { customer: self.state.customer.as_ref(), ..Default::default() }.into_owned(), true);
+        self.say(
+            &mut out,
+            &greeting,
+            RenderContext { customer: self.state.customer.as_ref(), ..Default::default() }.into_owned(),
+            true,
+        );
         self.finish(out)
     }
 
@@ -243,7 +248,8 @@ impl Engine {
             let current = self.state.run.as_ref().map(|r| r.intent.clone());
             // Answer-only intents (FAQ) never disturb the flow, so they need less certainty
             // to interrupt it than an intent that would replace the active pipeline.
-            let threshold = if intent.respond.is_some() { intent.switch_confidence.min(0.6) } else { intent.switch_confidence };
+            let threshold =
+                if intent.respond.is_some() { intent.switch_confidence.min(0.6) } else { intent.switch_confidence };
             let switch = match &current {
                 None => true,
                 Some(c) => *c != intent.id && guess.confidence >= threshold,
@@ -330,7 +336,12 @@ impl Engine {
             }
             run.set(
                 &fill.slot,
-                SlotState { value: fill.value.clone(), confidence: fill.confidence, provenance: fill.provenance, confirmed: false },
+                SlotState {
+                    value: fill.value.clone(),
+                    confidence: fill.confidence,
+                    provenance: fill.provenance,
+                    confirmed: false,
+                },
             );
             accepted += 1;
         }
@@ -388,7 +399,10 @@ impl Engine {
                 RuleEffect::Set { slot, value } => {
                     if let Some(v) = default_value(&self.business, slot, value) {
                         if let Some(run) = &mut self.state.run {
-                            run.set(slot, SlotState { value: v, confidence: 1.0, provenance: Provenance::Rule, confirmed: true });
+                            run.set(
+                                slot,
+                                SlotState { value: v, confidence: 1.0, provenance: Provenance::Rule, confirmed: true },
+                            );
                         }
                     }
                 }
@@ -415,7 +429,11 @@ impl Engine {
                         run.slots.insert(
                             ps.slot.clone(),
                             SlotState {
-                                value: SlotValue::Place { spoken: place.spoken.clone(), address: place.address.clone(), customer_place: Some(key.clone()) },
+                                value: SlotValue::Place {
+                                    spoken: place.spoken.clone(),
+                                    address: place.address.clone(),
+                                    customer_place: Some(key.clone()),
+                                },
                                 confidence: 0.8,
                                 provenance: Provenance::Customer,
                                 confirmed: false,
@@ -426,7 +444,10 @@ impl Engine {
                 }
                 if let Some(default) = &ps.default {
                     if let Some(v) = default_value(&self.business, &ps.slot, default) {
-                        run.slots.insert(ps.slot.clone(), SlotState { value: v, confidence: 1.0, provenance: Provenance::Default, confirmed: false });
+                        run.slots.insert(
+                            ps.slot.clone(),
+                            SlotState { value: v, confidence: 1.0, provenance: Provenance::Default, confirmed: false },
+                        );
                     }
                 }
             }
@@ -476,7 +497,9 @@ impl Engine {
         if let Some(action_id) = &pipeline.action {
             let action = self.business.config.actions.get(action_id).cloned();
             if let Some(action) = &action {
-                if let Some((slot, s)) = run.slots.iter().find(|(_, s)| !s.confirmed && s.confidence < action.min_confidence) {
+                if let Some((slot, s)) =
+                    run.slots.iter().find(|(_, s)| !s.confirmed && s.confidence < action.min_confidence)
+                {
                     let (slot, spoken) = (slot.clone(), s.value.spoken());
                     if let Some(run) = &mut self.state.run {
                         run.step = Step::ConfirmingSlot { slot };
@@ -618,7 +641,9 @@ impl Engine {
     /// The caller said nothing for the configured silence.
     pub fn on_silence(&mut self) -> Vec<Directive> {
         let mut out = Out::default();
-        if self.state.phase != Phase::Active || matches!(self.state.run.as_ref().map(|r| &r.step), Some(Step::Executing { .. })) {
+        if self.state.phase != Phase::Active
+            || matches!(self.state.run.as_ref().map(|r| &r.step), Some(Step::Executing { .. }))
+        {
             return Vec::new();
         }
         self.state.silence_reprompts += 1;
@@ -650,7 +675,10 @@ impl Engine {
         let meta_response = self.business.meta(m).and_then(|c| c.response.clone());
         let has_slow = self.business.config.voice.deliveries.contains_key("slow");
         match m {
-            MetaIntent::RepeatLast | MetaIntent::DidNotUnderstand | MetaIntent::SpeakSlower | MetaIntent::SpeakLouder => {
+            MetaIntent::RepeatLast
+            | MetaIntent::DidNotUnderstand
+            | MetaIntent::SpeakSlower
+            | MetaIntent::SpeakLouder => {
                 if m == MetaIntent::SpeakSlower && has_slow {
                     self.state.delivery = Some("slow".into());
                 }
@@ -765,7 +793,11 @@ impl Engine {
 
     fn goodbye(&mut self, out: &mut Out) {
         let ctx = self.render_ctx(None);
-        let goodbye = self.business.meta(MetaIntent::Goodbye).and_then(|m| m.response.clone()).unwrap_or_else(|| self.business.config.goodbye.clone());
+        let goodbye = self
+            .business
+            .meta(MetaIntent::Goodbye)
+            .and_then(|m| m.response.clone())
+            .unwrap_or_else(|| self.business.config.goodbye.clone());
         self.say(out, &goodbye, ctx, true);
         self.state.phase = Phase::Ending;
         out.push(Directive::Hangup);
@@ -866,7 +898,11 @@ impl Engine {
     }
 
     fn render_plan(&mut self, response: &str, ctx: &RenderContext<'_>) -> Option<SpeechPlan> {
-        let renderer = Renderer { business: &self.business, delivery_override: self.state.delivery.as_deref(), gain_db: self.state.gain_db };
+        let renderer = Renderer {
+            business: &self.business,
+            delivery_override: self.state.delivery.as_deref(),
+            gain_db: self.state.gain_db,
+        };
         renderer.render(response, ctx, &mut self.chooser, &mut self.state.last_variant)
     }
 

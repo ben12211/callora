@@ -68,13 +68,7 @@ pub fn request_body(req: &TtsRequest) -> serde_json::Value {
 impl Synthesizer for ElevenLabs {
     async fn synthesize(&self, req: TtsRequest) -> anyhow::Result<AudioStream> {
         let url = format!("{}/v1/text-to-speech/{}/stream?output_format=ulaw_8000", self.base_url, req.voice_id);
-        let resp = self
-            .http
-            .post(url)
-            .header("xi-api-key", &self.api_key)
-            .json(&request_body(&req))
-            .send()
-            .await?;
+        let resp = self.http.post(url).header("xi-api-key", &self.api_key).json(&request_body(&req)).send().await?;
         let status = resp.status();
         if !status.is_success() {
             // Never echo the key; the body is ElevenLabs' own error description.

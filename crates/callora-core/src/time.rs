@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::hebrew::{clock_words, count_phrase, find_numbers};
 use crate::config::Gender;
+use crate::hebrew::{clock_words, count_phrase, find_numbers};
 use crate::text::{normalize, tokens, PhraseSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +89,9 @@ fn parse_tokens(toks: &[&str]) -> Option<(TimeSpec, f32, (usize, usize))> {
     if let Some(pos) = toks.iter().position(|t| *t == "בעוד" || *t == "עוד") {
         let rest = &toks[pos + 1..];
         let joined = rest.join(" ");
-        for (phrase, minutes, words) in [("חצי שעה", 30, 2), ("רבע שעה", 15, 2), ("שעה וחצי", 90, 2), ("שעה", 60, 1), ("דקה", 1, 1)] {
+        for (phrase, minutes, words) in
+            [("חצי שעה", 30, 2), ("רבע שעה", 15, 2), ("שעה וחצי", 90, 2), ("שעה", 60, 1), ("דקה", 1, 1)]
+        {
             if joined.starts_with(phrase) {
                 return Some((TimeSpec::InMinutes { minutes }, 0.9, (pos, pos + 1 + words)));
             }
@@ -98,9 +100,14 @@ fn parse_tokens(toks: &[&str]) -> Option<(TimeSpec, f32, (usize, usize))> {
             if n.start == 0 {
                 let unit = rest.get(n.end).copied().unwrap_or("");
                 let minutes = if unit.starts_with("שעות") { n.value * 60 } else { n.value };
-                let unit_words = usize::from(unit.starts_with("שעות") || unit.starts_with("דקות") || unit.starts_with("דקה"));
+                let unit_words =
+                    usize::from(unit.starts_with("שעות") || unit.starts_with("דקות") || unit.starts_with("דקה"));
                 if (1..=24 * 60).contains(&minutes) {
-                    return Some((TimeSpec::InMinutes { minutes: minutes as u32 }, 0.85, (pos, pos + 1 + n.end + unit_words)));
+                    return Some((
+                        TimeSpec::InMinutes { minutes: minutes as u32 },
+                        0.85,
+                        (pos, pos + 1 + n.end + unit_words),
+                    ));
                 }
             }
         }
@@ -138,7 +145,11 @@ fn parse_tokens(toks: &[&str]) -> Option<(TimeSpec, f32, (usize, usize))> {
             continue;
         }
         let used = if explicit { 1 } else { 0 } + n.end + usize::from(minute != 0);
-        return Some((TimeSpec::At { hour: n.value as u32, minute, day_offset }, if explicit { 0.85 } else { 0.75 }, (i, i + used)));
+        return Some((
+            TimeSpec::At { hour: n.value as u32, minute, day_offset },
+            if explicit { 0.85 } else { 0.75 },
+            (i, i + used),
+        ));
     }
     None
 }
@@ -156,14 +167,8 @@ mod tests {
         assert_eq!(parse_time("צריך מונית עכשיו", &now()).unwrap().0, TimeSpec::Now);
         assert_eq!(parse_time("בעוד עשר דקות", &now()).unwrap().0, TimeSpec::InMinutes { minutes: 10 });
         assert_eq!(parse_time("בעוד חצי שעה", &now()).unwrap().0, TimeSpec::InMinutes { minutes: 30 });
-        assert_eq!(
-            parse_time("מחר ב-08:30", &now()).unwrap().0,
-            TimeSpec::At { hour: 8, minute: 30, day_offset: 1 }
-        );
-        assert_eq!(
-            parse_time("בשמונה וחצי", &now()).unwrap().0,
-            TimeSpec::At { hour: 8, minute: 30, day_offset: 0 }
-        );
+        assert_eq!(parse_time("מחר ב-08:30", &now()).unwrap().0, TimeSpec::At { hour: 8, minute: 30, day_offset: 1 });
+        assert_eq!(parse_time("בשמונה וחצי", &now()).unwrap().0, TimeSpec::At { hour: 8, minute: 30, day_offset: 0 });
         assert_eq!(parse_time("לרבי עקיבא", &now()), None);
     }
 

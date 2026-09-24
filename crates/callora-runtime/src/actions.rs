@@ -53,9 +53,13 @@ impl ActionRunner for ConfiguredActions {
                     }
                     let resp = req.send().await.map_err(|e| format!("{action}: request failed: {e}"))?;
                     let status = resp.status();
-                    let value: Value = resp.json().await.map_err(|e| format!("{action}: invalid JSON reply ({status}): {e}"))?;
+                    let value: Value =
+                        resp.json().await.map_err(|e| format!("{action}: invalid JSON reply ({status}): {e}"))?;
                     if !status.is_success() {
-                        return Err(format!("{action}: HTTP {status}: {}", value.get("error").and_then(Value::as_str).unwrap_or("error")));
+                        return Err(format!(
+                            "{action}: HTTP {status}: {}",
+                            value.get("error").and_then(Value::as_str).unwrap_or("error")
+                        ));
                     }
                     if let Some(err) = value.get("error").and_then(Value::as_str) {
                         return Err(format!("{action}: {err}"));

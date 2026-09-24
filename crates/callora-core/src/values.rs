@@ -7,7 +7,9 @@ use crate::time::TimeSpec;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SlotValue {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Place {
         /// How it is spoken back ("נתב״ג", "רבי עקיבא 12").
         spoken: String,
@@ -18,10 +20,18 @@ pub enum SlotValue {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         customer_place: Option<String>,
     },
-    Integer { value: i64 },
-    Boolean { value: bool },
-    Time { time: TimeSpec },
-    Enum { value: String },
+    Integer {
+        value: i64,
+    },
+    Boolean {
+        value: bool,
+    },
+    Time {
+        time: TimeSpec,
+    },
+    Enum {
+        value: String,
+    },
 }
 
 impl SlotValue {

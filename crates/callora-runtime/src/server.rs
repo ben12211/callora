@@ -63,9 +63,19 @@ impl AppState {
         settings: ServerSettings,
         db: Option<sqlx::PgPool>,
     ) -> Arc<Self> {
-        let whispers = Arc::new(Whispers { base: settings.public_base_url.clone(), entries: Mutex::new(HashMap::new()) });
+        let whispers =
+            Arc::new(Whispers { base: settings.public_base_url.clone(), entries: Mutex::new(HashMap::new()) });
         services.whisper = whispers.clone();
-        Arc::new(Self { registry, libraries, services, session, settings, db, pending: Mutex::new(HashMap::new()), whispers })
+        Arc::new(Self {
+            registry,
+            libraries,
+            services,
+            session,
+            settings,
+            db,
+            pending: Mutex::new(HashMap::new()),
+            whispers,
+        })
     }
 }
 
@@ -121,7 +131,12 @@ fn signed(s: &AppState, headers: &HeaderMap, uri: &OriginalUri, params: &BTreeMa
     twilio::signature_valid(&s.settings.twilio_auth_token, &url, params, provided)
 }
 
-async fn voice(State(s): State<Arc<AppState>>, headers: HeaderMap, uri: OriginalUri, Form(params): Form<BTreeMap<String, String>>) -> Response {
+async fn voice(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    Form(params): Form<BTreeMap<String, String>>,
+) -> Response {
     if !signed(&s, &headers, &uri, &params) {
         tracing::warn!("voice webhook with an invalid Twilio signature");
         return (StatusCode::FORBIDDEN, "invalid signature").into_response();
@@ -146,7 +161,13 @@ async fn voice(State(s): State<Arc<AppState>>, headers: HeaderMap, uri: Original
         customer_rx = Some(rx);
         let runner = s.services.actions.clone();
         let b = business.clone();
-        let info = CallInfo { call_id: uuid::Uuid::nil(), call_sid: call_sid.clone(), business_id: b.config.id.clone(), from: Some(caller.clone()), to: to.clone() };
+        let info = CallInfo {
+            call_id: uuid::Uuid::nil(),
+            call_sid: call_sid.clone(),
+            business_id: b.config.id.clone(),
+            from: Some(caller.clone()),
+            to: to.clone(),
+        };
         tokio::spawn(async move {
             let customer = match runner.run(&b, &lookup.action, json!({ "phone": caller }), &info).await {
                 Ok(v) => Customer::from_json(&v),
@@ -162,13 +183,20 @@ async fn voice(State(s): State<Arc<AppState>>, headers: HeaderMap, uri: Original
         let mut pending = s.pending.lock();
         // Forget calls whose media stream never arrived.
         pending.retain(|_, p| p.at.elapsed() < Duration::from_secs(120));
-        pending.insert(call_sid.clone(), PendingCall { from: from.clone(), to: to.clone(), customer: customer_rx, at: std::time::Instant::now() });
+        pending.insert(
+            call_sid.clone(),
+            PendingCall { from: from.clone(), to: to.clone(), customer: customer_rx, at: std::time::Instant::now() },
+        );
     }
 
     let now = chrono::Utc::now().timestamp();
     let secret = s.settings.stream_secrets.first().cloned().unwrap_or_default();
     let token = twilio::create_stream_token(&secret, &call_sid, &business.config.id, 300, now);
-    let media_url = format!("{}{}", s.settings.public_base_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1), twilio::MEDIA_PATH);
+    let media_url = format!(
+        "{}{}",
+        s.settings.public_base_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1),
+        twilio::MEDIA_PATH
+    );
     xml(twilio::twiml_stream(&media_url, &token))
 }
 
@@ -176,7 +204,12 @@ fn twiml_unavailable() -> String {
     twilio::twiml_say_hangup("המספר אינו זמין כרגע.", "he-IL")
 }
 
-async fn call_status(State(s): State<Arc<AppState>>, headers: HeaderMap, uri: OriginalUri, Form(params): Form<BTreeMap<String, String>>) -> Response {
+async fn call_status(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    Form(params): Form<BTreeMap<String, String>>,
+) -> Response {
     if !signed(&s, &headers, &uri, &params) {
         return (StatusCode::FORBIDDEN, "invalid signature").into_response();
     }
@@ -228,7 +261,13 @@ async fn media_socket(s: Arc<AppState>, socket: WebSocket) {
         Some(p) => (p.from, p.to, p.customer),
         None => (None, business.phone_numbers.first().cloned().unwrap_or_default(), None),
     };
-    let info = CallInfo { call_id: uuid::Uuid::new_v4(), call_sid: start.call_sid.clone(), business_id: business.config.id.clone(), from, to };
+    let info = CallInfo {
+        call_id: uuid::Uuid::new_v4(),
+        call_sid: start.call_sid.clone(),
+        business_id: business.config.id.clone(),
+        from,
+        to,
+    };
 
     let (in_tx, in_rx) = mpsc::channel::<Inbound>(256);
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutFrame>();
@@ -316,7 +355,10 @@ async fn whisper(
 
 fn authorized(s: &AppState, headers: &HeaderMap) -> bool {
     let Some(key) = &s.settings.admin_api_key else { return false };
-    headers.get("x-api-key").and_then(|v| v.to_str().ok()).is_some_and(|given| bool::from(given.as_bytes().ct_eq(key.as_bytes())))
+    headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|given| bool::from(given.as_bytes().ct_eq(key.as_bytes())))
 }
 
 async fn api_businesses(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -355,7 +397,14 @@ async fn api_calls(State(s): State<Arc<AppState>>, headers: HeaderMap, Query(q):
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
-    match crate::store::list_calls(pool, q.business.as_deref(), q.limit.unwrap_or(50).clamp(1, 200), q.offset.unwrap_or(0).max(0)).await {
+    match crate::store::list_calls(
+        pool,
+        q.business.as_deref(),
+        q.limit.unwrap_or(50).clamp(1, 200),
+        q.offset.unwrap_or(0).max(0),
+    )
+    .await
+    {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "listing calls failed");

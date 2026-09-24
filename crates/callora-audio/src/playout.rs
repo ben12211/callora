@@ -65,7 +65,11 @@ pub struct Playout {
 
 impl Playout {
     /// Start the playout task. `lead_frames` is how far ahead of real time to send (3 → 60 ms).
-    pub fn spawn(out: mpsc::UnboundedSender<OutFrame>, events: mpsc::UnboundedSender<PlayoutEvent>, lead_frames: u32) -> (Self, JoinHandle<()>) {
+    pub fn spawn(
+        out: mpsc::UnboundedSender<OutFrame>,
+        events: mpsc::UnboundedSender<PlayoutEvent>,
+        lead_frames: u32,
+    ) -> (Self, JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(run(rx, out, events, lead_frames.max(1)));
         (Self { cmd: tx }, task)
@@ -93,7 +97,15 @@ struct Active {
 
 impl Active {
     fn new(item: PlayItem) -> Self {
-        Self { id: item.id, source: item.source, offset: 0, pending: BytesMut::new(), gain_db: item.gain_db, started: false, stream_done: false }
+        Self {
+            id: item.id,
+            source: item.source,
+            offset: 0,
+            pending: BytesMut::new(),
+            gain_db: item.gain_db,
+            started: false,
+            stream_done: false,
+        }
     }
 
     /// Next frame if one is available now. `None` with `done() == false` means waiting on
@@ -348,7 +360,8 @@ mod tests {
         drop(tts_tx);
         tokio::time::advance(Duration::from_millis(100)).await;
         let got = drain(&mut out).await;
-        let bytes: Vec<u8> = got.iter().filter_map(|f| if let OutFrame::Audio(b) = f { Some(b[0]) } else { None }).collect();
+        let bytes: Vec<u8> =
+            got.iter().filter_map(|f| if let OutFrame::Audio(b) = f { Some(b[0]) } else { None }).collect();
         assert_eq!(bytes, vec![0x22, 0x22, 0x11], "stream (padded tail) then the next item");
     }
 }

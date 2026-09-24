@@ -59,7 +59,10 @@ pub fn build_request(b: &Business, ctx: &Context<'_>, state: &CallState, transcr
     for i in &c.intents {
         system.push_str(&format!("- {}: {}", i.id, i.description));
         if !i.examples.is_empty() {
-            system.push_str(&format!(" (e.g. {})", i.examples.iter().take(2).map(|e| format!("\"{e}\"")).collect::<Vec<_>>().join(", ")));
+            system.push_str(&format!(
+                " (e.g. {})",
+                i.examples.iter().take(2).map(|e| format!("\"{e}\"")).collect::<Vec<_>>().join(", ")
+            ));
         }
         system.push('\n');
     }
@@ -158,14 +161,17 @@ pub fn parse_response(b: &Business, ctx: &Context<'_>, transcript: &str, reply: 
     u.meta = reply.get("meta_intent").and_then(Value::as_str).and_then(MetaIntent::parse);
     if let Some(id) = reply.get("intent").and_then(Value::as_str) {
         if b.intent(id).is_some() {
-            let confidence = reply.get("intent_confidence").and_then(Value::as_f64).unwrap_or(0.7).clamp(0.0, 1.0) as f32;
+            let confidence =
+                reply.get("intent_confidence").and_then(Value::as_f64).unwrap_or(0.7).clamp(0.0, 1.0) as f32;
             u.intent = Some(IntentGuess { id: id.to_string(), confidence });
         }
     }
     u.affirm = reply.get("affirm").and_then(Value::as_bool);
     u.frustrated = reply.get("frustrated").and_then(Value::as_bool).unwrap_or(false);
     for item in reply.get("slots").and_then(Value::as_array).into_iter().flatten() {
-        let (Some(slot), Some(value)) = (item.get("slot").and_then(Value::as_str), item.get("value").and_then(Value::as_str)) else {
+        let (Some(slot), Some(value)) =
+            (item.get("slot").and_then(Value::as_str), item.get("value").and_then(Value::as_str))
+        else {
             continue;
         };
         let Some(cfg) = b.config.slots.get(slot) else { continue };

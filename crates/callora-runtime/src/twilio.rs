@@ -57,7 +57,8 @@ fn sign_token(secret: &str, payload: &str) -> String {
 }
 
 pub fn create_stream_token(secret: &str, call_sid: &str, business_id: &str, ttl_seconds: i64, now: i64) -> String {
-    let token = StreamToken { call_sid: call_sid.into(), business_id: business_id.into(), expires_at: now + ttl_seconds };
+    let token =
+        StreamToken { call_sid: call_sid.into(), business_id: business_id.into(), expires_at: now + ttl_seconds };
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&token).unwrap_or_default());
     format!("{payload}.{}", sign_token(secret, &payload))
 }
@@ -100,7 +101,11 @@ pub fn twiml_say_hangup(text: &str, language: &str) -> String {
 }
 
 pub fn twiml_say(text: &str, language: &str) -> String {
-    format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><Say language="{}">{}</Say></Response>"#, xml_escape(language), xml_escape(text))
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><Say language="{}">{}</Say></Response>"#,
+        xml_escape(language),
+        xml_escape(text)
+    )
 }
 
 pub fn twiml_dial(to: &str, whisper_url: Option<&str>) -> String {
@@ -153,7 +158,8 @@ impl MediaPayload {
 }
 
 pub fn media_message(stream_sid: &str, audio: &[u8]) -> String {
-    serde_json::json!({ "event": "media", "streamSid": stream_sid, "media": { "payload": STANDARD.encode(audio) } }).to_string()
+    serde_json::json!({ "event": "media", "streamSid": stream_sid, "media": { "payload": STANDARD.encode(audio) } })
+        .to_string()
 }
 
 pub fn clear_message(stream_sid: &str) -> String {
@@ -172,7 +178,13 @@ mod tests {
     fn signature_matches_twilio_reference_example() {
         // The worked example from Twilio's security documentation.
         let mut params = BTreeMap::new();
-        for (k, v) in [("CallSid", "CA1234567890ABCDE"), ("Caller", "+12349013030"), ("Digits", "1234"), ("From", "+12349013030"), ("To", "+18005551212")] {
+        for (k, v) in [
+            ("CallSid", "CA1234567890ABCDE"),
+            ("Caller", "+12349013030"),
+            ("Digits", "1234"),
+            ("From", "+12349013030"),
+            ("To", "+18005551212"),
+        ] {
             params.insert(k.to_string(), v.to_string());
         }
         let url = "https://mycompany.com/myapp.php?foo=1&bar=2";

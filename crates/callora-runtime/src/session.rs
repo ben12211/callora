@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use callora_audio::library::VoiceLibrary;
-use callora_audio::playout::{OutFrame, PlayItem, PlayoutEvent, Playout, Source};
+use callora_audio::playout::{OutFrame, PlayItem, Playout, PlayoutEvent, Source};
 use callora_audio::tts::{Synthesizer, TtsCache, TtsRequest};
 use callora_audio::vad::{Vad, VadConfig, VadEvent};
 use callora_core::business::Business;
@@ -31,8 +31,8 @@ use callora_core::understanding::{fast_path, merge, Understanding};
 
 use crate::metrics::Metrics;
 use crate::ports::{
-    ActionRunner, CallInfo, CallRecord, CallStore, LanguageModel, SpeechToText, SttEvent, SttInput, SttSession, Telephony,
-    WhisperRegistry,
+    ActionRunner, CallInfo, CallRecord, CallStore, LanguageModel, SpeechToText, SttEvent, SttInput, SttSession,
+    Telephony, WhisperRegistry,
 };
 
 #[derive(Debug, Clone)]
@@ -94,11 +94,27 @@ pub enum Ending {
 
 enum Ev {
     SttReady(anyhow::Result<SttSession>),
-    Llm { turn: u64, result: anyhow::Result<Value>, elapsed: Duration },
-    FillerDue { turn: u64 },
-    Action { run_id: u64, action: String, input: Value, result: Result<Value, String>, elapsed: Duration },
-    Silence { generation: u64 },
-    TtsFirstChunk { elapsed: Duration },
+    Llm {
+        turn: u64,
+        result: anyhow::Result<Value>,
+        elapsed: Duration,
+    },
+    FillerDue {
+        turn: u64,
+    },
+    Action {
+        run_id: u64,
+        action: String,
+        input: Value,
+        result: Result<Value, String>,
+        elapsed: Duration,
+    },
+    Silence {
+        generation: u64,
+    },
+    TtsFirstChunk {
+        elapsed: Duration,
+    },
     /// A hangup or handoff with nothing left to say.
     TerminateNow,
 }
@@ -366,7 +382,8 @@ impl Session {
             (Some(model), true) => {
                 self.turn += 1;
                 let turn = self.turn;
-                let request = llm::build_request(&self.business, &self.engine.context(), &self.engine.state, &transcript);
+                let request =
+                    llm::build_request(&self.business, &self.engine.context(), &self.engine.state, &transcript);
                 let timeout = Duration::from_millis(self.business.config.understanding.llm_timeout_ms);
                 let model = model.clone();
                 let tx = self.events.clone();
@@ -425,7 +442,8 @@ impl Session {
                 self.services.metrics.llm_latency.observe(elapsed.as_millis() as u64);
                 let u = match result {
                     Ok(reply) => {
-                        let parsed = llm::parse_response(&self.business, &self.engine.context(), &pending.transcript, &reply);
+                        let parsed =
+                            llm::parse_response(&self.business, &self.engine.context(), &pending.transcript, &reply);
                         merge(pending.fast, parsed)
                     }
                     Err(error) => {
@@ -466,7 +484,12 @@ impl Session {
                 self.execute(d);
             }
             Ev::Silence { generation } => {
-                if generation == self.silence_generation && !self.agent_busy() && self.pending_llm.is_none() && self.actions_in_flight == 0 && self.after_speech.is_none() {
+                if generation == self.silence_generation
+                    && !self.agent_busy()
+                    && self.pending_llm.is_none()
+                    && self.actions_in_flight == 0
+                    && self.after_speech.is_none()
+                {
                     let d = self.engine.on_silence();
                     self.execute(d);
                 }
@@ -505,7 +528,9 @@ impl Session {
                     });
                 }
                 Directive::Handoff { summary } => {
-                    self.services.store.record(CallRecord::Handoff { call_id: self.info.call_id, summary: summary.clone() });
+                    self.services
+                        .store
+                        .record(CallRecord::Handoff { call_id: self.info.call_id, summary: summary.clone() });
                     self.after_speech = Some(AfterSpeech::Handoff(summary));
                 }
                 Directive::Hangup => self.after_speech = Some(AfterSpeech::Hangup),
@@ -525,7 +550,11 @@ impl Session {
             let id = self.next_item;
             self.next_item += 1;
             if let Some(clip) = self.library.get(&seg.delivery, &seg.text) {
-                self.services.metrics.segment(if seg.origin == SegmentOrigin::Template { "template" } else { "cached" });
+                self.services.metrics.segment(if seg.origin == SegmentOrigin::Template {
+                    "template"
+                } else {
+                    "cached"
+                });
                 self.enqueue(PlayItem { id, source: Source::Clip(clip), gain_db: plan.gain_db });
                 continue;
             }
@@ -535,7 +564,7 @@ impl Session {
             };
             let c = &self.business.config;
             let request = TtsRequest {
-                text: prepare_for_tts(&seg.text, &c.language, &c.pronunciations),
+                text: prepare_for_tts(&seg.text, &c.language, &self.business.pronouncer),
                 voice_id,
                 model: self.cfg.dynamic_model.clone().unwrap_or_else(|| c.voice.dynamic_model.clone()),
                 settings: c.voice.settings_for(&seg.delivery),
@@ -620,7 +649,8 @@ impl Session {
                     return Ending::AgentHungUp;
                 };
                 let whisper = self.services.whisper.register(&self.info, &summary);
-                if let Err(e) = self.services.telephony.transfer(&self.info.call_sid, &number, whisper.as_deref()).await {
+                if let Err(e) = self.services.telephony.transfer(&self.info.call_sid, &number, whisper.as_deref()).await
+                {
                     tracing::error!(call = %self.info.call_sid, error = %e, "transfer failed; hanging up");
                     let _ = self.services.telephony.hangup(&self.info.call_sid).await;
                     return Ending::AgentHungUp;

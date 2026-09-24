@@ -114,7 +114,9 @@ fn param_domain(param: &ParamConfig) -> Option<Vec<String>> {
         ParamConfig::Count { gender, singular, plural, range } => {
             Some((range[0]..=range[1]).map(|n| count_phrase(n, *gender, singular, plural)).collect())
         }
-        ParamConfig::Number { gender, range } => Some((range[0]..=range[1]).map(|n| number_words(n, *gender)).collect()),
+        ParamConfig::Number { gender, range } => {
+            Some((range[0]..=range[1]).map(|n| number_words(n, *gender)).collect())
+        }
         ParamConfig::Enum { values } => Some(values.values().cloned().collect()),
         ParamConfig::Time | ParamConfig::Text => None,
     }
@@ -164,7 +166,11 @@ fn speak(raw: Raw, param: Option<&ParamConfig>) -> Option<(String, bool)> {
 }
 
 /// Render one variant. `None` when a placeholder has no value.
-fn render_variant(template: &str, response: &ResponseConfig, ctx: &RenderContext<'_>) -> Option<(String, SegmentOrigin)> {
+fn render_variant(
+    template: &str,
+    response: &ResponseConfig,
+    ctx: &RenderContext<'_>,
+) -> Option<(String, SegmentOrigin)> {
     let names = placeholders(template);
     if names.is_empty() {
         return Some((template.to_string(), SegmentOrigin::Static));

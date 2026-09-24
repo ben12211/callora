@@ -103,7 +103,11 @@ impl VoiceLibrary {
                 return Ok(Self::empty());
             }
         }
-        let mut lib = Self { clips: HashMap::new(), voice_id: Some(manifest.voice_id.clone()), model: Some(manifest.model.clone()) };
+        let mut lib = Self {
+            clips: HashMap::new(),
+            voice_id: Some(manifest.voice_id.clone()),
+            model: Some(manifest.model.clone()),
+        };
         for e in &manifest.entries {
             match std::fs::read(dir.join(&e.file)) {
                 Ok(bytes) => {
@@ -143,7 +147,8 @@ impl LibraryBuilder<'_> {
         let b = self.business;
         let dir = self.root.join(&b.config.id);
         std::fs::create_dir_all(&dir)?;
-        let previous: Option<Manifest> = std::fs::read(dir.join("manifest.json")).ok().and_then(|raw| serde_json::from_slice(&raw).ok());
+        let previous: Option<Manifest> =
+            std::fs::read(dir.join("manifest.json")).ok().and_then(|raw| serde_json::from_slice(&raw).ok());
         let reusable: HashMap<String, ManifestEntry> = previous
             .filter(|m| m.voice_id == self.voice_id && m.model == self.model)
             .map(|m| m.entries.into_iter().filter(|e| dir.join(&e.file).exists()).map(|e| (e.key.clone(), e)).collect())
@@ -155,7 +160,7 @@ impl LibraryBuilder<'_> {
         let mut todo = Vec::new();
         for e in entries {
             let key = clip_key(&e.delivery, &e.text);
-            let spoken = prepare_for_tts(&e.text, &b.config.language, &b.config.pronunciations);
+            let spoken = prepare_for_tts(&e.text, &b.config.language, &b.pronouncer);
             match reusable.get(&key) {
                 Some(prev) if prev.spoken == spoken => {
                     report.reused += 1;
@@ -165,28 +170,29 @@ impl LibraryBuilder<'_> {
             }
         }
 
-        let results: Vec<(String, LibraryEntry, String, anyhow::Result<Bytes>)> = futures::stream::iter(todo.into_iter().map(|(key, e, spoken)| {
-            let synth = self.synthesizer.clone();
-            let req = TtsRequest {
-                text: spoken.clone(),
-                voice_id: self.voice_id.clone(),
-                model: self.model.clone(),
-                settings: b.config.voice.settings_for(&e.delivery),
-                language: b.config.language.clone(),
-            };
-            async move {
-                let audio = async {
-                    let stream = synth.synthesize(req).await?;
-                    let chunks: Vec<Bytes> = stream.try_collect().await?;
-                    anyhow::Ok(Bytes::from(chunks.concat()))
+        let results: Vec<(String, LibraryEntry, String, anyhow::Result<Bytes>)> =
+            futures::stream::iter(todo.into_iter().map(|(key, e, spoken)| {
+                let synth = self.synthesizer.clone();
+                let req = TtsRequest {
+                    text: spoken.clone(),
+                    voice_id: self.voice_id.clone(),
+                    model: self.model.clone(),
+                    settings: b.config.voice.settings_for(&e.delivery),
+                    language: b.config.language.clone(),
+                };
+                async move {
+                    let audio = async {
+                        let stream = synth.synthesize(req).await?;
+                        let chunks: Vec<Bytes> = stream.try_collect().await?;
+                        anyhow::Ok(Bytes::from(chunks.concat()))
+                    }
+                    .await;
+                    (key, e, spoken, audio)
                 }
-                .await;
-                (key, e, spoken, audio)
-            }
-        }))
-        .buffer_unordered(self.concurrency.max(1))
-        .collect()
-        .await;
+            }))
+            .buffer_unordered(self.concurrency.max(1))
+            .collect()
+            .await;
 
         for (key, e, spoken, audio) in results {
             match audio {
@@ -194,14 +200,28 @@ impl LibraryBuilder<'_> {
                     let file = format!("{key}.ulaw");
                     std::fs::write(dir.join(&file), &audio)?;
                     report.generated += 1;
-                    done.push(ManifestEntry { key, response_id: e.response_id, delivery: e.delivery, text: e.text, spoken, file, bytes: audio.len() });
+                    done.push(ManifestEntry {
+                        key,
+                        response_id: e.response_id,
+                        delivery: e.delivery,
+                        text: e.text,
+                        spoken,
+                        file,
+                        bytes: audio.len(),
+                    });
                 }
                 Ok(_) => report.failed.push(format!("{}: empty audio", e.text)),
                 Err(err) => report.failed.push(format!("{}: {err:#}", e.text)),
             }
         }
         done.sort_by(|a, b| (&a.response_id, &a.delivery, &a.text).cmp(&(&b.response_id, &b.delivery, &b.text)));
-        let manifest = Manifest { business_id: b.config.id.clone(), voice_id: self.voice_id.clone(), model: self.model.clone(), format: FORMAT.into(), entries: done };
+        let manifest = Manifest {
+            business_id: b.config.id.clone(),
+            voice_id: self.voice_id.clone(),
+            model: self.model.clone(),
+            format: FORMAT.into(),
+            entries: done,
+        };
         let tmp = dir.join("manifest.json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&manifest)?)?;
         std::fs::rename(&tmp, dir.join("manifest.json"))?;

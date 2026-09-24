@@ -68,7 +68,13 @@ pub trait LanguageModel: Send + Sync {
 
 #[async_trait]
 pub trait ActionRunner: Send + Sync {
-    async fn run(&self, business: &Business, action: &str, input: serde_json::Value, call: &CallInfo) -> Result<serde_json::Value, String>;
+    async fn run(
+        &self,
+        business: &Business,
+        action: &str,
+        input: serde_json::Value,
+        call: &CallInfo,
+    ) -> Result<serde_json::Value, String>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -88,12 +94,37 @@ pub trait Telephony: Send + Sync {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CallRecord {
-    Started { info: CallInfo },
-    Turn { call_id: uuid::Uuid, speaker: String, text: String, detail: serde_json::Value },
-    Action { call_id: uuid::Uuid, action: String, input: serde_json::Value, result: serde_json::Value, ok: bool, latency_ms: u64 },
-    Handoff { call_id: uuid::Uuid, summary: HandoffSummary },
-    Ended { call_id: uuid::Uuid, outcome: String, state: serde_json::Value },
-    Status { call_sid: String, status: String, duration_seconds: Option<i32> },
+    Started {
+        info: CallInfo,
+    },
+    Turn {
+        call_id: uuid::Uuid,
+        speaker: String,
+        text: String,
+        detail: serde_json::Value,
+    },
+    Action {
+        call_id: uuid::Uuid,
+        action: String,
+        input: serde_json::Value,
+        result: serde_json::Value,
+        ok: bool,
+        latency_ms: u64,
+    },
+    Handoff {
+        call_id: uuid::Uuid,
+        summary: HandoffSummary,
+    },
+    Ended {
+        call_id: uuid::Uuid,
+        outcome: String,
+        state: serde_json::Value,
+    },
+    Status {
+        call_sid: String,
+        status: String,
+        duration_seconds: Option<i32>,
+    },
 }
 
 pub trait CallStore: Send + Sync {

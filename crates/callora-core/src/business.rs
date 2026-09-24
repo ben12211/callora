@@ -89,6 +89,7 @@ pub struct Business {
     pub places: Vec<CompiledPlace>,
     pub voice_id: Option<String>,
     pub handoff_number: Option<String>,
+    pub pronouncer: crate::speech::Pronouncer,
 }
 
 impl Business {
@@ -162,13 +163,21 @@ impl Business {
                 }
             }
             for (canonical, phrases) in &s.values {
-                compiled.enum_values.push((canonical.clone(), phrase(format!("slots.{id}.values.{canonical}"), phrases, true)));
+                compiled
+                    .enum_values
+                    .push((canonical.clone(), phrase(format!("slots.{id}.values.{canonical}"), phrases, true)));
             }
             for (phrase_text, value) in &s.synonyms {
-                compiled.synonyms.push((phrase(format!("slots.{id}.synonyms"), std::slice::from_ref(phrase_text), true), value.clone()));
+                compiled.synonyms.push((
+                    phrase(format!("slots.{id}.synonyms"), std::slice::from_ref(phrase_text), true),
+                    value.clone(),
+                ));
             }
             for (alias, key) in &s.context_aliases {
-                compiled.context_aliases.push((phrase(format!("slots.{id}.context_aliases"), std::slice::from_ref(alias), false), key.clone()));
+                compiled.context_aliases.push((
+                    phrase(format!("slots.{id}.context_aliases"), std::slice::from_ref(alias), false),
+                    key.clone(),
+                ));
             }
             slots.insert(id.clone(), compiled);
         }
@@ -180,7 +189,11 @@ impl Business {
             .map(|(n, p)| {
                 let mut all = p.aliases.clone();
                 all.push(p.name.clone());
-                CompiledPlace { name: p.name.clone(), address: p.address.clone(), aliases: phrase(format!("places[{n}]"), &all, true) }
+                CompiledPlace {
+                    name: p.name.clone(),
+                    address: p.address.clone(),
+                    aliases: phrase(format!("places[{n}]"), &all, true),
+                }
             })
             .collect();
 
@@ -196,19 +209,51 @@ impl Business {
             }
         }
 
-        let voice_id = config.voice.voice_id.clone().or_else(|| config.voice.voice_id_env.as_deref().and_then(env)).filter(|v| !v.trim().is_empty());
-        let handoff_number = config.handoff.phone_number_env.as_deref().and_then(env).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let voice_id = config
+            .voice
+            .voice_id
+            .clone()
+            .or_else(|| config.voice.voice_id_env.as_deref().and_then(env))
+            .filter(|v| !v.trim().is_empty());
+        let handoff_number = config
+            .handoff
+            .phone_number_env
+            .as_deref()
+            .and_then(env)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         if let Some(n) = &handoff_number {
             if !is_e164(n) {
-                issues.push(Issue { path: "handoff.phone_number_env".into(), message: "resolves to a value that is not E.164".into() });
+                issues.push(Issue {
+                    path: "handoff.phone_number_env".into(),
+                    message: "resolves to a value that is not E.164".into(),
+                });
             }
         }
 
+        let pronouncer = crate::speech::Pronouncer::new(&config.pronunciations).unwrap_or_else(|e| {
+            issues.push(Issue { path: "pronunciations".into(), message: format!("cannot compile: {e}") });
+            crate::speech::Pronouncer::default()
+        });
         issues.extend(phrase_issues.into_inner());
         if !issues.is_empty() {
             return Err(LoadError::Invalid { path: source.to_string(), issues });
         }
-        Ok(Self { config, phone_numbers, affirm, deny, fillers, now, meta, intent_keywords, slots, places, voice_id, handoff_number })
+        Ok(Self {
+            config,
+            phone_numbers,
+            affirm,
+            deny,
+            fillers,
+            now,
+            meta,
+            intent_keywords,
+            slots,
+            places,
+            voice_id,
+            handoff_number,
+            pronouncer,
+        })
     }
 }
 
@@ -225,7 +270,8 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
     if c.schema_version != SCHEMA_VERSION {
         err("schema_version", format!("unsupported version {}, expected {SCHEMA_VERSION}", c.schema_version));
     }
-    if c.id.is_empty() || !c.id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-') {
+    if c.id.is_empty() || !c.id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    {
         err("id", "must match [a-z0-9_-]+".into());
     }
     for (field, value) in [("name", &c.name), ("language", &c.language), ("timezone", &c.timezone)] {
@@ -305,7 +351,10 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
     for required in [MetaIntent::CancelCurrentFlow, MetaIntent::Goodbye] {
         if let Some(m) = c.meta_intents.get(required.as_str()) {
             if m.response.is_none() {
-                v.push(Issue { path: format!("meta_intents.{}", required.as_str()), message: "needs a response".into() });
+                v.push(Issue {
+                    path: format!("meta_intents.{}", required.as_str()),
+                    message: "needs a response".into(),
+                });
             }
         }
     }
@@ -338,7 +387,10 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
         for (n, p) in s.patterns.iter().enumerate() {
             match Regex::new(p) {
                 Ok(re) if re.capture_names().flatten().any(|name| name == "value") => {}
-                Ok(_) => v.push(Issue { path: format!("{path}.patterns[{n}]"), message: "needs a named group `value`".into() }),
+                Ok(_) => v.push(Issue {
+                    path: format!("{path}.patterns[{n}]"),
+                    message: "needs a named group `value`".into(),
+                }),
                 Err(e) => v.push(Issue { path: format!("{path}.patterns[{n}]"), message: e.to_string() }),
             }
         }
@@ -350,7 +402,10 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
                 v.push(Issue { path: path.clone(), message: "min is greater than max".into() });
             }
         }
-        if !(0.0..=1.0).contains(&s.confirm_below) || !(0.0..=1.0).contains(&s.reject_below) || s.reject_below > s.confirm_below {
+        if !(0.0..=1.0).contains(&s.confirm_below)
+            || !(0.0..=1.0).contains(&s.reject_below)
+            || s.reject_below > s.confirm_below
+        {
             v.push(Issue { path: path.clone(), message: "need 0 <= reject_below <= confirm_below <= 1".into() });
         }
     }
@@ -378,7 +433,12 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
             need_response(&format!("{path}.confirm.response"), &cf.response, &mut v);
             need_response(&format!("{path}.confirm.ask_change"), &cf.ask_change, &mut v);
         }
-        for (field, r) in [("filler", &p.filler), ("on_success", &p.on_success), ("on_failure", &p.on_failure), ("on_complete", &p.on_complete)] {
+        for (field, r) in [
+            ("filler", &p.filler),
+            ("on_success", &p.on_success),
+            ("on_failure", &p.on_failure),
+            ("on_complete", &p.on_complete),
+        ] {
             if let Some(r) = r {
                 need_response(&format!("{path}.{field}"), r, &mut v);
             }
@@ -394,7 +454,10 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
                     Some(_) => {}
                 }
                 if p.on_success.is_none() {
-                    v.push(Issue { path: format!("{path}.on_success"), message: "a pipeline with an action needs on_success".into() });
+                    v.push(Issue {
+                        path: format!("{path}.on_success"),
+                        message: "a pipeline with an action needs on_success".into(),
+                    });
                 }
             }
             None if p.on_complete.is_none() => {
@@ -434,9 +497,10 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
         if let Some(p) = &r.prefix {
             match c.responses.get(p) {
                 None => v.push(Issue { path: format!("{path}.prefix"), message: format!("unknown response `{p}`") }),
-                Some(pr) if pr.prefix.is_some() => {
-                    v.push(Issue { path: format!("{path}.prefix"), message: "a prefix cannot itself have a prefix".into() })
-                }
+                Some(pr) if pr.prefix.is_some() => v.push(Issue {
+                    path: format!("{path}.prefix"),
+                    message: "a prefix cannot itself have a prefix".into(),
+                }),
                 Some(_) => {}
             }
         }
@@ -447,7 +511,10 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
             };
             if let Some([lo, hi]) = range {
                 if lo > hi || hi - lo > 500 {
-                    v.push(Issue { path: format!("{path}.params.{name}"), message: "range must be ordered and span at most 500".into() });
+                    v.push(Issue {
+                        path: format!("{path}.params.{name}"),
+                        message: "range must be ordered and span at most 500".into(),
+                    });
                 }
             }
             if !r.variants.iter().any(|t| placeholders(t).iter().any(|p| p == name)) {
@@ -455,12 +522,18 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
             }
         }
         let pregenerable_params = r.variants.iter().flat_map(|t| placeholders(t)).filter(|p| {
-            matches!(r.params.get(p), Some(ParamConfig::Count { .. } | ParamConfig::Number { .. } | ParamConfig::Enum { .. }))
+            matches!(
+                r.params.get(p),
+                Some(ParamConfig::Count { .. } | ParamConfig::Number { .. } | ParamConfig::Enum { .. })
+            )
         });
         let mut distinct = BTreeSet::new();
         distinct.extend(pregenerable_params);
         if distinct.len() > 2 {
-            v.push(Issue { path: path.clone(), message: "at most two pre-generated parameters per response (combinatorial library size)".into() });
+            v.push(Issue {
+                path: path.clone(),
+                message: "at most two pre-generated parameters per response (combinatorial library size)".into(),
+            });
         }
     }
 
@@ -524,7 +597,8 @@ impl BusinessRegistry {
 
     /// Load every `*.json` file in a directory.
     pub fn load_dir(dir: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<Self, LoadError> {
-        let read_dir = std::fs::read_dir(dir).map_err(|e| LoadError::Io { path: dir.display().to_string(), source: e })?;
+        let read_dir =
+            std::fs::read_dir(dir).map_err(|e| LoadError::Io { path: dir.display().to_string(), source: e })?;
         let mut paths: Vec<_> = read_dir
             .filter_map(Result::ok)
             .map(|e| e.path())

@@ -18,7 +18,9 @@ use callora_core::understanding::{fast_path, merge};
 use callora_providers::{cartesia::Cartesia, elevenlabs::ElevenLabs, openai::OpenAi, twilio_rest::TwilioRest};
 use callora_runtime::actions::ConfiguredActions;
 use callora_runtime::metrics::Metrics;
-use callora_runtime::ports::{ActionRunner, CallInfo, CallStore, LanguageModel, NoWhisper, NullStore, SpeechToText, SttSession, Telephony};
+use callora_runtime::ports::{
+    ActionRunner, CallInfo, CallStore, LanguageModel, NoWhisper, NullStore, SpeechToText, SttSession, Telephony,
+};
 use callora_runtime::server::{router, AppState, ServerSettings};
 use callora_runtime::session::{Services, SessionConfig};
 
@@ -103,7 +105,11 @@ fn load_registry(dir: &Path) -> anyhow::Result<BusinessRegistry> {
 }
 
 fn http() -> reqwest::Client {
-    reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).pool_idle_timeout(Duration::from_secs(90)).build().unwrap_or_default()
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()
+        .unwrap_or_default()
 }
 
 fn init_tracing() {
@@ -166,7 +172,10 @@ async fn main() -> anyhow::Result<()> {
             let b = reg.by_id(&business).context("unknown business")?;
             let engine = Engine::new(b.clone(), 1);
             let (u, needs_llm) = fast_path(&b, &engine.context(), &text);
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "understanding": u, "needs_llm": needs_llm }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "understanding": u, "needs_llm": needs_llm }))?
+            );
             Ok(())
         }
     }
@@ -185,13 +194,23 @@ async fn voice_library(dir: &Path, command: LibraryCommand) -> anyhow::Result<()
                 println!("{} clips", entries.len());
                 return Ok(());
             }
-            let api_key = env("ELEVENLABS_API_KEY").context("ELEVENLABS_API_KEY is required to generate the library")?;
+            let api_key =
+                env("ELEVENLABS_API_KEY").context("ELEVENLABS_API_KEY is required to generate the library")?;
             let voice_id = b.voice_id.clone().context("the business voice id is not set (see voice.voice_id_env)")?;
             let model = env("ELEVENLABS_LIBRARY_MODEL").unwrap_or_else(|| b.config.voice.library_model.clone());
-            let synth: Arc<dyn Synthesizer> = Arc::new(ElevenLabs::new(http(), api_key, env("ELEVENLABS_API_BASE_URL")));
+            let synth: Arc<dyn Synthesizer> =
+                Arc::new(ElevenLabs::new(http(), api_key, env("ELEVENLABS_API_BASE_URL")));
             println!("Generating up to {} clips for `{}` with {model}...", entries.len(), b.config.id);
-            let report = LibraryBuilder { business: &b, synthesizer: synth, voice_id, model, root: out, concurrency }.build().await?;
-            println!("total {} · generated {} · reused {} · failed {}", report.total, report.generated, report.reused, report.failed.len());
+            let report = LibraryBuilder { business: &b, synthesizer: synth, voice_id, model, root: out, concurrency }
+                .build()
+                .await?;
+            println!(
+                "total {} · generated {} · reused {} · failed {}",
+                report.total,
+                report.generated,
+                report.reused,
+                report.failed.len()
+            );
             for f in &report.failed {
                 println!("  failed: {f}");
             }
@@ -253,20 +272,24 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
 
     let client = http();
     let stt: Arc<dyn SpeechToText> = match env("CARTESIA_API_KEY") {
-        Some(key) => Arc::new(Cartesia::new(key, env("CARTESIA_STT_URL"), env("CARTESIA_STT_MODEL"), env("CARTESIA_VERSION"))),
+        Some(key) => {
+            Arc::new(Cartesia::new(key, env("CARTESIA_STT_URL"), env("CARTESIA_STT_MODEL"), env("CARTESIA_VERSION")))
+        }
         None => {
             tracing::error!("CARTESIA_API_KEY is not set: calls cannot be understood and will be handed off");
             Arc::new(NoStt)
         }
     };
     let llm: Option<Arc<dyn LanguageModel>> = env("OPENAI_API_KEY").map(|key| {
-        Arc::new(OpenAi::new(client.clone(), key, env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL"))) as Arc<dyn LanguageModel>
+        Arc::new(OpenAi::new(client.clone(), key, env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL")))
+            as Arc<dyn LanguageModel>
     });
     if llm.is_none() {
         tracing::warn!("OPENAI_API_KEY is not set: understanding uses the deterministic fast path only");
     }
-    let tts: Option<Arc<dyn Synthesizer>> = env("ELEVENLABS_API_KEY")
-        .map(|key| Arc::new(ElevenLabs::new(client.clone(), key, env("ELEVENLABS_API_BASE_URL"))) as Arc<dyn Synthesizer>);
+    let tts: Option<Arc<dyn Synthesizer>> = env("ELEVENLABS_API_KEY").map(|key| {
+        Arc::new(ElevenLabs::new(client.clone(), key, env("ELEVENLABS_API_BASE_URL"))) as Arc<dyn Synthesizer>
+    });
     if tts.is_none() {
         tracing::warn!("ELEVENLABS_API_KEY is not set: only pre-generated audio can be played");
     }
@@ -339,7 +362,9 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("TWILIO_AUTH_TOKEN is required (it validates every Twilio webhook)");
     }
     if public_base_url.is_empty() {
-        tracing::warn!("PUBLIC_BASE_URL is not set: Twilio signatures cannot validate and media streams cannot connect");
+        tracing::warn!(
+            "PUBLIC_BASE_URL is not set: Twilio signatures cannot validate and media streams cannot connect"
+        );
     }
     let mut stream_secrets: Vec<String> = Vec::new();
     stream_secrets.extend(env("STREAM_TOKEN_SECRET"));
@@ -357,7 +382,8 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
     let app = router(state);
-    let addr = format!("{}:{}", env("HOST").unwrap_or_else(|| "0.0.0.0".into()), env("PORT").unwrap_or_else(|| "3000".into()));
+    let addr =
+        format!("{}:{}", env("HOST").unwrap_or_else(|| "0.0.0.0".into()), env("PORT").unwrap_or_else(|| "3000".into()));
     let listener = tokio::net::TcpListener::bind(&addr).await.with_context(|| format!("cannot bind {addr}"))?;
     tracing::info!(%addr, "callora listening");
     axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
@@ -403,11 +429,21 @@ async fn shutdown() {
 async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
     let reg = load_registry(dir)?;
     let b: Arc<Business> = reg.by_id(business).context("unknown business")?;
-    let llm: Option<OpenAi> = env("OPENAI_API_KEY").map(|k| OpenAi::new(http(), k, env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL")));
+    let llm: Option<OpenAi> =
+        env("OPENAI_API_KEY").map(|k| OpenAi::new(http(), k, env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL")));
     let actions = ConfiguredActions::new(http(), env_snapshot());
-    let info = CallInfo { call_id: Default::default(), call_sid: "SIMULATED".into(), business_id: b.config.id.clone(), from: Some("+972500000000".into()), to: String::new() };
+    let info = CallInfo {
+        call_id: Default::default(),
+        call_sid: "SIMULATED".into(),
+        business_id: b.config.id.clone(),
+        from: Some("+972500000000".into()),
+        to: String::new(),
+    };
     let mut engine = Engine::new(b.clone(), 42);
-    println!("Simulating `{}` ({}). Type what the caller says; empty line = silence; Ctrl-D to quit.", b.config.id, b.config.name);
+    println!(
+        "Simulating `{}` ({}). Type what the caller says; empty line = silence; Ctrl-D to quit.",
+        b.config.id, b.config.name
+    );
     println!("LLM: {}\n", if llm.is_some() { "on" } else { "off (fast path only)" });
     let mut pending = engine.start();
     let stdin = std::io::stdin();
@@ -419,7 +455,13 @@ async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
                 match d {
                     Directive::Speak { plan, filler } => {
                         for s in &plan.segments {
-                            println!("  agent{} [{:?}/{}] {}", if filler { " (filler)" } else { "" }, s.origin, s.delivery, s.text);
+                            println!(
+                                "  agent{} [{:?}/{}] {}",
+                                if filler { " (filler)" } else { "" },
+                                s.origin,
+                                s.delivery,
+                                s.text
+                            );
                         }
                     }
                     Directive::RunAction { run_id, action, input } => {
@@ -462,7 +504,13 @@ async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
             }
             _ => fast,
         };
-        println!("  · understood: meta={:?} intent={:?} affirm={:?} slots={}", u.meta, u.intent.as_ref().map(|i| &i.id), u.affirm, u.slots.iter().map(|s| format!("{}={}", s.slot, s.value.spoken())).collect::<Vec<_>>().join(", "));
+        println!(
+            "  · understood: meta={:?} intent={:?} affirm={:?} slots={}",
+            u.meta,
+            u.intent.as_ref().map(|i| &i.id),
+            u.affirm,
+            u.slots.iter().map(|s| format!("{}={}", s.slot, s.value.spoken())).collect::<Vec<_>>().join(", ")
+        );
         pending = engine.on_utterance(u);
     }
 }

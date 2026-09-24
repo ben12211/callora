@@ -35,7 +35,10 @@ impl Histogram {
         out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} histogram\n"));
         let sep = if labels.is_empty() { "" } else { "," };
         for (i, b) in BUCKETS_MS.iter().enumerate() {
-            out.push_str(&format!("{name}_bucket{{{labels}{sep}le=\"{b}\"}} {}\n", self.buckets[i].load(Ordering::Relaxed)));
+            out.push_str(&format!(
+                "{name}_bucket{{{labels}{sep}le=\"{b}\"}} {}\n",
+                self.buckets[i].load(Ordering::Relaxed)
+            ));
         }
         let count = self.count.load(Ordering::Relaxed);
         out.push_str(&format!("{name}_bucket{{{labels}{sep}le=\"+Inf\"}} {count}\n"));
@@ -82,17 +85,45 @@ impl Metrics {
         g(&mut out, "callora_calls_active", "Calls in progress.", "gauge", &self.calls_active);
         g(&mut out, "callora_calls_total", "Calls handled.", "counter", &self.calls_total);
         g(&mut out, "callora_turns_total", "Caller turns understood.", "counter", &self.turns_total);
-        g(&mut out, "callora_barge_ins_total", "Times the caller interrupted the agent.", "counter", &self.barge_ins_total);
+        g(
+            &mut out,
+            "callora_barge_ins_total",
+            "Times the caller interrupted the agent.",
+            "counter",
+            &self.barge_ins_total,
+        );
         g(&mut out, "callora_handoffs_total", "Calls transferred to a human.", "counter", &self.handoffs_total);
         g(&mut out, "callora_llm_calls_total", "LLM understanding requests.", "counter", &self.llm_calls_total);
-        g(&mut out, "callora_llm_failures_total", "LLM requests that failed or timed out.", "counter", &self.llm_failures_total);
-        g(&mut out, "callora_action_failures_total", "Business actions that failed.", "counter", &self.action_failures_total);
+        g(
+            &mut out,
+            "callora_llm_failures_total",
+            "LLM requests that failed or timed out.",
+            "counter",
+            &self.llm_failures_total,
+        );
+        g(
+            &mut out,
+            "callora_action_failures_total",
+            "Business actions that failed.",
+            "counter",
+            &self.action_failures_total,
+        );
         out.push_str("# HELP callora_audio_segments_total Reply audio segments by source.\n# TYPE callora_audio_segments_total counter\n");
         for (source, n) in self.segments() {
             out.push_str(&format!("callora_audio_segments_total{{source=\"{source}\"}} {n}\n"));
         }
-        self.response_latency.render("callora_response_latency_ms", "Caller speech end to first reply audio.", "", &mut out);
-        self.barge_in_latency.render("callora_barge_in_latency_ms", "Caller speech start to agent audio cancelled.", "", &mut out);
+        self.response_latency.render(
+            "callora_response_latency_ms",
+            "Caller speech end to first reply audio.",
+            "",
+            &mut out,
+        );
+        self.barge_in_latency.render(
+            "callora_barge_in_latency_ms",
+            "Caller speech start to agent audio cancelled.",
+            "",
+            &mut out,
+        );
         self.llm_latency.render("callora_llm_latency_ms", "LLM understanding latency.", "", &mut out);
         self.tts_first_chunk.render("callora_tts_first_chunk_ms", "Dynamic TTS time to first audio.", "", &mut out);
         self.action_latency.render("callora_action_latency_ms", "Business action latency.", "", &mut out);

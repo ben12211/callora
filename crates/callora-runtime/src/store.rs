@@ -175,14 +175,17 @@ pub async fn get_call(pool: &PgPool, id: uuid::Uuid) -> sqlx::Result<Option<Valu
     else {
         return Ok(None);
     };
-    let turns = sqlx::query("SELECT speaker, text, detail, at FROM callora_v2.call_turns WHERE call_id = $1 ORDER BY id")
-        .bind(id)
-        .fetch_all(pool)
-        .await?;
-    let actions = sqlx::query("SELECT action, input, result, ok, latency_ms, at FROM callora_v2.action_runs WHERE call_id = $1 ORDER BY id")
-        .bind(id)
-        .fetch_all(pool)
-        .await?;
+    let turns =
+        sqlx::query("SELECT speaker, text, detail, at FROM callora_v2.call_turns WHERE call_id = $1 ORDER BY id")
+            .bind(id)
+            .fetch_all(pool)
+            .await?;
+    let actions = sqlx::query(
+        "SELECT action, input, result, ok, latency_ms, at FROM callora_v2.action_runs WHERE call_id = $1 ORDER BY id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
     let handoffs = sqlx::query("SELECT reason, summary, at FROM callora_v2.handoffs WHERE call_id = $1 ORDER BY id")
         .bind(id)
         .fetch_all(pool)
