@@ -336,12 +336,15 @@ fn without_a_desk_a_bad_line_restarts_the_ladder_once_before_hanging_up() {
 #[test]
 fn recognizer_keyterms_cover_configured_words_and_known_places() {
     let terms = business(&[]).stt_keyterms();
-    for t in ["באר שבע", "בני ברק", "ז'בוטינסקי", "נתב״ג", "שיבא", "עזריאלי"] {
-        assert!(terms.iter().any(|x| x == t), "{t} in {terms:?}");
-    }
     let unique: std::collections::HashSet<_> = terms.iter().collect();
     assert_eq!(unique.len(), terms.len(), "no duplicates");
-    assert!(terms.len() <= 100, "Scribe gets at most 100: {}", terms.len());
+    // Scribe takes the first 50: every configured word and every place name must be in them.
+    let first = &terms[..terms.len().min(50)];
+    for t in ["באר שבע", "בני ברק", "ז'בוטינסקי", "נתב״ג", "עזריאלי", "תחנה מרכזית"]
+    {
+        assert!(first.iter().any(|x| x == t), "{t} in the first 50: {first:?}");
+    }
+    assert!(terms.iter().any(|x| x == "שיבא"), "aliases come after");
 }
 
 #[test]

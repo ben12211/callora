@@ -25,8 +25,9 @@ use callora_runtime::ports::{SpeechToText, SttEvent, SttInput, SttSession};
 
 pub const DEFAULT_BASE_URL: &str = "wss://api.elevenlabs.io";
 pub const DEFAULT_MODEL: &str = "scribe_v2_realtime";
-/// Keyterms sent per session, and the longest one kept.
-const MAX_KEYTERMS: usize = 100;
+/// Keyterms sent per session, and the longest one kept. Above 50 the service rejects the
+/// whole session ("Number of keyterms cannot exceed 50"), which left a live call deaf.
+const MAX_KEYTERMS: usize = 50;
 const MAX_KEYTERM_CHARS: usize = 50;
 
 pub struct Scribe {
@@ -166,6 +167,14 @@ mod tests {
         let keyterms: Vec<&str> = pairs.iter().filter(|(k, _)| k == "keyterms").map(|(_, v)| v.as_str()).collect();
         assert_eq!(keyterms, vec!["בני ברק"], "blank and overlong terms are dropped");
         assert!(!url.contains("secret-key"));
+    }
+
+    #[test]
+    fn at_most_fifty_keyterms_go_out() {
+        let terms: Vec<String> = (0..73).map(|n| format!("מקום {n}")).collect();
+        let url = Scribe::new("k".into(), None, None).url("he-IL", &terms).unwrap();
+        let sent = url::Url::parse(&url).unwrap().query_pairs().filter(|(k, _)| k == "keyterms").count();
+        assert_eq!(sent, 50);
     }
 
     #[test]

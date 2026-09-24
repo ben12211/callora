@@ -38,6 +38,9 @@ use crate::ports::{
 /// Up to this many words that nothing understood are treated as noise when the LLM cannot
 /// be asked.
 const SHORT_GARBAGE_WORDS: usize = 3;
+/// Consecutive speech recognition reconnects (with no transcript in between) before the
+/// call is handed off.
+const MAX_STT_RECONNECTS: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -162,6 +165,8 @@ pub struct Session {
     interrupted: bool,
     /// When the last finalize went to the STT, for the transcription latency metric.
     finalize_sent_at: Option<Instant>,
+    /// Reconnects since the last transcript.
+    stt_reconnects: u32,
     /// The caller turn (engine turn count) the thinking filler last played on. A filler
     /// on every turn sounds scripted, so it never plays on two turns in a row.
     filler_turn: Option<u32>,
@@ -212,6 +217,7 @@ impl Session {
             barge_in_started: None,
             interrupted: false,
             finalize_sent_at: None,
+            stt_reconnects: 0,
             filler_turn: None,
         };
         s.services.store.record(CallRecord::Started { info: s.info.clone() });
@@ -354,16 +360,30 @@ impl Session {
     fn on_stt(&mut self, event: SttEvent) {
         match event {
             SttEvent::Partial(_) => {}
-            SttEvent::Final(text) => self.on_final(text),
+            SttEvent::Final(text) => {
+                self.stt_reconnects = 0;
+                self.on_final(text)
+            }
             SttEvent::Error(e) => tracing::warn!(call = %self.info.call_sid, error = %e, "stt error"),
             SttEvent::Closed => {
-                tracing::warn!(call = %self.info.call_sid, "stt closed; reconnecting");
                 self.stt = None;
+                self.stt_reconnects += 1;
+                if self.stt_reconnects > MAX_STT_RECONNECTS {
+                    // A session the service keeps closing (a rejected request, an outage)
+                    // would otherwise reconnect forever while the caller talks to no one.
+                    tracing::error!(call = %self.info.call_sid, "speech recognition keeps closing; giving up");
+                    let d = self.engine.force_handoff("stt_unavailable");
+                    self.execute(d);
+                    return;
+                }
+                tracing::warn!(call = %self.info.call_sid, attempt = self.stt_reconnects, "stt closed; reconnecting");
                 let stt = self.services.stt.clone();
                 let language = self.business.config.language.clone();
                 let keyterms = self.business.stt_keyterms();
                 let tx = self.events.clone();
+                let delay = Duration::from_millis(200 * u64::from(self.stt_reconnects));
                 tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
                     let _ = tx.send(Ev::SttReady(stt.open(&language, &keyterms).await));
                 });
             }

@@ -93,11 +93,11 @@ pub struct Business {
 }
 
 impl Business {
-    /// Words the speech recognizer should expect: the configured ones first, then every
-    /// known place name and alias, without duplicates.
+    /// Words the speech recognizer should expect, most useful first (recognizers cap the
+    /// list): the configured ones, then known place names, then their aliases.
     pub fn stt_keyterms(&self) -> Vec<String> {
         let c = &self.config;
-        let places = c.places.iter().flat_map(|p| std::iter::once(&p.name).chain(&p.aliases));
+        let places = c.places.iter().map(|p| &p.name).chain(c.places.iter().flat_map(|p| &p.aliases));
         let mut seen = std::collections::HashSet::new();
         c.stt_keyterms
             .iter()
