@@ -5,6 +5,22 @@ on:
   push:
     branches:
       - main
+  # Run from the Actions tab:
+  # - bootstrap: prepare and validate the VM without deploying (safe on a live server);
+  # - deploy: a full release of main;
+  # - reset: remove the legacy Callora deployment (containers, images, database volume,
+  #   files; never other stacks or Caddy's certificates), then bootstrap and deploy clean.
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What to run against production
+        type: choice
+        options: [bootstrap, deploy, reset]
+        default: bootstrap
+      confirm_reset:
+        description: For reset only, type DELETE-LEGACY-CALLORA
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -56,7 +72,7 @@ jobs:
 
   image:
     name: Publish ARM64 image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -104,10 +120,61 @@ jobs:
           provenance: true
           sbom: true
 
+  host:
+    name: Bootstrap and validate the production VM
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      SERVER_HOST: ${{ secrets.IP }}
+      SERVER_USER: ${{ secrets.USER }}
+      SSH_DIR: ${{ runner.temp }}/callora-ssh
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Check reset confirmation
+        if: inputs.mode == 'reset'
+        env:
+          CONFIRM: ${{ inputs.confirm_reset }}
+        run: |
+          [[ "$CONFIRM" == 'DELETE-LEGACY-CALLORA' ]] || { echo 'reset needs confirm_reset=DELETE-LEGACY-CALLORA' >&2; exit 1; }
+
+      - name: Configure SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.KEY_PEM }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: deploy/ci-ssh-setup.sh
+
+      # Idempotent: installs Docker on a fresh Oracle Linux 9 VM, only verifies an existing one.
+      - name: Bootstrap the host (Docker, firewall, /opt/callora)
+        run: |
+          source "$SSH_DIR/ssh.env"
+          "${SCP[@]}" deploy/bootstrap-oracle-linux.sh "$REMOTE:/tmp/callora-bootstrap.sh"
+          "${SSH[@]}" "$REMOTE" "sudo -n bash /tmp/callora-bootstrap.sh '$SERVER_USER' && rm -f /tmp/callora-bootstrap.sh"
+
+      # New SSH session, so a docker group membership added above applies.
+      - name: Create or verify host-only settings
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          source "$SSH_DIR/ssh.env"
+          "${SCP[@]}" deploy/deploy.sh "$REMOTE:/opt/callora/incoming/deploy.sh"
+          "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
+          if [[ "$MODE" == 'reset' ]]; then
+            "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh purge-legacy I-UNDERSTAND-THIS-DELETES-THE-CALLORA-DATABASE'
+          fi
+          printf 'PUBLIC_BASE_URL=%s\n' "$PUBLIC_BASE_URL" | "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh init-host'
+
   deploy:
     name: Deploy production
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: image
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
+    needs: [image, host]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
@@ -161,19 +228,12 @@ jobs:
       - name: Configure SSH
         env:
           SERVER_SSH_KEY: ${{ secrets.KEY_PEM }}
-        run: |
-          install -d -m 700 "$SSH_DIR"
-          printf '%s\n' "$SERVER_SSH_KEY" > "$SSH_DIR/deploy_key"
-          chmod 600 "$SSH_DIR/deploy_key"
-          ssh-keyscan -T 10 -H "$SERVER_HOST" > "$SSH_DIR/known_hosts" 2>/dev/null
-          test -s "$SSH_DIR/known_hosts"
-          chmod 600 "$SSH_DIR/known_hosts"
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: deploy/ci-ssh-setup.sh
 
       - name: Upload and deploy
         run: |
-          SSH=(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts" -i "$SSH_DIR/deploy_key")
-          SCP=(scp -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts" -i "$SSH_DIR/deploy_key")
-          REMOTE="$SERVER_USER@$SERVER_HOST"
+          source "$SSH_DIR/ssh.env"
           REMOTE_DOCKER_CONFIG="/tmp/callora-docker-${GITHUB_SHA}"
           cleanup() {
             "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker logout >/dev/null 2>&1 || true; rm -rf -- '$REMOTE_DOCKER_CONFIG'" || true

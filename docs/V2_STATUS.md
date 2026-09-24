@@ -9,6 +9,7 @@ what is still open.
 | --- | --- |
 | **`OLD-MAIN` on the remote** | **UNRESOLVED.** The branch exists locally at `bb8d327` (the exact legacy `main`), but pushing it to GitHub was refused (HTTP 403: the Claude GitHub App has no write access to `ben12211/callora`). It stays unresolved until `git ls-remote origin refs/heads/OLD-MAIN` shows `bb8d327ab799171b54968e849a0f52a155044988`. Meanwhile the remote `main` still points at that commit, so the legacy code has not been touched. |
 | Pushing the V2 branch | Blocked by the same 403. The V2 work is committed locally on `claude/bold-faraday-c8z1mm`. |
+| VM bootstrap and cleanup | Automated in CI (`host` job: bootstrap, `init-host`, optional guarded `reset` that purges the legacy stack). Scripts were exercised locally against a real Docker daemon, but **not yet run on the VM**: this build environment has neither the SSH key nor outbound SSH, and the workflow cannot run until the branch is pushed. |
 | First production cutover | Requires GitHub access, then the GitHub Secrets/Variables in [SECRETS.md](../SECRETS.md) and a voice library build (see DEPLOYMENT.md). |
 | Live-provider validation | ElevenLabs, Cartesia, OpenAI and Twilio adapters are verified against local mock servers and recorded wire formats, not yet against the live services (there are no credentials in the build environment). Worth checking on first deploy: Cartesia `finalize` → `flush_done` behaviour with `ink-whisper`, and ElevenLabs `eleven_v3` streaming latency for dynamic segments (`ELEVENLABS_DYNAMIC_MODEL` can switch the model). |
 

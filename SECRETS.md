@@ -13,7 +13,8 @@ secrets already configured in GitHub keep working.
 | --- | --- | --- |
 | `IP` | yes | Production VM public IPv4 address (SSH target). *legacy* |
 | `USER` | yes | SSH deployment account on the VM. *legacy* |
-| `KEY_PEM` | yes | Private SSH key for `USER`. *legacy* |
+| `KEY_PEM` | yes | Private SSH key for `USER` (unencrypted, OpenSSH/PEM format). *legacy* |
+| `SSH_KNOWN_HOSTS` | recommended | The VM's pinned host key (`ssh-keyscan -t ed25519 <IP>` output). Unset → trust on first use, as before. |
 | `DOCKER_HUB_TOKEN` | yes | Pushes and pulls the private `callora` image. *legacy* |
 | `TWILIO_ACCOUNT_SID` | yes | Twilio REST: hang up, transfer to a human. *legacy* |
 | `TWILIO_AUTH_TOKEN` | yes | Validates every Twilio webhook signature; signs media-stream tokens when `STREAM_TOKEN_SECRET` is unset. *legacy* |
@@ -36,6 +37,7 @@ secrets already configured in GitHub keep working.
 | Name | Required | Used for |
 | --- | --- | --- |
 | `DOCKER_HUB_USERNAME` | yes | Docker Hub namespace of the image. *legacy* |
+| `PUBLIC_BASE_URL` | yes for a fresh VM | `https://<hostname>` Twilio calls, no trailing slash. Written into the VM's `.env` only when absent there (never overwritten). The hostname's DNS A record must point at the VM. |
 | `ELEVENLABS_VOICE_ID` | yes for audio | Preferred place for the voice id (not sensitive). |
 | `ELEVENLABS_DYNAMIC_MODEL` | optional | Overrides the business's dynamic TTS model. |
 | `TEXT_LLM_MODEL` | optional | LLM model for understanding (default `gpt-4o-mini`). *legacy* |
@@ -44,6 +46,8 @@ secrets already configured in GitHub keep working.
 ## Host-only settings (`/opt/callora/.env` on the VM, never sent by the pipeline)
 
 `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `PUBLIC_BASE_URL` — *legacy*, unchanged.
+On a fresh VM, `deploy.sh init-host` (run by CI) creates them: the database password is
+generated on the VM and never leaves it, and `PUBLIC_BASE_URL` comes from the Variable above.
 
 ## Optional runtime tuning (environment)
 

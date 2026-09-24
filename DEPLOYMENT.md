@@ -21,36 +21,38 @@ The resulting image name is `DOCKER_HUB_USERNAME/callora`. The workflow publishe
 
 ## Before the first deployment
 
-1. Point the hostname used by `PUBLIC_BASE_URL` to the VM's public IP.
-2. Allow inbound TCP 80 and 443 in the Oracle Cloud VCN security list or network security group. Keep 3000 and 5432 closed. SSH must be available on port 22.
-3. Bootstrap the VM as described below.
-4. Authorize the public key matching `KEY_PEM` for the deployment account named by `USER`.
-5. Create `/opt/callora/.env` with the production application settings shown below.
-6. Create the exact GitHub Repository Secrets and Variable listed below.
+No manual work happens on the VM. The deploy workflow bootstraps it itself, over the same SSH connection it deploys with.
 
-## Bootstrap Oracle Linux 9
+1. **Oracle Cloud** (console, not the VM): allow inbound TCP 22, 80 and 443 in the VCN security list or NSG. Keep 3000 and 5432 closed.
+2. **DNS:** point the `PUBLIC_BASE_URL` hostname's A record at the VM.
+3. **GitHub:** create the Secrets and Variables in [SECRETS.md](SECRETS.md). At minimum: `IP`, `USER` (`opc`), `KEY_PEM`, `DOCKER_HUB_TOKEN`, `DOCKER_HUB_USERNAME`, `PUBLIC_BASE_URL`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TAXI_PHONE_NUMBERS`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`. Pinning the host key in `SSH_KNOWN_HOSTS` is recommended.
+4. **Run the workflow.** Push to `main`, or, from **Actions → Callora CI/CD → Run workflow** on `main`:
+   - `bootstrap`: prepare and validate the VM only;
+   - `deploy`: a full release;
+   - `reset` with `confirm_reset = DELETE-LEGACY-CALLORA`: remove the legacy Callora deployment, then bootstrap and deploy V2 on a clean host.
 
-Run these commands while logged into the VM as the intended deployment user (normally `opc`):
+What the **host** job does on every run (idempotent):
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/ben12211/callora/main/deploy/bootstrap-oracle-linux.sh \
-  -o /tmp/bootstrap-callora.sh
-chmod 0755 /tmp/bootstrap-callora.sh
-sudo /tmp/bootstrap-callora.sh "$(id -un)"
-exit
+- `deploy/ci-ssh-setup.sh` checks `KEY_PEM`, sets up the host key, and proves SSH works.
+- `deploy/bootstrap-oracle-linux.sh` (via `sudo -n`) installs Docker Engine and the Compose plugin only if they are missing, configures log rotation, adds `USER` to the `docker` group, creates `/opt/callora`, and opens HTTP/HTTPS in firewalld. It never restarts a Docker daemon that is already serving.
+- `deploy.sh purge-legacy` runs **only in `reset` mode**. It removes containers of the Compose project `callora`, `*/callora:*` and `callora-renikud` images, the `callora_postgres_data` and `callora_voice_library` volumes, the `callora_*` networks, and Callora's files in `/opt/callora`. It keeps Caddy's certificate volumes, and anything belonging to other stacks on the VM (such as the service behind Caddy's `:80` fallback). Other Callora-named leftovers are only reported.
+- `deploy.sh init-host` creates any missing host settings: `PUBLIC_BASE_URL` from the Variable, and a database password generated on the VM with the matching `DATABASE_URL`. It never overwrites an existing value, and it refuses to invent a password next to an existing database volume. It also verifies that the deploy user can use Docker.
+
+The **deploy** job then syncs runtime settings, pulls the SHA-tagged image, runs migrations, replaces the backend, starts Caddy, waits for the container, internal and public HTTPS health checks, and rolls back automatically if anything fails.
+
+### Running the reset from a workstation (only if the workflow cannot run yet)
+
+The same scripts, from PowerShell on the machine that holds the key (replace the IP and key path):
+
+```powershell
+$key = "C:\path\to\ssh-key.key"; $vm = "opc@<IP>"
+scp -i $key deploy/bootstrap-oracle-linux.sh deploy/deploy.sh "${vm}:/tmp/"
+ssh -i $key $vm "sudo -n bash /tmp/bootstrap-oracle-linux.sh opc && install -m 0755 /tmp/deploy.sh /opt/callora/deploy.sh"
+ssh -i $key $vm "bash /opt/callora/deploy.sh purge-legacy I-UNDERSTAND-THIS-DELETES-THE-CALLORA-DATABASE"
+"PUBLIC_BASE_URL=https://<hostname>" | ssh -i $key $vm "bash /opt/callora/deploy.sh init-host"
 ```
 
-Reconnect so the new Docker group membership applies, then verify it:
-
-```bash
-docker version
-docker compose version
-test -w /opt/callora
-```
-
-The bootstrap script uses Docker's RPM repository, installs Docker Engine plus the Compose/Buildx plugins, enables Docker at boot, creates `/opt/callora`, and opens HTTP/HTTPS in `firewalld`. It does not alter Oracle Cloud VCN or NSG rules.
-
-If the repository is private and the raw download is unavailable, copy `deploy/bootstrap-oracle-linux.sh` to `/tmp/bootstrap-callora.sh` over SCP and run the same `chmod` and `sudo` commands.
+The first real release still comes from the workflow (it builds and publishes the image).
 
 ## Production environment on the VM
 

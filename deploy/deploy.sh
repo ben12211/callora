@@ -763,6 +763,128 @@ update_runtime_secrets() {
   log "Runtime settings updated: ${!incoming[*]}."
 }
 
+# First-run host configuration, run by CI before every deployment. Creates only what is
+# missing and never overwrites an existing setting:
+# - PUBLIC_BASE_URL from the pipeline (a non-secret GitHub Variable), when absent;
+# - POSTGRES_USER/DB, a POSTGRES_PASSWORD generated here (it never leaves the VM) and the
+#   matching DATABASE_URL, when absent.
+# Settings lost from .env are first recovered from the backup or the running containers.
+# It refuses to invent a password next to an existing database volume, since that
+# password would not match the data.
+init_host() {
+  local public_base_url='' line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      PUBLIC_BASE_URL=*) public_base_url="${line#PUBLIC_BASE_URL=}" ;;
+      '') ;;
+      *) log "init-host accepts only PUBLIC_BASE_URL (got ${line%%=*})."; return 1 ;;
+    esac
+  done
+
+  [[ -f "$ENV_FILE" ]] || { : > "$ENV_FILE"; chmod 0600 "$ENV_FILE"; log "Created $ENV_FILE."; }
+  recover_missing_settings "${HOST_SETTINGS[@]}"
+
+  local -a created=()
+  if ! setting_present PUBLIC_BASE_URL "$ENV_FILE"; then
+    [[ "$public_base_url" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || {
+      log 'PUBLIC_BASE_URL is not set on this VM; set the GitHub Variable PUBLIC_BASE_URL (https://host, no trailing slash).'
+      return 1
+    }
+    printf 'PUBLIC_BASE_URL=%s\n' "$public_base_url" >> "$ENV_FILE"
+    created+=(PUBLIC_BASE_URL)
+  fi
+
+  if ! setting_present POSTGRES_PASSWORD "$ENV_FILE"; then
+    if docker volume inspect callora_postgres_data >/dev/null 2>&1; then
+      log 'POSTGRES_PASSWORD is missing but the callora_postgres_data volume exists.'
+      log 'A new password would not open the existing database; restore POSTGRES_* in /opt/callora/.env.'
+      return 1
+    fi
+    local password
+    password="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+    setting_present POSTGRES_USER "$ENV_FILE" || { printf 'POSTGRES_USER=callora\n' >> "$ENV_FILE"; created+=(POSTGRES_USER); }
+    setting_present POSTGRES_DB "$ENV_FILE" || { printf 'POSTGRES_DB=callora\n' >> "$ENV_FILE"; created+=(POSTGRES_DB); }
+    local user db
+    user="$(sed -n 's/^[[:space:]]*POSTGRES_USER[[:space:]]*=[[:space:]]*//p' "$ENV_FILE" | tail -n 1)"
+    db="$(sed -n 's/^[[:space:]]*POSTGRES_DB[[:space:]]*=[[:space:]]*//p' "$ENV_FILE" | tail -n 1)"
+    printf 'POSTGRES_PASSWORD=%s\n' "$password" >> "$ENV_FILE"
+    created+=(POSTGRES_PASSWORD)
+    if ! setting_present DATABASE_URL "$ENV_FILE"; then
+      # Hex only, so no URL encoding is needed.
+      printf 'DATABASE_URL=postgresql://%s:%s@db:5432/%s\n' "$user" "$password" "$db" >> "$ENV_FILE"
+      created+=(DATABASE_URL)
+    fi
+  fi
+
+  local setting
+  local -a missing=()
+  for setting in "${HOST_SETTINGS[@]}"; do
+    setting_present "$setting" "$ENV_FILE" || missing+=("$setting")
+  done
+  [[ ${#missing[@]} -eq 0 ]] || { log "Still missing host settings: ${missing[*]}."; return 1; }
+  chmod 0600 "$ENV_FILE"
+
+  # Names only, never values.
+  if [[ ${#created[@]} -gt 0 ]]; then
+    log "Host settings created: ${created[*]}."
+  else
+    log 'Host settings present.'
+  fi
+  docker info >/dev/null 2>&1 || { log "The deploy user cannot use Docker; re-run the bootstrap."; return 1; }
+  log "Host check passed: Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null), $(available_mib "$APP_DIR") MiB free."
+}
+
+# Removes the legacy (pre-V2) Callora deployment so the host can be bootstrapped clean.
+# Destructive, so it runs only when asked for explicitly (workflow mode `reset`, which
+# requires a typed confirmation). Scope is deliberately narrow:
+# - containers whose Compose project label is `callora` (never other projects),
+# - images named */callora:* and callora-renikud*,
+# - the legacy app volumes: callora_postgres_data (legacy database) and callora_voice_library,
+# - Callora's own files in /opt/callora (.env, rollback state, compose/Caddy files, models).
+# Caddy's certificate volumes are kept (same domain, no reissue), and nothing belonging to
+# another stack on this VM is touched; anything else that looks related is only reported.
+purge_legacy() {
+  local id
+  log 'Removing the legacy Callora deployment.'
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    log "Removing container $(docker inspect --format '{{.Name}} ({{.Config.Image}})' "$id" 2>/dev/null)."
+    docker rm -f "$id" >/dev/null
+  done < <(docker ps --all --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT")
+
+  local image
+  while IFS= read -r image; do
+    [[ -n "$image" && "$image" != *'<none>'* ]] || continue
+    docker image rm -f -- "$image" >/dev/null 2>&1 && log "Removed image $image."
+  done < <(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '(^|/)callora:|^callora-renikud' || true)
+
+  local volume
+  for volume in callora_postgres_data callora_voice_library; do
+    if docker volume inspect "$volume" >/dev/null 2>&1; then
+      docker volume rm "$volume" >/dev/null && log "Removed volume $volume."
+    fi
+  done
+  docker network ls --format '{{.Name}}' | grep -E "^${COMPOSE_PROJECT}_" | while IFS= read -r net; do
+    docker network rm "$net" >/dev/null 2>&1 && log "Removed network $net."
+  done
+
+  local f
+  for f in .env .env.* docker-compose.prod.yml Caddyfile .rollback .last-successful-image incoming .models; do
+    compgen -G "$APP_DIR/$f" >/dev/null || continue
+    rm -rf -- "$APP_DIR"/$f
+    log "Removed $APP_DIR/$f."
+  done
+  install -d -m 0700 "$INCOMING_DIR"
+  docker image prune --force >/dev/null 2>&1 || true
+
+  # Report, never remove, anything else that mentions callora.
+  local leftovers
+  leftovers="$(docker ps --all --format '{{.Names}} {{.Image}}' | grep -i callora || true)$(docker volume ls --format '{{.Name}}' | grep -i callora | grep -vE '^callora_caddy_(data|config)$' || true)"
+  [[ -z "$leftovers" ]] || log "Left in place (not part of the Callora project; check by hand): $(tr '\n' ' ' <<<"$leftovers")"
+  log 'Legacy deployment removed; Caddy certificate volumes and other stacks were kept.'
+}
+
 main() {
   [[ -d "$APP_DIR" ]] || {
     log "$APP_DIR does not exist; run the bootstrap script first."
@@ -796,6 +918,17 @@ main() {
       [[ $# -eq 1 ]] || { log 'Usage: deploy.sh update-secrets'; exit 2; }
       update_runtime_secrets
       ;;
+    purge-legacy)
+      [[ $# -eq 2 && "$2" == 'I-UNDERSTAND-THIS-DELETES-THE-CALLORA-DATABASE' ]] || {
+        log 'Usage: deploy.sh purge-legacy I-UNDERSTAND-THIS-DELETES-THE-CALLORA-DATABASE'
+        exit 2
+      }
+      purge_legacy
+      ;;
+    init-host)
+      [[ $# -eq 1 ]] || { log 'Usage: deploy.sh init-host'; exit 2; }
+      init_host
+      ;;
     reclaim)
       # Callable on its own so a host that has already filled up can be made writable
       # again before the deployment starts writing to it.
@@ -807,7 +940,7 @@ main() {
       report_disk_usage
       ;;
     *)
-      log 'Usage: deploy.sh {deploy IMAGE|confirm|rollback|update-secrets|reclaim}'
+      log 'Usage: deploy.sh {deploy IMAGE|confirm|rollback|update-secrets|init-host|purge-legacy CONFIRM|reclaim}'
       exit 2
       ;;
   esac
