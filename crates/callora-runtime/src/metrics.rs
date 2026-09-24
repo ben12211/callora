@@ -62,6 +62,8 @@ pub struct Metrics {
     /// Caller started speaking over the agent → playout cancelled.
     pub barge_in_latency: Histogram,
     pub llm_latency: Histogram,
+    /// End of the caller's speech (finalize sent) → final transcript.
+    pub stt_final: Histogram,
     pub tts_first_chunk: Histogram,
     pub action_latency: Histogram,
     /// Audio segments by source: cached / template / tts.
@@ -125,6 +127,7 @@ impl Metrics {
             &mut out,
         );
         self.llm_latency.render("callora_llm_latency_ms", "LLM understanding latency.", "", &mut out);
+        self.stt_final.render("callora_stt_final_ms", "End of speech to final transcript.", "", &mut out);
         self.tts_first_chunk.render("callora_tts_first_chunk_ms", "Dynamic TTS time to first audio.", "", &mut out);
         self.action_latency.render("callora_action_latency_ms", "Business action latency.", "", &mut out);
         out

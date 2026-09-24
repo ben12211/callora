@@ -4,4 +4,6 @@
 pub mod cartesia;
 pub mod elevenlabs;
 pub mod openai;
+pub mod race;
+pub mod scribe;
 pub mod twilio_rest;

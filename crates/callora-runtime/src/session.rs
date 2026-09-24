@@ -25,7 +25,7 @@ use callora_core::business::Business;
 use callora_core::customer::Customer;
 use callora_core::engine::{Directive, Engine, HandoffSummary};
 use callora_core::llm;
-use callora_core::render::{SegmentOrigin, SpeechPlan};
+use callora_core::render::{SegmentOrigin, SpeechPlan, SpeechSegment};
 use callora_core::speech::prepare_for_tts;
 use callora_core::understanding::{fast_path, merge, Understanding};
 
@@ -34,6 +34,10 @@ use crate::ports::{
     ActionRunner, CallInfo, CallRecord, CallStore, LanguageModel, SpeechToText, SttEvent, SttInput, SttSession,
     Telephony, WhisperRegistry,
 };
+
+/// Up to this many words that nothing understood are treated as noise when the LLM cannot
+/// be asked.
+const SHORT_GARBAGE_WORDS: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -156,6 +160,8 @@ pub struct Session {
     barge_in_started: Option<Instant>,
     /// The agent was cut off and no real utterance has followed yet.
     interrupted: bool,
+    /// When the last finalize went to the STT, for the transcription latency metric.
+    finalize_sent_at: Option<Instant>,
     /// The caller turn (engine turn count) the thinking filler last played on. A filler
     /// on every turn sounds scripted, so it never plays on two turns in a row.
     filler_turn: Option<u32>,
@@ -205,6 +211,7 @@ impl Session {
             speech_ended_at: None,
             barge_in_started: None,
             interrupted: false,
+            finalize_sent_at: None,
             filler_turn: None,
         };
         s.services.store.record(CallRecord::Started { info: s.info.clone() });
@@ -213,9 +220,10 @@ impl Session {
         {
             let stt = s.services.stt.clone();
             let language = s.business.config.language.clone();
+            let keyterms = s.business.stt_keyterms();
             let tx = s.events.clone();
             tokio::spawn(async move {
-                let _ = tx.send(Ev::SttReady(stt.open(&language).await));
+                let _ = tx.send(Ev::SttReady(stt.open(&language, &keyterms).await));
             });
         }
 
@@ -310,7 +318,9 @@ impl Session {
             Some(VadEvent::SpeechEnded) => {
                 self.speech_ended_at = Some(Instant::now());
                 if let Some(stt) = &self.stt {
-                    let _ = stt.input.try_send(SttInput::Finalize);
+                    if stt.input.try_send(SttInput::Finalize).is_ok() {
+                        self.finalize_sent_at = Some(Instant::now());
+                    }
                 }
             }
             None => {}
@@ -351,15 +361,19 @@ impl Session {
                 self.stt = None;
                 let stt = self.services.stt.clone();
                 let language = self.business.config.language.clone();
+                let keyterms = self.business.stt_keyterms();
                 let tx = self.events.clone();
                 tokio::spawn(async move {
-                    let _ = tx.send(Ev::SttReady(stt.open(&language).await));
+                    let _ = tx.send(Ev::SttReady(stt.open(&language, &keyterms).await));
                 });
             }
         }
     }
 
     fn on_final(&mut self, text: String) {
+        if let Some(t) = self.finalize_sent_at.take() {
+            self.services.metrics.stt_final.observe(t.elapsed().as_millis() as u64);
+        }
         let text = text.trim().to_string();
         if text.is_empty() {
             return;
@@ -479,8 +493,15 @@ impl Session {
                     }
                     Err(error) => {
                         self.services.metrics.llm_failures_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tracing::warn!(call = %self.info.call_sid, %error, "llm understanding failed; using the fast path");
-                        pending.fast
+                        tracing::warn!(call = %self.info.call_sid, error = %format!("{error:#}"), "llm understanding failed; using the fast path");
+                        // Without the LLM's judgement, a few words the rules make nothing of
+                        // are more likely line noise than a request: answering them with
+                        // "didn't catch that" is the robotic reflex callers complained about.
+                        let mut fast = pending.fast;
+                        if fast.is_empty() && fast.transcript.split_whitespace().count() <= SHORT_GARBAGE_WORDS {
+                            fast.noise = true;
+                        }
+                        fast
                     }
                 };
                 if u.noise {
@@ -583,6 +604,10 @@ impl Session {
     /// Queue a plan: each segment from the voice library when it is there, otherwise from
     /// dynamic TTS (streamed, and cached for next time).
     fn speak(&mut self, plan: SpeechPlan) {
+        // A reply that opens with live TTS would start with a second of silence.
+        if !self.agent_busy() && plan.segments.first().is_some_and(|s| self.needs_live_tts(s)) {
+            self.cover_live_tts(plan.gain_db);
+        }
         for seg in &plan.segments {
             let id = self.next_item;
             self.next_item += 1;
@@ -595,17 +620,9 @@ impl Session {
                 self.enqueue(PlayItem { id, source: Source::Clip(clip), gain_db: plan.gain_db });
                 continue;
             }
-            let (Some(tts), Some(voice_id)) = (self.services.tts.clone(), self.business.voice_id.clone()) else {
+            let (Some(tts), Some(request)) = (self.services.tts.clone(), self.tts_request(seg)) else {
                 tracing::error!(call = %self.info.call_sid, text = %seg.text, "not in the voice library and no TTS configured; segment skipped");
                 continue;
-            };
-            let c = &self.business.config;
-            let request = TtsRequest {
-                text: prepare_for_tts(&seg.text, &c.language, &self.business.pronouncer),
-                voice_id,
-                model: self.cfg.dynamic_model.clone().unwrap_or_else(|| c.voice.dynamic_model.clone()),
-                settings: c.voice.settings_for(&seg.delivery),
-                language: c.language.clone(),
             };
             let key = request.cache_key();
             if let Some(audio) = self.services.tts_cache.get(&key) {
@@ -617,6 +634,38 @@ impl Session {
             let (tx, rx) = mpsc::channel(64);
             self.enqueue(PlayItem { id, source: Source::Stream(rx), gain_db: plan.gain_db });
             spawn_tts(tts, request, key, tx, self.services.tts_cache.clone(), self.events.clone());
+        }
+    }
+
+    fn tts_request(&self, seg: &SpeechSegment) -> Option<TtsRequest> {
+        let c = &self.business.config;
+        Some(TtsRequest {
+            text: prepare_for_tts(&seg.text, &c.language, &self.business.pronouncer),
+            voice_id: self.business.voice_id.clone()?,
+            model: self.cfg.dynamic_model.clone().unwrap_or_else(|| c.voice.dynamic_model.clone()),
+            settings: c.voice.settings_for(&seg.delivery),
+            language: c.language.clone(),
+        })
+    }
+
+    /// Neither pre-generated nor already synthesized this process: it will take a while.
+    fn needs_live_tts(&self, seg: &SpeechSegment) -> bool {
+        self.services.tts.is_some()
+            && self.library.get(&seg.delivery, &seg.text).is_none()
+            && self.tts_request(seg).is_some_and(|r| self.services.tts_cache.get(&r.cache_key()).is_none())
+    }
+
+    /// The business's short opener, from the library only (it must never need TTS itself).
+    fn cover_live_tts(&mut self, gain_db: f32) {
+        let Some(id) = self.business.config.voice.dynamic_cover.clone() else { return };
+        let Some(plan) = self.engine.render_response(&id) else { return };
+        for seg in &plan.segments {
+            if let Some(clip) = self.library.get(&seg.delivery, &seg.text) {
+                let id = self.next_item;
+                self.next_item += 1;
+                self.services.metrics.segment("cover");
+                self.enqueue(PlayItem { id, source: Source::Clip(clip), gain_db });
+            }
         }
     }
 

@@ -803,6 +803,15 @@ impl Engine {
             out.push(Directive::Handoff { summary });
             return;
         }
+        if reason == "not_understood" && self.state.fallback_restarts == 0 {
+            if let Some(restart) = self.business.config.fallback.restart.clone() {
+                self.state.fallback_restarts += 1;
+                self.state.fallback_level = 0;
+                let ctx = self.render_ctx(None);
+                self.say(out, &restart, ctx, true);
+                return;
+            }
+        }
         let ctx = self.render_ctx(None);
         self.say(out, &handoff.unavailable_response, ctx, true);
         if reason == "not_understood" || reason == "action_failed" {

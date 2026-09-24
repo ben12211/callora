@@ -44,8 +44,10 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?TWILIO_ACCOUNT_SID is required}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
       STREAM_TOKEN_SECRET: ${STREAM_TOKEN_SECRET:-}
-      # Speech: Cartesia hears, ElevenLabs speaks (library + dynamic), the LLM only
-      # helps understanding. Each one missing degrades the service instead of stopping it.
+      # Speech: ElevenLabs Scribe hears (Cartesia with STT_PROVIDER=cartesia), ElevenLabs
+      # speaks (library + dynamic), the LLMs only help understanding. Each one missing
+      # degrades the service instead of stopping it.
+      STT_PROVIDER: ${STT_PROVIDER:-}
       CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
       CARTESIA_STT_MODEL: ${CARTESIA_STT_MODEL:-}
       CARTESIA_VERSION: ${CARTESIA_VERSION:-}
@@ -55,6 +57,7 @@ services:
       ELEVENLABS_DYNAMIC_MODEL: ${ELEVENLABS_DYNAMIC_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
       TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
       TEXT_LLM_REASONING_EFFORT: ${TEXT_LLM_REASONING_EFFORT:-}
       TEXT_LLM_BASE_URL: ${TEXT_LLM_BASE_URL:-}

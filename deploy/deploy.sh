@@ -620,6 +620,14 @@ deploy_release() {
   done
   [[ "$migrated" == true ]]
 
+  # New or changed sentences are recorded before the release answers calls, so none of
+  # them falls back to a second of live TTS. Only missing clips are synthesized, so an
+  # unchanged release costs nothing; a failure (ElevenLabs down) must not block it.
+  log 'Recording new sentences into the voice library.'
+  if ! compose run --rm --no-deps backend voice-library build; then
+    log 'The voice library build did not finish; missing sentences will use live TTS.'
+  fi
+
   log 'Replacing the backend only after migrations succeed.'
   compose up -d --no-deps backend
   wait_for_healthy backend 60
@@ -676,7 +684,7 @@ rollback_release() {
 readonly SYNCED_SETTINGS=(
   TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN STREAM_TOKEN_SECRET
   ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID ELEVENLABS_DYNAMIC_MODEL
-  CARTESIA_API_KEY OPENAI_API_KEY GEMINI_API_KEY TEXT_LLM_MODEL TEXT_LLM_REASONING_EFFORT
+  STT_PROVIDER CARTESIA_API_KEY OPENAI_API_KEY GEMINI_API_KEY GEMINI_MODEL TEXT_LLM_MODEL TEXT_LLM_REASONING_EFFORT
   TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER
   TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN TAXI_CRM_URL TAXI_CRM_TOKEN
   ALLOW_LIST ADMIN_API_KEY

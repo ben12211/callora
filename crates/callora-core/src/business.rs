@@ -93,6 +93,21 @@ pub struct Business {
 }
 
 impl Business {
+    /// Words the speech recognizer should expect: the configured ones first, then every
+    /// known place name and alias, without duplicates.
+    pub fn stt_keyterms(&self) -> Vec<String> {
+        let c = &self.config;
+        let places = c.places.iter().flat_map(|p| std::iter::once(&p.name).chain(&p.aliases));
+        let mut seen = std::collections::HashSet::new();
+        c.stt_keyterms
+            .iter()
+            .chain(places)
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty() && seen.insert(*t))
+            .map(str::to_string)
+            .collect()
+    }
+
     pub fn intent(&self, id: &str) -> Option<&IntentConfig> {
         self.config.intents.iter().find(|i| i.id == id)
     }
@@ -321,6 +336,9 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
     if c.fallback.ladder.is_empty() {
         v.push(Issue { path: "fallback.ladder".into(), message: "needs at least one response".into() });
     }
+    if let Some(r) = &c.fallback.restart {
+        need_response("fallback.restart", r, &mut v);
+    }
     for (n, r) in c.fallback.ladder.iter().enumerate() {
         need_response(&format!("fallback.ladder[{n}]"), r, &mut v);
     }
@@ -328,6 +346,9 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
     need_response("handoff.unavailable_response", &c.handoff.unavailable_response, &mut v);
     if let Some(r) = &c.silence.response {
         need_response("silence.response", r, &mut v);
+    }
+    if let Some(r) = &c.voice.dynamic_cover {
+        need_response("voice.dynamic_cover", r, &mut v);
     }
     if let Some(r) = &c.understanding.thinking_filler {
         need_response("understanding.thinking_filler", r, &mut v);

@@ -45,6 +45,10 @@ pub struct BusinessConfig {
     pub slots: BTreeMap<SlotId, SlotConfig>,
     #[serde(default)]
     pub places: Vec<PlaceConfig>,
+    /// Words the speech recognizer should expect, such as the cities and streets of the
+    /// service area. Known place names and aliases are added automatically.
+    #[serde(default)]
+    pub stt_keyterms: Vec<String>,
     pub pipelines: BTreeMap<PipelineId, PipelineConfig>,
     #[serde(default)]
     pub actions: BTreeMap<ActionId, ActionConfig>,
@@ -96,6 +100,10 @@ pub struct VoiceConfig {
     pub settings: VoiceSettings,
     /// Named delivery styles (normal, calm, important, quick, slow). `normal` is required.
     pub deliveries: BTreeMap<String, DeliveryConfig>,
+    /// Pre-generated opener ("אוקיי.") played the moment a reply must start with live TTS,
+    /// so the caller hears something during the second the synthesis takes.
+    #[serde(default)]
+    pub dynamic_cover: Option<ResponseId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -558,6 +566,10 @@ pub struct FallbackConfig {
     /// Escalating responses for consecutive misunderstandings. After the last one the call
     /// is handed off (if possible) or ended.
     pub ladder: Vec<ResponseId>,
+    /// Said instead of ending the call when the ladder runs out and no human can take over;
+    /// the ladder then starts again, once. A bad line should not cost the caller the call.
+    #[serde(default)]
+    pub restart: Option<ResponseId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -23,6 +23,8 @@ pub struct OpenAi {
     reasoning_effort: Option<String>,
     /// Gemini 3 models degrade below their default temperature, so it is not always sent.
     temperature: Option<f32>,
+    /// Which provider this is, for logs and errors.
+    label: &'static str,
 }
 
 impl OpenAi {
@@ -35,6 +37,7 @@ impl OpenAi {
             model: nonblank(model).unwrap_or_else(|| DEFAULT_MODEL.into()),
             reasoning_effort: None,
             temperature: Some(0.0),
+            label: "openai",
         }
     }
 
@@ -52,6 +55,7 @@ impl OpenAi {
         Self {
             reasoning_effort: Some(nonblank(reasoning_effort).unwrap_or_else(|| "low".into())),
             temperature: None,
+            label: "gemini",
             ..Self::new(
                 http,
                 api_key,
@@ -113,7 +117,7 @@ impl LanguageModel for OpenAi {
     }
 
     fn name(&self) -> &'static str {
-        "openai"
+        self.label
     }
 }
 

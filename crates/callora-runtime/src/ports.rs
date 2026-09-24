@@ -48,8 +48,9 @@ pub struct SttSession {
 
 #[async_trait]
 pub trait SpeechToText: Send + Sync {
-    /// Open a streaming recognition session for one call.
-    async fn open(&self, language: &str) -> anyhow::Result<SttSession>;
+    /// Open a streaming recognition session for one call. `keyterms` are words the caller
+    /// is likely to say (place and street names); recognizers that support biasing use them.
+    async fn open(&self, language: &str, keyterms: &[String]) -> anyhow::Result<SttSession>;
     fn name(&self) -> &'static str;
 }
 

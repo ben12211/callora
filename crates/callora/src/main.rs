@@ -15,7 +15,10 @@ use callora_core::business::{Business, BusinessRegistry};
 use callora_core::engine::{Directive, Engine};
 use callora_core::render::library_entries;
 use callora_core::understanding::{fast_path, merge};
-use callora_providers::{cartesia::Cartesia, elevenlabs::ElevenLabs, openai::OpenAi, twilio_rest::TwilioRest};
+use callora_providers::{
+    cartesia::Cartesia, elevenlabs::ElevenLabs, openai::OpenAi, race::FirstAnswer, scribe::Scribe,
+    twilio_rest::TwilioRest,
+};
 use callora_runtime::actions::ConfiguredActions;
 use callora_runtime::metrics::Metrics;
 use callora_runtime::ports::{
@@ -75,8 +78,9 @@ enum ConfigCommand {
 enum LibraryCommand {
     /// Generate every missing clip with ElevenLabs.
     Build {
+        /// One business; every business when omitted.
         #[arg(long)]
-        business: String,
+        business: Option<String>,
         #[arg(long, env = "AUDIO_LIBRARY_DIR", default_value = "voice-library")]
         out: PathBuf,
         #[arg(long, default_value_t = 4)]
@@ -96,14 +100,53 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// The understanding LLM: Gemini when GEMINI_API_KEY is set, otherwise OpenAI (or any
-/// endpoint TEXT_LLM_BASE_URL names).
-fn language_model(http: reqwest::Client) -> Option<OpenAi> {
-    let (base_url, model) = (env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL"));
+/// The understanding LLM. With both GEMINI_API_KEY and OPENAI_API_KEY, both are asked and
+/// the first valid answer wins. TEXT_LLM_BASE_URL and TEXT_LLM_MODEL configure the OpenAI
+/// side (any compatible endpoint); GEMINI_MODEL and TEXT_LLM_REASONING_EFFORT the Gemini side.
+fn language_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
+    let mut models: Vec<Arc<dyn LanguageModel>> = Vec::new();
     if let Some(key) = env("GEMINI_API_KEY") {
-        return Some(OpenAi::gemini(http, key, base_url, model, env("TEXT_LLM_REASONING_EFFORT")));
+        models.push(Arc::new(OpenAi::gemini(
+            http.clone(),
+            key,
+            None,
+            env("GEMINI_MODEL"),
+            env("TEXT_LLM_REASONING_EFFORT"),
+        )));
     }
-    env("OPENAI_API_KEY").map(|key| OpenAi::new(http, key, base_url, model))
+    if let Some(key) = env("OPENAI_API_KEY") {
+        models.push(Arc::new(OpenAi::new(http, key, env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL"))));
+    }
+    match models.len() {
+        0 => None,
+        1 => models.pop(),
+        _ => Some(Arc::new(FirstAnswer::new(models))),
+    }
+}
+
+/// Speech recognition: Scribe (ElevenLabs) unless STT_PROVIDER=cartesia; either needs its key.
+fn speech_to_text() -> Arc<dyn SpeechToText> {
+    let scribe = || {
+        env("ELEVENLABS_API_KEY").map(|key| {
+            Arc::new(Scribe::new(key, env("ELEVENLABS_STT_URL"), env("ELEVENLABS_STT_MODEL"))) as Arc<dyn SpeechToText>
+        })
+    };
+    let cartesia = || {
+        env("CARTESIA_API_KEY").map(|key| {
+            Arc::new(Cartesia::new(key, env("CARTESIA_STT_URL"), env("CARTESIA_STT_MODEL"), env("CARTESIA_VERSION")))
+                as Arc<dyn SpeechToText>
+        })
+    };
+    let chosen = match env("STT_PROVIDER").as_deref() {
+        Some("cartesia") => cartesia().or_else(scribe),
+        _ => scribe().or_else(cartesia),
+    };
+    chosen.unwrap_or_else(|| {
+        tracing::error!(
+            "neither ELEVENLABS_API_KEY nor CARTESIA_API_KEY is set: calls cannot be understood and will be handed off"
+        );
+        Arc::new(NoStt)
+    })
 }
 
 fn env_snapshot() -> HashMap<String, String> {
@@ -195,36 +238,51 @@ async fn voice_library(dir: &Path, command: LibraryCommand) -> anyhow::Result<()
     let reg = load_registry(dir)?;
     match command {
         LibraryCommand::Build { business, out, concurrency, dry_run } => {
-            let b = reg.by_id(&business).context("unknown business")?;
-            let entries = library_entries(&b);
-            if dry_run {
-                for e in &entries {
-                    println!("[{}] {:<24} {}", e.delivery, e.response_id, e.text);
+            let businesses = match &business {
+                Some(id) => vec![reg.by_id(id).context("unknown business")?],
+                None => reg.all().cloned().collect(),
+            };
+            let mut failed = 0;
+            for b in businesses {
+                let entries = library_entries(&b);
+                if dry_run {
+                    for e in &entries {
+                        println!("[{}] {:<24} {}", e.delivery, e.response_id, e.text);
+                    }
+                    println!("{}: {} clips", b.config.id, entries.len());
+                    continue;
                 }
-                println!("{} clips", entries.len());
-                return Ok(());
-            }
-            let api_key =
-                env("ELEVENLABS_API_KEY").context("ELEVENLABS_API_KEY is required to generate the library")?;
-            let voice_id = b.voice_id.clone().context("the business voice id is not set (see voice.voice_id_env)")?;
-            let model = env("ELEVENLABS_LIBRARY_MODEL").unwrap_or_else(|| b.config.voice.library_model.clone());
-            let synth: Arc<dyn Synthesizer> =
-                Arc::new(ElevenLabs::new(http(), api_key, env("ELEVENLABS_API_BASE_URL")));
-            println!("Generating up to {} clips for `{}` with {model}...", entries.len(), b.config.id);
-            let report = LibraryBuilder { business: &b, synthesizer: synth, voice_id, model, root: out, concurrency }
+                let api_key =
+                    env("ELEVENLABS_API_KEY").context("ELEVENLABS_API_KEY is required to generate the library")?;
+                let voice_id =
+                    b.voice_id.clone().context("the business voice id is not set (see voice.voice_id_env)")?;
+                let model = env("ELEVENLABS_LIBRARY_MODEL").unwrap_or_else(|| b.config.voice.library_model.clone());
+                let synth: Arc<dyn Synthesizer> =
+                    Arc::new(ElevenLabs::new(http(), api_key, env("ELEVENLABS_API_BASE_URL")));
+                println!("Generating up to {} clips for `{}` with {model}...", entries.len(), b.config.id);
+                let report = LibraryBuilder {
+                    business: &b,
+                    synthesizer: synth,
+                    voice_id,
+                    model,
+                    root: out.clone(),
+                    concurrency,
+                }
                 .build()
                 .await?;
-            println!(
-                "total {} · generated {} · reused {} · failed {}",
-                report.total,
-                report.generated,
-                report.reused,
-                report.failed.len()
-            );
-            for f in &report.failed {
-                println!("  failed: {f}");
+                println!(
+                    "total {} · generated {} · reused {} · failed {}",
+                    report.total,
+                    report.generated,
+                    report.reused,
+                    report.failed.len()
+                );
+                for f in &report.failed {
+                    println!("  failed: {f}");
+                }
+                failed += report.failed.len();
             }
-            if !report.failed.is_empty() {
+            if failed > 0 {
                 std::process::exit(1);
             }
             Ok(())
@@ -241,13 +299,13 @@ async fn voice_library(dir: &Path, command: LibraryCommand) -> anyhow::Result<()
     }
 }
 
-/// STT for a server started without a Cartesia key: every call is handed off.
+/// STT for a server started without a speech recognition key: every call is handed off.
 struct NoStt;
 
 #[async_trait::async_trait]
 impl SpeechToText for NoStt {
-    async fn open(&self, _language: &str) -> anyhow::Result<SttSession> {
-        anyhow::bail!("CARTESIA_API_KEY is not set")
+    async fn open(&self, _language: &str, _keyterms: &[String]) -> anyhow::Result<SttSession> {
+        anyhow::bail!("no speech recognition key is set")
     }
     fn name(&self) -> &'static str {
         "none"
@@ -281,17 +339,9 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     }
 
     let client = http();
-    let stt: Arc<dyn SpeechToText> = match env("CARTESIA_API_KEY") {
-        Some(key) => {
-            Arc::new(Cartesia::new(key, env("CARTESIA_STT_URL"), env("CARTESIA_STT_MODEL"), env("CARTESIA_VERSION")))
-        }
-        None => {
-            tracing::error!("CARTESIA_API_KEY is not set: calls cannot be understood and will be handed off");
-            Arc::new(NoStt)
-        }
-    };
-    let llm: Option<Arc<dyn LanguageModel>> =
-        language_model(client.clone()).map(|m| Arc::new(m) as Arc<dyn LanguageModel>);
+    let stt = speech_to_text();
+    tracing::info!(stt = stt.name(), "speech recognition");
+    let llm = language_model(client.clone());
     if llm.is_none() {
         tracing::warn!(
             "neither GEMINI_API_KEY nor OPENAI_API_KEY is set: understanding uses the deterministic fast path only"

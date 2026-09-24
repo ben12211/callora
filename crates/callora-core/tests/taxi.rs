@@ -316,6 +316,35 @@ fn fallback_ladder_then_handoff_with_context() {
 }
 
 #[test]
+fn without_a_desk_a_bad_line_restarts_the_ladder_once_before_hanging_up() {
+    let (mut call, _) = Call::new(business(&[]));
+    let hangs_up = |d: &[Directive]| d.iter().any(|d| matches!(d, Directive::Hangup));
+    call.say("בלה בלה בלה");
+    call.say("גלגל ענק ירוק");
+    let d = call.say("פלפל שחור");
+    assert!(spoken(&d).contains("הקו קצת לא ברור"), "{}", spoken(&d));
+    assert!(!hangs_up(&d), "the first time, the call goes on");
+    assert_eq!(call.engine.state.fallback_level, 0);
+
+    call.say("בלה בלה בלה");
+    call.say("גלגל ענק ירוק");
+    let d = call.say("פלפל שחור");
+    assert!(spoken(&d).contains("אין מוקדן פנוי"), "{}", spoken(&d));
+    assert!(hangs_up(&d), "the second time, it ends politely");
+}
+
+#[test]
+fn recognizer_keyterms_cover_configured_words_and_known_places() {
+    let terms = business(&[]).stt_keyterms();
+    for t in ["באר שבע", "בני ברק", "ז'בוטינסקי", "נתב״ג", "שיבא", "עזריאלי"] {
+        assert!(terms.iter().any(|x| x == t), "{t} in {terms:?}");
+    }
+    let unique: std::collections::HashSet<_> = terms.iter().collect();
+    assert_eq!(unique.len(), terms.len(), "no duplicates");
+    assert!(terms.len() <= 100, "Scribe gets at most 100: {}", terms.len());
+}
+
+#[test]
 fn handoff_carries_collected_context() {
     let (mut call, _) = Call::new(with_desk());
     call.say("צריך מונית מרבי עקיבא 12 לנתב\"ג");

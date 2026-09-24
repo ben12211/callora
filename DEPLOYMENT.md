@@ -104,16 +104,16 @@ Migrations create and evolve only the `callora_v2` schema, and they are forward-
 
 ## Voice library
 
-Most replies are pre-generated audio, and the library is built once per voice (and again, incrementally, after response texts change). It lives in the `callora_voice_library` volume. After the first V2 deployment, and whenever `businesses/*.json` responses or the voice change:
+Most replies are pre-generated audio. It lives in the `callora_voice_library` volume, and every deployment records whatever is missing (new or changed sentences, or a new voice) before the new backend answers calls; only missing clips are synthesized, and a failed build does not block the release (those sentences use live TTS). To run it by hand:
 
 ```bash
 cd /opt/callora
-docker compose --env-file .env -f docker-compose.prod.yml run --rm backend voice-library build --business taxi
+docker compose --env-file .env -f docker-compose.prod.yml run --rm backend voice-library build
 docker compose --env-file .env -f docker-compose.prod.yml run --rm backend voice-library status
 docker compose --env-file .env -f docker-compose.prod.yml restart backend
 ```
 
-Only missing or changed clips are synthesized. Until the library exists, every reply uses dynamic TTS: this is slower, but works.
+The running backend loads the library at startup, hence the restart after a manual build.
 
 ## Cutting over from the legacy stack
 

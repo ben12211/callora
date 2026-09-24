@@ -41,7 +41,7 @@ struct ScriptedStt {
 
 #[async_trait]
 impl SpeechToText for ScriptedStt {
-    async fn open(&self, _language: &str) -> anyhow::Result<SttSession> {
+    async fn open(&self, _language: &str, _keyterms: &[String]) -> anyhow::Result<SttSession> {
         let (in_tx, mut in_rx) = mpsc::channel(1024);
         let (ev_tx, ev_rx) = mpsc::channel(16);
         *self.events.lock() = Some(ev_tx);
@@ -281,4 +281,22 @@ async fn a_stream_with_a_forged_token_is_refused() {
 
 fn chrono_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+#[tokio::test]
+async fn a_reply_that_starts_with_live_tts_opens_with_a_recorded_cover() {
+    let h = start_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, "CA43", "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "connected" }).to_string().into())).await.unwrap();
+    ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ1", "start": { "streamSid": "MZ1", "callSid": "CA43", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    collect(&mut ws, Duration::from_millis(400)).await;
+
+    h.stt.say("צריך מונית").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    // A one-word pickup is doubtful, so it is read back: "<value>, נכון?" needs live TTS.
+    h.stt.say("מזרחי").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(400)).await;
+    assert_eq!(frames.first(), Some(&0x55), "the recorded cover plays at once: {:?}", &frames[..frames.len().min(5)]);
+    assert!(frames.contains(&0x33), "then the live read-back");
 }

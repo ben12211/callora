@@ -150,6 +150,9 @@ pub struct CallState {
     pub completed: Vec<CompletedRun>,
     pub last_plan: Option<SpeechPlan>,
     pub fallback_level: u32,
+    /// Times the fallback ladder was started over instead of ending the call.
+    #[serde(default)]
+    pub fallback_restarts: u32,
     pub action_failures: u32,
     pub silence_reprompts: u32,
     /// Sticky delivery override ("slow" after "speak slower", "calm" when frustrated).
@@ -175,6 +178,7 @@ impl CallState {
             completed: Vec::new(),
             last_plan: None,
             fallback_level: 0,
+            fallback_restarts: 0,
             action_failures: 0,
             silence_reprompts: 0,
             delivery: None,

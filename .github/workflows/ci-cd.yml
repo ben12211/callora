@@ -194,6 +194,8 @@ jobs:
       CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+      STT_PROVIDER: ${{ vars.STT_PROVIDER }}
       TEXT_LLM_MODEL: ${{ vars.TEXT_LLM_MODEL }}
       TEXT_LLM_REASONING_EFFORT: ${{ vars.TEXT_LLM_REASONING_EFFORT }}
       TAXI_PHONE_NUMBERS: ${{ vars.TAXI_PHONE_NUMBERS || secrets.TAXI_PHONE_NUMBERS }}
@@ -222,7 +224,7 @@ jobs:
           fi
           [[ "$TWILIO_ACCOUNT_SID" =~ ^AC[0-9a-fA-F]{32}$ ]] || { echo 'TWILIO_ACCOUNT_SID is not a valid Account SID' >&2; exit 1; }
           [[ "$SERVER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo 'USER is not a valid Linux account name' >&2; exit 1; }
-          for name in CARTESIA_API_KEY ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID TAXI_PHONE_NUMBERS; do
+          for name in ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID TAXI_PHONE_NUMBERS; do
             [[ -n "${!name}" ]] || echo "Note: $name is not set; the service runs degraded without it (see SECRETS.md)."
           done
           [[ -n "$GEMINI_API_KEY$OPENAI_API_KEY" ]] || echo 'Note: neither GEMINI_API_KEY nor OPENAI_API_KEY is set; understanding uses rules only.'
@@ -254,7 +256,7 @@ jobs:
           # never printed. deploy.sh accepts only the names it knows.
           for name in TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN STREAM_TOKEN_SECRET \
                       ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID ELEVENLABS_DYNAMIC_MODEL \
-                      CARTESIA_API_KEY OPENAI_API_KEY GEMINI_API_KEY TEXT_LLM_MODEL TEXT_LLM_REASONING_EFFORT \
+                      STT_PROVIDER CARTESIA_API_KEY OPENAI_API_KEY GEMINI_API_KEY GEMINI_MODEL                       TEXT_LLM_MODEL TEXT_LLM_REASONING_EFFORT \
                       TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN \
                       TAXI_CRM_URL TAXI_CRM_TOKEN ALLOW_LIST ADMIN_API_KEY; do
             value="${!name}"

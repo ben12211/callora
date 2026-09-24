@@ -19,10 +19,10 @@ secrets already configured in GitHub keep working.
 | `TWILIO_ACCOUNT_SID` | yes | Twilio REST: hang up, transfer to a human. *legacy* |
 | `TWILIO_AUTH_TOKEN` | yes | Validates every Twilio webhook signature; signs media-stream tokens when `STREAM_TOKEN_SECRET` is unset. *legacy* |
 | `STREAM_TOKEN_SECRET` | recommended | Separate key for media-stream tokens (≥16 chars), so rotating the Twilio token does not change it. *legacy name* |
-| `CARTESIA_API_KEY` | yes for calls | Streaming speech-to-text (Cartesia `ink-whisper`). Without it calls are handed off. *legacy* |
-| `ELEVENLABS_API_KEY` | yes for audio | Voice library generation and dynamic TTS. *legacy* |
+| `CARTESIA_API_KEY` | optional | Backup speech-to-text (Cartesia `ink-whisper`), used with `STT_PROVIDER=cartesia` or when there is no ElevenLabs key. *legacy* |
+| `ELEVENLABS_API_KEY` | yes | Speech-to-text (Scribe v2 Realtime), voice library generation and dynamic TTS. Without it calls cannot be understood. *legacy* |
 | `ELEVENLABS_VOICE_ID` | yes for audio | The business voice (also accepted as a Variable, which is preferred). |
-| `GEMINI_API_KEY` | recommended | LLM structured understanding with Gemini (default model `gemini-3.8-flash`). Takes precedence over `OPENAI_API_KEY` when both are set. |
+| `GEMINI_API_KEY` | recommended | LLM structured understanding with Gemini (default model `gemini-3.8-flash`). With `OPENAI_API_KEY` too, both are asked and the first valid answer wins. A free-tier key is rate limited to a few requests a minute. |
 | `OPENAI_API_KEY` | recommended | LLM structured understanding when the fast path is unsure. Without it only the deterministic path runs. *legacy* |
 | `TAXI_PHONE_NUMBERS` | yes | Comma-separated E.164 Twilio numbers the taxi business answers on (also accepted as a Variable). |
 | `TAXI_HANDOFF_NUMBER` | recommended | E.164 number of the human dispatch desk. Without it, handoff says no one is available (also accepted as a Variable). |
@@ -41,8 +41,10 @@ secrets already configured in GitHub keep working.
 | `PUBLIC_BASE_URL` | yes for a fresh VM | `https://<hostname>` Twilio calls, no trailing slash. Written into the VM's `.env` only when absent there (never overwritten). The hostname's DNS A record must point at the VM. |
 | `ELEVENLABS_VOICE_ID` | yes for audio | Preferred place for the voice id (not sensitive). |
 | `ELEVENLABS_DYNAMIC_MODEL` | optional | Overrides the business's dynamic TTS model. |
-| `TEXT_LLM_MODEL` | optional | LLM model for understanding (default `gemini-3.8-flash` with `GEMINI_API_KEY`, otherwise `gpt-4o-mini`). *legacy* |
-| `TEXT_LLM_REASONING_EFFORT` | optional | Thinking level sent as `reasoning_effort` (Gemini default `minimal`, for low latency). |
+| `TEXT_LLM_MODEL` | optional | OpenAI-side model for understanding (default `gpt-4o-mini`). *legacy* |
+| `GEMINI_MODEL` | optional | Gemini model for understanding (default `gemini-3.8-flash`). |
+| `TEXT_LLM_REASONING_EFFORT` | optional | Gemini thinking level, sent as `reasoning_effort` (default `low`; `gemini-3.8-flash` rejects `minimal`). |
+| `STT_PROVIDER` | optional | `scribe` (default) or `cartesia`. |
 | `TAXI_PHONE_NUMBERS`, `TAXI_HANDOFF_NUMBER` | see above | May be Variables instead of Secrets. |
 
 ## Host-only settings (`/opt/callora/.env` on the VM, never sent by the pipeline)

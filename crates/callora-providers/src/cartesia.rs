@@ -56,7 +56,7 @@ impl Cartesia {
 
 #[async_trait]
 impl SpeechToText for Cartesia {
-    async fn open(&self, language: &str) -> anyhow::Result<SttSession> {
+    async fn open(&self, language: &str, _keyterms: &[String]) -> anyhow::Result<SttSession> {
         let mut request = self.url(language).into_client_request()?;
         request.headers_mut().insert("X-API-Key", self.api_key.parse()?);
         let (ws, _) =
