@@ -38,8 +38,9 @@ impl OpenAi {
         }
     }
 
-    /// Gemini through its OpenAI-compatible endpoint. Thinking is kept to the minimum
-    /// unless `reasoning_effort` says otherwise: understanding sits on the reply path.
+    /// Gemini through its OpenAI-compatible endpoint. Thinking is kept low unless
+    /// `reasoning_effort` says otherwise: understanding sits on the reply path, and
+    /// gemini-3.8-flash rejects "minimal".
     pub fn gemini(
         http: reqwest::Client,
         api_key: String,
@@ -49,7 +50,7 @@ impl OpenAi {
     ) -> Self {
         let nonblank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
         Self {
-            reasoning_effort: Some(nonblank(reasoning_effort).unwrap_or_else(|| "minimal".into())),
+            reasoning_effort: Some(nonblank(reasoning_effort).unwrap_or_else(|| "low".into())),
             temperature: None,
             ..Self::new(
                 http,
@@ -96,7 +97,12 @@ impl LanguageModel for OpenAi {
         let status = resp.status();
         let body: Value = resp.json().await?;
         if !status.is_success() {
-            let msg = body.pointer("/error/message").and_then(Value::as_str).unwrap_or("unknown error");
+            // OpenAI sends {"error": ...}; Gemini's compatible endpoint wraps it in an array.
+            let msg = body
+                .pointer("/error/message")
+                .or_else(|| body.pointer("/0/error/message"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
             anyhow::bail!("LLM request failed with HTTP {status}: {msg}");
         }
         let content = body
@@ -120,12 +126,12 @@ mod tests {
     }
 
     #[test]
-    fn gemini_uses_its_endpoint_minimal_thinking_and_default_temperature() {
+    fn gemini_uses_its_endpoint_low_thinking_and_default_temperature() {
         let llm = OpenAi::gemini(reqwest::Client::new(), "k".into(), None, None, None);
         assert_eq!(llm.base_url, GEMINI_BASE_URL);
         let body = llm.body(&request());
         assert_eq!(body["model"], "gemini-3.8-flash");
-        assert_eq!(body["reasoning_effort"], "minimal");
+        assert_eq!(body["reasoning_effort"], "low");
         assert!(body.get("temperature").is_none());
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
     }

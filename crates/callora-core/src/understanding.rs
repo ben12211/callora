@@ -275,7 +275,9 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
 
     u.coverage = cov.ratio();
     let threshold = b.config.understanding.llm_below_coverage;
-    let needs_llm = unsure_correction || (!meta_exact && !answered && u.coverage < threshold);
+    // Nothing understood at all: the LLM decides between "unclear" and "not meant for the
+    // agent", instead of a reflexive "didn't catch that".
+    let needs_llm = unsure_correction || u.is_empty() || (!meta_exact && !answered && u.coverage < threshold);
     (u, needs_llm)
 }
 
@@ -476,6 +478,12 @@ pub fn merge(fast: Understanding, llm: Understanding) -> Understanding {
             Some(existing) if existing.confidence < 0.9 && l.confidence >= existing.confidence => *existing = l,
             Some(_) => {}
         }
+    }
+    // A yes/no the rules read off the first word of garbage ("לא רגעתיים...") does not
+    // outweigh the LLM saying it was not meant for the agent.
+    out.noise = llm.noise && out.meta.is_none() && out.intent.is_none() && out.slots.is_empty();
+    if out.noise {
+        out.affirm = None;
     }
     out.coverage = 1.0;
     out

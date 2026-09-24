@@ -483,6 +483,9 @@ impl Session {
                         pending.fast
                     }
                 };
+                if u.noise {
+                    return self.on_noise(&u.transcript);
+                }
                 self.understood(u);
             }
             Ev::FillerDue { turn } => {

@@ -90,7 +90,10 @@ pub fn build_request(b: &Business, ctx: &Context<'_>, state: &CallState, transcr
          - intent is null unless the caller expresses a business need. Answering a question the agent asked is not a new intent.\n\
          - affirm is true/false only when the caller answers yes/no to a question; otherwise null.\n\
          - Confidence is your probability (0..1) that the value is exactly right.\n\
-         - frustrated is true only if the caller sounds clearly annoyed or upset.\n",
+         - frustrated is true only if the caller sounds clearly annoyed or upset.\n\
+         - speech is \"not_for_agent\" when the utterance is not a reply to the agent: background talk, line noise, \
+         or recognition garbage such as a lone \"תודה רבה\" or repeated syllables. It is \"unclear\" when the caller \
+         clearly tried to say something that cannot be understood, and \"clear\" otherwise.\n",
     );
 
     let mut user = String::new();
@@ -128,8 +131,9 @@ pub fn build_request(b: &Business, ctx: &Context<'_>, state: &CallState, transcr
     let schema = json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["meta_intent", "intent", "intent_confidence", "affirm", "frustrated", "slots"],
+        "required": ["speech", "meta_intent", "intent", "intent_confidence", "affirm", "frustrated", "slots"],
         "properties": {
+            "speech": { "type": "string", "enum": ["clear", "unclear", "not_for_agent"] },
             "meta_intent": { "type": ["string", "null"], "enum": metas },
             "intent": { "type": ["string", "null"], "enum": intents },
             "intent_confidence": { "type": "number" },
@@ -168,6 +172,7 @@ pub fn parse_response(b: &Business, ctx: &Context<'_>, transcript: &str, reply: 
     }
     u.affirm = reply.get("affirm").and_then(Value::as_bool);
     u.frustrated = reply.get("frustrated").and_then(Value::as_bool).unwrap_or(false);
+    let not_for_agent = reply.get("speech").and_then(Value::as_str) == Some("not_for_agent");
     for item in reply.get("slots").and_then(Value::as_array).into_iter().flatten() {
         let (Some(slot), Some(value)) =
             (item.get("slot").and_then(Value::as_str), item.get("value").and_then(Value::as_str))
@@ -187,5 +192,6 @@ pub fn parse_response(b: &Business, ctx: &Context<'_>, transcript: &str, reply: 
             }
         }
     }
+    u.noise = not_for_agent && u.is_empty();
     u
 }

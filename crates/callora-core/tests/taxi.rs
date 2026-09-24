@@ -10,9 +10,10 @@ use callora_core::business::{validate, Business, BusinessRegistry};
 use callora_core::config::BusinessConfig;
 use callora_core::customer::{Customer, CustomerPlace};
 use callora_core::engine::{Directive, Engine};
+use callora_core::llm::parse_response;
 use callora_core::render::{library_entries, SegmentOrigin};
 use callora_core::state::Step;
-use callora_core::understanding::fast_path;
+use callora_core::understanding::{fast_path, merge};
 use callora_core::values::SlotValue;
 
 const TAXI: &str = include_str!("../../../businesses/taxi.json");
@@ -228,7 +229,7 @@ fn filler_only_transcripts_are_noise() {
     let (mut call, _) = Call::new(business(&[]));
     call.say("צריך מונית");
     let before = call.engine.state.clone();
-    for text in ["תודה.", "תודה", "אה", "הלו"] {
+    for text in ["תודה.", "תודה", "תודה רבה.", "אה", "הלו"] {
         let (u, needs_llm) = fast_path(&call.engine.business().clone(), &call.engine.context(), text);
         assert!(u.noise && !needs_llm, "{text}");
         assert!(call.say(text).is_empty(), "{text}");
@@ -238,6 +239,34 @@ fn filler_only_transcripts_are_noise() {
         let (u, _) = fast_path(&call.engine.business().clone(), &call.engine.context(), text);
         assert!(!u.noise, "{text}");
     }
+}
+
+#[test]
+fn the_llm_decides_whether_an_ununderstood_utterance_was_meant_for_the_agent() {
+    // From a real call: garbage the rules cannot read must not trigger an automatic
+    // "didn't catch that"; the LLM says whether it was noise or an unclear request.
+    let (call, _) = Call::new(business(&[]));
+    let b = call.engine.business().clone();
+    let text = "אני לא רגעתיים. שי, בי, בי, בי";
+    let (fast, needs_llm) = fast_path(&b, &call.engine.context(), text);
+    assert!(needs_llm, "garbage goes to the LLM");
+    let (empty, needs_llm) = fast_path(&b, &call.engine.context(), "שי, בי, בי, בי");
+    assert!(empty.is_empty() && needs_llm, "nothing understood goes to the LLM");
+
+    let reply = |speech: &str, slots: serde_json::Value| {
+        serde_json::json!({ "speech": speech, "meta_intent": null, "intent": null, "intent_confidence": 0.0,
+            "affirm": null, "frustrated": false, "slots": slots })
+    };
+    let noise = parse_response(&b, &call.engine.context(), text, &reply("not_for_agent", serde_json::json!([])));
+    assert!(noise.noise);
+    assert!(merge(fast.clone(), noise).noise, "noise when the rules found nothing either");
+
+    let unclear = parse_response(&b, &call.engine.context(), text, &reply("unclear", serde_json::json!([])));
+    assert!(!merge(fast.clone(), unclear).noise, "an unclear request still gets a reply");
+
+    let with_value =
+        reply("not_for_agent", serde_json::json!([{ "slot": "destination", "value": "תל אביב", "confidence": 0.9 }]));
+    assert!(!parse_response(&b, &call.engine.context(), text, &with_value).noise, "a value is never noise");
 }
 
 #[test]
