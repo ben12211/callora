@@ -33,8 +33,11 @@ env:
   IMAGE_NAME: ${{ vars.DOCKER_HUB_USERNAME }}/callora
 
 jobs:
+  # Only on pull requests for now: deploys skip it to ship faster, and `./dev check` runs
+  # locally before each commit instead.
   quality:
     name: Format, lint, test and validate
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -73,7 +76,6 @@ jobs:
   image:
     name: Publish ARM64 image
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
-    needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -123,7 +125,6 @@ jobs:
   host:
     name: Bootstrap and validate the production VM
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
