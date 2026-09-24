@@ -96,6 +96,16 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+/// The understanding LLM: Gemini when GEMINI_API_KEY is set, otherwise OpenAI (or any
+/// endpoint TEXT_LLM_BASE_URL names).
+fn language_model(http: reqwest::Client) -> Option<OpenAi> {
+    let (base_url, model) = (env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL"));
+    if let Some(key) = env("GEMINI_API_KEY") {
+        return Some(OpenAi::gemini(http, key, base_url, model, env("TEXT_LLM_REASONING_EFFORT")));
+    }
+    env("OPENAI_API_KEY").map(|key| OpenAi::new(http, key, base_url, model))
+}
+
 fn env_snapshot() -> HashMap<String, String> {
     std::env::vars().collect()
 }
@@ -280,12 +290,12 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
             Arc::new(NoStt)
         }
     };
-    let llm: Option<Arc<dyn LanguageModel>> = env("OPENAI_API_KEY").map(|key| {
-        Arc::new(OpenAi::new(client.clone(), key, env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL")))
-            as Arc<dyn LanguageModel>
-    });
+    let llm: Option<Arc<dyn LanguageModel>> =
+        language_model(client.clone()).map(|m| Arc::new(m) as Arc<dyn LanguageModel>);
     if llm.is_none() {
-        tracing::warn!("OPENAI_API_KEY is not set: understanding uses the deterministic fast path only");
+        tracing::warn!(
+            "neither GEMINI_API_KEY nor OPENAI_API_KEY is set: understanding uses the deterministic fast path only"
+        );
     }
     let tts: Option<Arc<dyn Synthesizer>> = env("ELEVENLABS_API_KEY").map(|key| {
         Arc::new(ElevenLabs::new(client.clone(), key, env("ELEVENLABS_API_BASE_URL"))) as Arc<dyn Synthesizer>
@@ -429,8 +439,7 @@ async fn shutdown() {
 async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
     let reg = load_registry(dir)?;
     let b: Arc<Business> = reg.by_id(business).context("unknown business")?;
-    let llm: Option<OpenAi> =
-        env("OPENAI_API_KEY").map(|k| OpenAi::new(http(), k, env("TEXT_LLM_BASE_URL"), env("TEXT_LLM_MODEL")));
+    let llm = language_model(http());
     let actions = ConfiguredActions::new(http(), env_snapshot());
     let info = CallInfo {
         call_id: Default::default(),

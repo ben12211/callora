@@ -1,6 +1,7 @@
 //! OpenAI-compatible chat completions with strict JSON-schema output, used only for
 //! structured understanding (never to talk to the caller). `TEXT_LLM_BASE_URL` points it
-//! at any compatible endpoint, as in the legacy deployment.
+//! at any compatible endpoint, as in the legacy deployment; [`OpenAi::gemini`] uses
+//! Gemini's compatible endpoint.
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -10,12 +11,18 @@ use callora_runtime::ports::LanguageModel;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
+pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+pub const GEMINI_MODEL: &str = "gemini-3.8-flash";
 
 pub struct OpenAi {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
     model: String,
+    /// `reasoning_effort`, for models that think before answering.
+    reasoning_effort: Option<String>,
+    /// Gemini 3 models degrade below their default temperature, so it is not always sent.
+    temperature: Option<f32>,
 }
 
 impl OpenAi {
@@ -26,13 +33,36 @@ impl OpenAi {
             api_key,
             base_url: nonblank(base_url).unwrap_or_else(|| DEFAULT_BASE_URL.into()).trim_end_matches('/').into(),
             model: nonblank(model).unwrap_or_else(|| DEFAULT_MODEL.into()),
+            reasoning_effort: None,
+            temperature: Some(0.0),
+        }
+    }
+
+    /// Gemini through its OpenAI-compatible endpoint. Thinking is kept to the minimum
+    /// unless `reasoning_effort` says otherwise: understanding sits on the reply path.
+    pub fn gemini(
+        http: reqwest::Client,
+        api_key: String,
+        base_url: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+    ) -> Self {
+        let nonblank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+        Self {
+            reasoning_effort: Some(nonblank(reasoning_effort).unwrap_or_else(|| "minimal".into())),
+            temperature: None,
+            ..Self::new(
+                http,
+                api_key,
+                Some(nonblank(base_url).unwrap_or_else(|| GEMINI_BASE_URL.into())),
+                Some(nonblank(model).unwrap_or_else(|| GEMINI_MODEL.into())),
+            )
         }
     }
 
     pub fn body(&self, request: &LlmRequest) -> Value {
-        json!({
+        let mut body = json!({
             "model": self.model,
-            "temperature": 0,
             "max_tokens": 400,
             "messages": [
                 { "role": "system", "content": request.system },
@@ -42,7 +72,14 @@ impl OpenAi {
                 "type": "json_schema",
                 "json_schema": { "name": "understanding", "strict": true, "schema": request.schema },
             },
-        })
+        });
+        if let Some(t) = self.temperature {
+            body["temperature"] = json!(t);
+        }
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        body
     }
 }
 
@@ -71,5 +108,33 @@ impl LanguageModel for OpenAi {
 
     fn name(&self) -> &'static str {
         "openai"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> LlmRequest {
+        LlmRequest { system: "s".into(), user: "u".into(), schema: json!({ "type": "object" }) }
+    }
+
+    #[test]
+    fn gemini_uses_its_endpoint_minimal_thinking_and_default_temperature() {
+        let llm = OpenAi::gemini(reqwest::Client::new(), "k".into(), None, None, None);
+        assert_eq!(llm.base_url, GEMINI_BASE_URL);
+        let body = llm.body(&request());
+        assert_eq!(body["model"], "gemini-3.8-flash");
+        assert_eq!(body["reasoning_effort"], "minimal");
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+    }
+
+    #[test]
+    fn openai_keeps_temperature_zero_and_sends_no_reasoning_effort() {
+        let body = OpenAi::new(reqwest::Client::new(), "k".into(), None, None).body(&request());
+        assert_eq!(body["model"], DEFAULT_MODEL);
+        assert_eq!(body["temperature"], 0.0);
+        assert!(body.get("reasoning_effort").is_none());
     }
 }

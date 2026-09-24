@@ -83,7 +83,7 @@ The complete list, names only, is in [SECRETS.md](SECRETS.md). The minimum for a
 
 - Secrets: `IP`, `USER`, `KEY_PEM`, `DOCKER_HUB_TOKEN`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, and `TAXI_PHONE_NUMBERS` (Secret or Variable).
 - Variables: `DOCKER_HUB_USERNAME`, `ELEVENLABS_VOICE_ID`.
-- Recommended: `OPENAI_API_KEY` (LLM understanding when the rules are unsure), `TAXI_HANDOFF_NUMBER` (the human desk), `STREAM_TOKEN_SECRET`.
+- Recommended: `GEMINI_API_KEY` or `OPENAI_API_KEY` (LLM understanding when the rules are unsure; Gemini wins when both are set), `TAXI_HANDOFF_NUMBER` (the human desk), `STREAM_TOKEN_SECRET`.
 
 The deploy job still targets the `production` environment, so its protection rules and required reviewers stay in force.
 
