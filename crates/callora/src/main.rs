@@ -16,7 +16,11 @@ use callora_core::engine::{Directive, Engine};
 use callora_core::render::library_entries;
 use callora_core::understanding::{fast_path, merge};
 use callora_providers::{
-    cartesia::Cartesia, elevenlabs::ElevenLabs, openai::OpenAi, race::FirstAnswer, scribe::Scribe,
+    cartesia::Cartesia,
+    elevenlabs::ElevenLabs,
+    openai::OpenAi,
+    race::{FirstAnswer, Hedged},
+    scribe::Scribe,
     twilio_rest::TwilioRest,
 };
 use callora_runtime::actions::ConfiguredActions;
@@ -65,6 +69,11 @@ enum Command {
         #[arg(long, default_value = "taxi")]
         business: String,
         text: String,
+    },
+    /// Print the agent's system prompt and reply schema, as JSON.
+    AgentPrompt {
+        #[arg(long, default_value = "taxi")]
+        business: String,
     },
 }
 
@@ -122,6 +131,19 @@ fn language_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
         1 => models.pop(),
         _ => Some(Arc::new(FirstAnswer::new(models))),
     }
+}
+
+/// The conversation agent: AGENT_MODEL (default gpt-4.1, the fastest to first words among
+/// the models that got every test turn right), hedged after AGENT_HEDGE_MS (default 900) by
+/// AGENT_BACKUP_MODEL (default gpt-4o). Needs OPENAI_API_KEY.
+fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
+    let key = env("OPENAI_API_KEY")?;
+    let base = env("TEXT_LLM_BASE_URL");
+    let model = |name: Option<String>, default: &str| -> Arc<dyn LanguageModel> {
+        Arc::new(OpenAi::new(http.clone(), key.clone(), base.clone(), Some(name.unwrap_or_else(|| default.into()))))
+    };
+    let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(900));
+    Some(Arc::new(Hedged::new(model(env("AGENT_MODEL"), "gpt-4.1"), model(env("AGENT_BACKUP_MODEL"), "gpt-4o"), hedge)))
 }
 
 /// Speech recognition: Scribe (ElevenLabs) unless STT_PROVIDER=cartesia; either needs its key.
@@ -220,6 +242,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::VoiceLibrary { command } => voice_library(&cli.businesses, command).await,
         Command::Simulate { business } => simulate(&cli.businesses, &business).await,
+        Command::AgentPrompt { business } => {
+            let reg = load_registry(&cli.businesses)?;
+            let b = reg.by_id(&business).context("unknown business")?;
+            let engine = Engine::new(b.clone(), 1);
+            let request = callora_core::agent::build_request(&b, &engine.state, "…");
+            println!("{}", serde_json::json!({ "system": request.system, "schema": request.schema }));
+            Ok(())
+        }
         Command::Understand { business, text } => {
             let reg = load_registry(&cli.businesses)?;
             let b = reg.by_id(&business).context("unknown business")?;
@@ -397,9 +427,14 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         });
     }
 
+    let agent = agent_model(client.clone());
+    if agent.is_none() && registry.all().any(|b| b.config.agent.is_some()) {
+        tracing::warn!("OPENAI_API_KEY is not set: businesses with an agent fall back to the rules");
+    }
     let services = Services {
         stt,
         llm,
+        agent,
         tts,
         tts_cache: TtsCache::new(env("TTS_CACHE_ENTRIES").and_then(|v| v.parse().ok()).unwrap_or(2000)),
         actions: Arc::new(ConfiguredActions::new(client.clone(), env_snapshot())),

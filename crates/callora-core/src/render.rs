@@ -47,6 +47,20 @@ impl SpeechPlan {
         Self { segments: Vec::new(), gain_db: 0.0 }
     }
 
+    /// Free text (an agent's reply): one segment, played from the library when that exact
+    /// wording was pre-recorded and synthesized otherwise.
+    pub fn free(text: &str, delivery: &str, gain_db: f32) -> Self {
+        Self {
+            segments: vec![SpeechSegment {
+                text: text.trim().to_string(),
+                response_id: "agent".into(),
+                delivery: delivery.to_string(),
+                origin: SegmentOrigin::Dynamic,
+            }],
+            gain_db,
+        }
+    }
+
     pub fn then(mut self, other: SpeechPlan) -> Self {
         self.segments.extend(other.segments);
         self

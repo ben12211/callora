@@ -57,10 +57,24 @@ pub trait SpeechToText: Send + Sync {
 // ---------------------------------------------------------------------------------------
 // LLM structured extraction
 
+/// A reply as it is generated: text deltas.
+pub type TextStream = futures::stream::BoxStream<'static, anyhow::Result<String>>;
+
 #[async_trait]
 pub trait LanguageModel: Send + Sync {
     /// Return JSON matching `request.schema`.
     async fn extract(&self, request: &LlmRequest) -> anyhow::Result<serde_json::Value>;
+
+    /// The same reply, streamed as it is generated. By default it arrives all at once.
+    async fn stream(&self, request: &LlmRequest) -> anyhow::Result<TextStream> {
+        let reply = self.extract(request).await?;
+        Ok(Box::pin(futures::stream::once(async move { Ok(reply.to_string()) })))
+    }
+
+    /// Open the connection before the first real request needs it (a TLS handshake is
+    /// ~100 ms on the reply path otherwise).
+    async fn warm(&self) {}
+
     fn name(&self) -> &'static str;
 }
 

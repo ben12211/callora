@@ -20,10 +20,13 @@ use tokio_tungstenite::tungstenite::Message;
 use callora_audio::library::VoiceLibrary;
 use callora_audio::tts::{AudioStream, Synthesizer, TtsCache, TtsRequest};
 use callora_core::business::{Business, BusinessRegistry};
+use callora_core::llm::LlmRequest;
 use callora_core::render::library_entries;
 use callora_runtime::actions::ConfiguredActions;
 use callora_runtime::metrics::Metrics;
-use callora_runtime::ports::{NoWhisper, NullStore, SpeechToText, SttEvent, SttInput, SttSession, Telephony};
+use callora_runtime::ports::{
+    LanguageModel, NoWhisper, NullStore, SpeechToText, SttEvent, SttInput, SttSession, Telephony, TextStream,
+};
 use callora_runtime::server::{router, AppState, ServerSettings};
 use callora_runtime::session::{Services, SessionConfig};
 use callora_runtime::twilio;
@@ -107,6 +110,39 @@ impl Telephony for FakeTelephony {
     }
 }
 
+/// An agent whose replies the test scripts. Each reply streams in three chunks, 40 ms apart,
+/// like a real model writing its JSON.
+#[derive(Default)]
+struct ScriptedAgent {
+    replies: Mutex<std::collections::VecDeque<Value>>,
+    requests: Mutex<Vec<LlmRequest>>,
+}
+
+#[async_trait]
+impl LanguageModel for ScriptedAgent {
+    async fn extract(&self, _request: &LlmRequest) -> anyhow::Result<Value> {
+        anyhow::bail!("the agent streams")
+    }
+
+    async fn stream(&self, request: &LlmRequest) -> anyhow::Result<TextStream> {
+        self.requests.lock().push(request.clone());
+        let reply = self.replies.lock().pop_front().expect("a scripted reply").to_string();
+        let n = reply.chars().count();
+        let cut = |a: usize, b: usize| reply.chars().skip(a).take(b - a).collect::<String>();
+        let chunks = vec![cut(0, n / 3), cut(n / 3, 2 * n / 3), cut(2 * n / 3, n)];
+        Ok(futures::stream::iter(chunks)
+            .then(|c| async move {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                Ok(c)
+            })
+            .boxed())
+    }
+
+    fn name(&self) -> &'static str {
+        "scripted-agent"
+    }
+}
+
 struct Harness {
     addr: std::net::SocketAddr,
     stt: ScriptedStt,
@@ -115,6 +151,10 @@ struct Harness {
 }
 
 async fn start_server() -> Harness {
+    start_server_with(None).await
+}
+
+async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
     let env = |k: &str| {
         (k == "TAXI_PHONE_NUMBERS")
             .then(|| NUMBER.to_string())
@@ -133,6 +173,7 @@ async fn start_server() -> Harness {
     let services = Services {
         stt: Arc::new(stt.clone()),
         llm: None,
+        agent,
         tts: Some(Arc::new(FakeTts)),
         tts_cache: TtsCache::new(100),
         actions: Arc::new(ConfiguredActions::new(reqwest::Client::new(), HashMap::new())),
@@ -277,6 +318,47 @@ async fn a_stream_with_a_forged_token_is_refused() {
     ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ9", "start": { "streamSid": "MZ9", "callSid": "CA9", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
     let (frames, _) = collect(&mut ws, Duration::from_millis(300)).await;
     assert!(frames.is_empty(), "no audio for an unauthorized stream");
+}
+
+#[tokio::test]
+async fn the_agent_runs_the_call_and_its_first_sentence_plays_while_it_is_still_writing() {
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "say": "לאן נוסעים?", "action": "none", "task": "book_ride",
+                "fields": [{ "slot": "pickup", "value": "באר שבע" }] }),
+        json!({ "say": "סגור.", "action": "read_back", "task": "book_ride",
+                "fields": [{ "slot": "destination", "value": "תל אביב" }, { "slot": "passengers", "value": "שניים" }] }),
+    ]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, "CA44", "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "connected" }).to_string().into())).await.unwrap();
+    ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ1", "start": { "streamSid": "MZ1", "callSid": "CA44", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    collect(&mut ws, Duration::from_millis(400)).await;
+
+    // "לאן נוסעים?" is an instant phrase: it plays from the library as soon as its sentence
+    // is complete in the stream, before the model has written its decision.
+    h.stt.say("אני רוצה מונית מבאר שבע").await;
+    let started = tokio::time::Instant::now();
+    let first = tokio::time::timeout(Duration::from_millis(500), ws.next()).await.expect("audio").unwrap().unwrap();
+    assert!(started.elapsed() < Duration::from_millis(200), "first words after {:?}", started.elapsed());
+    assert!(first.to_text().unwrap().contains("\"media\""));
+    let (frames, _) = collect(&mut ws, Duration::from_millis(300)).await;
+    assert!(frames.iter().all(|b| *b == 0x55), "a recorded clip, no live TTS");
+
+    // The agent asks for the read-back: "סגור." (recorded), then the engine's read-back.
+    h.stt.say("לתל אביב, אנחנו שניים").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(800)).await;
+    assert_eq!(frames.first(), Some(&0x55), "{:?}", &frames[..frames.len().min(5)]);
+    assert!(frames.contains(&0x33), "the read-back has live parts (the addresses)");
+
+    // A plain yes to the read-back skips the agent: the booking starts at once.
+    h.stt.say("כן").await;
+    collect(&mut ws, Duration::from_millis(300)).await;
+    let requests = agent.requests.lock();
+    assert_eq!(requests.len(), 2, "the yes went through the fast lane");
+    assert!(requests[1].user.contains("Agent: לאן נוסעים?"), "the agent sees the conversation: {}", requests[1].user);
+    assert!(requests[1].user.contains("- pickup: באר שבע"), "and the booking so far: {}", requests[1].user);
 }
 
 fn chrono_now() -> i64 {

@@ -45,6 +45,9 @@ pub trait Synthesizer: Send + Sync {
     /// Starts synthesis. The first chunk should arrive as early as the provider allows.
     async fn synthesize(&self, request: TtsRequest) -> anyhow::Result<AudioStream>;
 
+    /// Open the connection before the first synthesis needs it.
+    async fn warm(&self) {}
+
     fn name(&self) -> &'static str;
 }
 

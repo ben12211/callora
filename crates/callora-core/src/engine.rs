@@ -10,12 +10,13 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::agent::{AgentAction, AgentTurn};
 use crate::business::Business;
 use crate::config::{AfterPipeline, MetaIntent, PipelineConfig, RuleEffect};
 use crate::customer::Customer;
 use crate::render::{RenderContext, Renderer, SeededChooser, SpeechPlan};
 use crate::state::{CallState, CompletedRun, Phase, PipelineRun, SlotState, Speaker, Step, Turn};
-use crate::understanding::{default_value, Context, Understanding};
+use crate::understanding::{default_value, parse_slot_value, Context, Understanding};
 use crate::values::{Provenance, SlotFill, SlotValue};
 
 /// Something the runtime must do, in order.
@@ -150,6 +151,232 @@ impl Engine {
             }
         }
         self.finish(out)
+    }
+
+    /// A decision of the LLM agent for the caller's last utterance. `spoken` is the part of
+    /// its `say` the runtime already played while the decision streamed in.
+    ///
+    /// The agent chooses; the engine enforces: values go through the typed parsers, a task
+    /// runs only after its read-back was confirmed, and the call ends only on a goodbye.
+    pub fn on_agent_turn(&mut self, transcript: &str, turn: AgentTurn, spoken: &str) -> Vec<Directive> {
+        let mut out = Out::default();
+        if self.state.phase != Phase::Active {
+            return Vec::new();
+        }
+        self.state.turns += 1;
+        self.state.silence_reprompts = 0;
+        self.state.fallback_level = 0;
+        self.offered_more = false;
+        self.state.remember(Speaker::Caller, transcript);
+
+        // The task.
+        if let Some(intent) = turn.task.as_deref().and_then(|t| self.business.intent(t)).cloned() {
+            if intent.handoff {
+                self.agent_say(&mut out, &turn.say, spoken);
+                self.handoff(&mut out, &format!("intent:{}", intent.id));
+                return self.finish(out);
+            }
+            if let Some(p) = &intent.pipeline {
+                if self.state.run.as_ref().map(|r| &r.pipeline) != Some(p) {
+                    if let Some(run) = self.state.run.take() {
+                        if !run.slots.is_empty() && !matches!(run.step, Step::Executing { .. }) {
+                            self.state.suspended.push(run);
+                        }
+                    }
+                    self.state.run = Some(self.new_run(p, &intent.id));
+                }
+            }
+        }
+        let changed = self.apply_agent_fields(&turn.fields);
+
+        match turn.action {
+            AgentAction::None => self.agent_say(&mut out, &turn.say, spoken),
+            AgentAction::Transfer => {
+                self.agent_say(&mut out, &turn.say, spoken);
+                self.handoff(&mut out, "caller_requested");
+            }
+            AgentAction::EndCall => {
+                if self.caller_said_goodbye(transcript) {
+                    if spoken.is_empty() && turn.say.is_empty() {
+                        self.goodbye(&mut out);
+                    } else {
+                        self.agent_say(&mut out, &turn.say, spoken);
+                        self.state.phase = Phase::Ending;
+                        out.push(Directive::Hangup);
+                    }
+                } else {
+                    tracing::info!(transcript, "agent wanted to end the call without a goodbye; kept it open");
+                    self.agent_say(&mut out, &turn.say, spoken);
+                }
+            }
+            AgentAction::ReadBack | AgentAction::Submit => {
+                let confirmed_now = turn.action == AgentAction::Submit
+                    && !changed
+                    && self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
+                // The read-back asks the question; a question of the agent's own before it
+                // would make two ("anything else? ... send it?").
+                let say = if turn.action == AgentAction::ReadBack && turn.say.trim_end().ends_with('?') {
+                    ""
+                } else {
+                    turn.say.as_str()
+                };
+                self.agent_say(&mut out, say, spoken);
+                if confirmed_now {
+                    if let Some(run) = &mut self.state.run {
+                        run.confirmed = true;
+                        for s in run.slots.values_mut() {
+                            s.confirmed = true;
+                            s.provenance = Provenance::Confirmed;
+                        }
+                    }
+                    self.advance(&mut out, false);
+                } else {
+                    // A submit without a confirmed read-back becomes the read-back. When a
+                    // detail is still missing, ask for it unless the agent just asked something.
+                    let asked = format!("{spoken} {say}").trim_end().ends_with('?');
+                    self.read_back(&mut out, !asked);
+                }
+            }
+        }
+        if out.pending.is_none() && out.directives.is_empty() && spoken.is_empty() {
+            // The model said nothing: never leave the caller in silence.
+            let r = self.business.config.fallback.ladder[0].clone();
+            let ctx = self.render_ctx(None);
+            self.say(&mut out, &r, ctx, true);
+        }
+        self.finish(out)
+    }
+
+    /// Speak the agent's words (or only record them when the runtime already played them).
+    fn agent_say(&mut self, out: &mut Out, say: &str, spoken: &str) {
+        let delivery = self.state.delivery.clone().unwrap_or_else(|| "normal".into());
+        if !spoken.is_empty() {
+            // Played already; keep it as "the last thing said" for repeats and context.
+            let plan = SpeechPlan::free(say, &delivery, self.state.gain_db);
+            out.recorded = Some(match out.recorded.take() {
+                Some(r) => r.then(plan),
+                None => plan,
+            });
+            return;
+        }
+        if !say.trim().is_empty() {
+            out.speak(SpeechPlan::free(say, &delivery, self.state.gain_db), true);
+        }
+    }
+
+    /// Values the agent heard, through the same parsers as the fast path. Returns whether
+    /// any value of the current task changed.
+    fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> bool {
+        let customer = self.state.customer.clone();
+        let fills: Vec<SlotFill> = fields
+            .iter()
+            .filter_map(|(slot, value)| {
+                let cfg = self.business.config.slots.get(slot)?;
+                let (value, confidence) = parse_slot_value(&self.business, slot, cfg, value, true, customer.as_ref())?;
+                Some(SlotFill {
+                    slot: slot.clone(),
+                    value,
+                    confidence: confidence.max(0.9),
+                    provenance: Provenance::Llm,
+                })
+            })
+            .collect();
+        if fills.is_empty() {
+            return false;
+        }
+        if self.state.run.is_none() {
+            if let Some((pipeline, intent)) = self.infer_pipeline(&fills) {
+                self.state.run = Some(self.new_run(&pipeline, &intent));
+            }
+        }
+        let Some(run) = &self.state.run else { return false };
+        let before = run.slots.clone();
+        self.apply_fills(&fills);
+        let changed = self.state.run.as_ref().is_some_and(|r| r.slots != before);
+        if changed {
+            if let Some(run) = &mut self.state.run {
+                if run.step == Step::AwaitingConfirmation {
+                    run.step = Step::Collecting { awaiting: None };
+                }
+            }
+        }
+        changed
+    }
+
+    /// Defaults and customer-known values for anything still missing.
+    fn fill_defaults(&mut self, pipeline: &PipelineConfig) {
+        let customer = self.state.customer.clone();
+        let Some(run) = &mut self.state.run else { return };
+        for ps in &pipeline.slots {
+            if run.slots.contains_key(&ps.slot) {
+                continue;
+            }
+            if let (Some(key), Some(c)) = (&ps.from_customer, &customer) {
+                if let Some(place) = c.places.get(key) {
+                    run.slots.insert(
+                        ps.slot.clone(),
+                        SlotState {
+                            value: SlotValue::Place {
+                                spoken: place.spoken.clone(),
+                                address: place.address.clone(),
+                                customer_place: Some(key.clone()),
+                            },
+                            confidence: 0.8,
+                            provenance: Provenance::Customer,
+                            confirmed: false,
+                        },
+                    );
+                    continue;
+                }
+            }
+            if let Some(default) = &ps.default {
+                if let Some(v) = default_value(&self.business, &ps.slot, default) {
+                    run.slots.insert(
+                        ps.slot.clone(),
+                        SlotState { value: v, confidence: 1.0, provenance: Provenance::Default, confirmed: false },
+                    );
+                }
+            }
+        }
+    }
+
+    /// Read the task back for a yes/no, or ask for what is still missing.
+    fn read_back(&mut self, out: &mut Out, ask_if_missing: bool) {
+        let Some(run) = &self.state.run else { return };
+        let pipeline = self.pipeline_of(run).clone();
+        self.fill_defaults(&pipeline);
+        let Some(run) = &self.state.run else { return };
+        if let Some(missing) = pipeline.slots.iter().find(|ps| ps.required && !run.slots.contains_key(&ps.slot)) {
+            if ask_if_missing {
+                let slot = missing.slot.clone();
+                self.ask(out, &slot, false);
+            }
+            return;
+        }
+        match &pipeline.confirm {
+            Some(confirm) => {
+                if let Some(run) = &mut self.state.run {
+                    run.step = Step::AwaitingConfirmation;
+                    run.confirmed = false;
+                }
+                let ctx = self.render_ctx(None);
+                self.say(out, &confirm.response, ctx, true);
+            }
+            // Nothing to confirm: go straight to the action.
+            None => self.advance(out, false),
+        }
+    }
+
+    /// The caller's own words close the call: a goodbye, "that's all", or a plain "no,
+    /// thanks" after "anything else?". An LLM's reading of garbled speech is not enough.
+    fn caller_said_goodbye(&self, transcript: &str) -> bool {
+        let norm = crate::text::normalize(transcript);
+        let b = &self.business;
+        let goodbye = b.meta(MetaIntent::Goodbye).is_some_and(|m| {
+            m.exact.matches_whole(&norm, &b.fillers) || m.phrases.find(&norm).is_some() || m.exact.find(&norm).is_some()
+        });
+        let declined = b.deny.find(&norm).is_some_and(|(_, (start, _))| start == 0);
+        goodbye || declined
     }
 
     /// A final transcript, understood.
@@ -438,42 +665,7 @@ impl Engine {
     fn advance(&mut self, out: &mut Out, acknowledge: bool) {
         let Some(run) = &self.state.run else { return };
         let pipeline = self.pipeline_of(run).clone();
-
-        // Defaults and customer-known values for anything still missing.
-        let customer = self.state.customer.clone();
-        if let Some(run) = &mut self.state.run {
-            for ps in &pipeline.slots {
-                if run.slots.contains_key(&ps.slot) {
-                    continue;
-                }
-                if let (Some(key), Some(c)) = (&ps.from_customer, &customer) {
-                    if let Some(place) = c.places.get(key) {
-                        run.slots.insert(
-                            ps.slot.clone(),
-                            SlotState {
-                                value: SlotValue::Place {
-                                    spoken: place.spoken.clone(),
-                                    address: place.address.clone(),
-                                    customer_place: Some(key.clone()),
-                                },
-                                confidence: 0.8,
-                                provenance: Provenance::Customer,
-                                confirmed: false,
-                            },
-                        );
-                        continue;
-                    }
-                }
-                if let Some(default) = &ps.default {
-                    if let Some(v) = default_value(&self.business, &ps.slot, default) {
-                        run.slots.insert(
-                            ps.slot.clone(),
-                            SlotState { value: v, confidence: 1.0, provenance: Provenance::Default, confirmed: false },
-                        );
-                    }
-                }
-            }
-        }
+        self.fill_defaults(&pipeline);
 
         let Some(run) = &self.state.run else { return };
         // A value too uncertain to use without asking.

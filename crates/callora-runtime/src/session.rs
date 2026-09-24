@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use futures::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -21,7 +22,9 @@ use callora_audio::library::VoiceLibrary;
 use callora_audio::playout::{OutFrame, PlayItem, Playout, PlayoutEvent, Source};
 use callora_audio::tts::{Synthesizer, TtsCache, TtsRequest};
 use callora_audio::vad::{Vad, VadConfig, VadEvent};
+use callora_core::agent::{self, AgentAction, SayStream};
 use callora_core::business::Business;
+use callora_core::config::MetaIntent;
 use callora_core::customer::Customer;
 use callora_core::engine::{Directive, Engine, HandoffSummary};
 use callora_core::llm;
@@ -73,6 +76,8 @@ impl Default for SessionConfig {
 pub struct Services {
     pub stt: Arc<dyn SpeechToText>,
     pub llm: Option<Arc<dyn LanguageModel>>,
+    /// The conversation agent's model; with a business `agent` config it runs the call.
+    pub agent: Option<Arc<dyn LanguageModel>>,
     pub tts: Option<Arc<dyn Synthesizer>>,
     pub tts_cache: TtsCache,
     pub actions: Arc<dyn ActionRunner>,
@@ -109,6 +114,17 @@ enum Ev {
     FillerDue {
         turn: u64,
     },
+    /// A finished sentence of the agent's reply, while the rest is still being generated.
+    AgentSay {
+        turn: u64,
+        sentence: String,
+    },
+    /// The agent's whole decision (and the tail of `say` that had no sentence mark).
+    AgentDone {
+        turn: u64,
+        result: anyhow::Result<Value>,
+        rest: Option<String>,
+    },
     Action {
         run_id: u64,
         action: String,
@@ -136,6 +152,32 @@ struct PendingLlm {
     transcript: String,
     fast: Understanding,
     task: JoinHandle<()>,
+}
+
+/// An agent decision in progress.
+struct PendingAgent {
+    turn: u64,
+    transcript: String,
+    task: JoinHandle<()>,
+    started: Instant,
+    /// Started on the recognizer's partial text before the final transcript: its speech is
+    /// held back until the final transcript says the same.
+    speculative: bool,
+    /// Sentences already played.
+    spoken: Vec<String>,
+    /// Sentences held back while speculative.
+    held: Vec<String>,
+    /// The decision, when it finished while still speculative.
+    done: Option<(anyhow::Result<Value>, Option<String>)>,
+}
+
+/// Where one reply's time went, from the end of the caller's speech to the first audio.
+struct TurnClock {
+    speech_end: Instant,
+    final_at: Option<Instant>,
+    agent_first: Option<Instant>,
+    speculative_hit: bool,
+    audio: &'static str,
 }
 
 pub struct Session {
@@ -167,6 +209,12 @@ pub struct Session {
     finalize_sent_at: Option<Instant>,
     /// Reconnects since the last transcript.
     stt_reconnects: u32,
+    pending_agent: Option<PendingAgent>,
+    /// The recognizer's latest partial text for the utterance in progress.
+    last_partial: String,
+    clock: Option<TurnClock>,
+    /// The caller turn the live-TTS cover last played on (never two turns in a row).
+    cover_turn: Option<u32>,
     /// The caller turn (engine turn count) the thinking filler last played on. A filler
     /// on every turn sounds scripted, so it never plays on two turns in a row.
     filler_turn: Option<u32>,
@@ -218,9 +266,22 @@ impl Session {
             interrupted: false,
             finalize_sent_at: None,
             stt_reconnects: 0,
+            pending_agent: None,
+            last_partial: String::new(),
+            clock: None,
+            cover_turn: None,
             filler_turn: None,
         };
         s.services.store.record(CallRecord::Started { info: s.info.clone() });
+
+        // Open the agent's and the voice's connections while the greeting plays, so the
+        // first reply does not pay for TLS handshakes.
+        if let Some(a) = s.services.agent.clone() {
+            tokio::spawn(async move { a.warm().await });
+        }
+        if let Some(t) = s.services.tts.clone() {
+            tokio::spawn(async move { t.warm().await });
+        }
 
         // STT connects in the background; the greeting does not wait for it.
         {
@@ -298,6 +359,9 @@ impl Session {
         if let Some(p) = s.pending_llm.take() {
             p.task.abort();
         }
+        if let Some(p) = s.pending_agent.take() {
+            p.task.abort();
+        }
         playout_task.abort();
         let outcome = format!("{ending:?}");
         s.services.store.record(CallRecord::Ended {
@@ -317,17 +381,32 @@ impl Session {
         match self.vad.push(&frame) {
             Some(VadEvent::SpeechStarted) => {
                 self.silence_generation += 1;
+                if self.pending_agent.as_ref().is_some_and(|p| p.speculative) {
+                    // The caller went on talking: the guess was about half a sentence.
+                    if let Some(p) = self.pending_agent.take() {
+                        p.task.abort();
+                    }
+                }
                 if self.agent_busy() {
                     self.barge_in();
                 }
             }
             Some(VadEvent::SpeechEnded) => {
-                self.speech_ended_at = Some(Instant::now());
+                let now = Instant::now();
+                self.speech_ended_at = Some(now);
+                self.clock = Some(TurnClock {
+                    speech_end: now,
+                    final_at: None,
+                    agent_first: None,
+                    speculative_hit: false,
+                    audio: "",
+                });
                 if let Some(stt) = &self.stt {
                     if stt.input.try_send(SttInput::Finalize).is_ok() {
-                        self.finalize_sent_at = Some(Instant::now());
+                        self.finalize_sent_at = Some(now);
                     }
                 }
+                self.speculate();
             }
             None => {}
         }
@@ -359,7 +438,7 @@ impl Session {
 
     fn on_stt(&mut self, event: SttEvent) {
         match event {
-            SttEvent::Partial(_) => {}
+            SttEvent::Partial(text) => self.last_partial = text,
             SttEvent::Final(text) => {
                 self.stt_reconnects = 0;
                 self.on_final(text)
@@ -413,6 +492,12 @@ impl Session {
         // barge-in (the VAD may have missed a quiet caller).
         if self.agent_busy() {
             self.barge_in();
+        }
+        if let Some(c) = &mut self.clock {
+            c.final_at.get_or_insert_with(Instant::now);
+        }
+        if self.agent_mode() {
+            return self.on_final_agent(text);
         }
         // A new sentence while the LLM is still thinking about the previous one: they are
         // one utterance.
@@ -475,6 +560,212 @@ impl Session {
         }
     }
 
+    // -----------------------------------------------------------------------------------
+    // The conversation agent
+
+    fn agent_mode(&self) -> bool {
+        self.services.agent.is_some() && self.business.config.agent.is_some()
+    }
+
+    /// Utterances with one certain meaning skip the agent: "רגע", "מה?", "לא שמעתי", and a
+    /// plain yes to a read-back (so a booking goes out the moment the caller confirms it).
+    fn fast_lane(&self, u: &Understanding, needs_llm: bool) -> bool {
+        if needs_llm || u.intent.is_some() || !u.slots.is_empty() {
+            return false;
+        }
+        match u.meta {
+            Some(m) => matches!(
+                m,
+                MetaIntent::Wait
+                    | MetaIntent::RepeatLast
+                    | MetaIntent::DidNotUnderstand
+                    | MetaIntent::SpeakSlower
+                    | MetaIntent::SpeakLouder
+            ),
+            None => {
+                u.affirm == Some(true)
+                    && u.coverage >= 0.99
+                    && self
+                        .engine
+                        .state
+                        .run
+                        .as_ref()
+                        .is_some_and(|r| r.step == callora_core::state::Step::AwaitingConfirmation)
+            }
+        }
+    }
+
+    /// At the end of speech, start the agent on the recognizer's partial text instead of
+    /// waiting ~230 ms for the final transcript. Its speech is held until the final
+    /// transcript confirms the words; a different final starts over.
+    fn speculate(&mut self) {
+        if !self.agent_mode() || self.pending_agent.is_some() || self.pending_llm.is_some() {
+            return;
+        }
+        let text = self.last_partial.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let (u, needs_llm) = fast_path(&self.business, &self.engine.context(), &text);
+        if u.noise || self.fast_lane(&u, needs_llm) {
+            return;
+        }
+        self.start_agent(text, true);
+    }
+
+    fn on_final_agent(&mut self, text: String) {
+        self.last_partial.clear();
+        let mut transcript = text;
+        if let Some(p) = self.pending_agent.take() {
+            if p.speculative && same_words(&p.transcript, &transcript) {
+                tracing::info!(call = %self.info.call_sid, caller = %transcript, "caller");
+                self.services.metrics.turns_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(c) = &mut self.clock {
+                    c.speculative_hit = true;
+                }
+                self.pending_agent = Some(p);
+                return self.adopt_speculation();
+            }
+            p.task.abort();
+            // A new sentence while the agent was still thinking about the previous one:
+            // they are one utterance.
+            if !p.speculative && p.spoken.is_empty() {
+                transcript = format!("{} {transcript}", p.transcript);
+            }
+        }
+        self.services.metrics.turns_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(call = %self.info.call_sid, caller = %transcript, "caller");
+        let (fast, needs_llm) = fast_path(&self.business, &self.engine.context(), &transcript);
+        if self.fast_lane(&fast, needs_llm) {
+            return self.understood(fast);
+        }
+        self.start_agent(transcript, false);
+    }
+
+    fn adopt_speculation(&mut self) {
+        let Some(p) = self.pending_agent.as_mut() else { return };
+        p.speculative = false;
+        let held = std::mem::take(&mut p.held);
+        let done = p.done.take();
+        p.spoken.extend(held.iter().cloned());
+        for sentence in held {
+            self.say_now(&sentence);
+        }
+        if let Some((result, rest)) = done {
+            self.finish_agent(result, rest);
+        }
+    }
+
+    fn start_agent(&mut self, transcript: String, speculative: bool) {
+        let (Some(model), Some(cfg)) = (self.services.agent.clone(), self.business.config.agent.clone()) else {
+            return;
+        };
+        self.turn += 1;
+        let turn = self.turn;
+        let request = agent::build_request(&self.business, &self.engine.state, &transcript);
+        let timeout = Duration::from_millis(cfg.timeout_ms);
+        let tx = self.events.clone();
+        let task = tokio::spawn(async move {
+            let says = tx.clone();
+            let decide = async move {
+                let mut stream = model.stream(&request).await?;
+                let mut say = SayStream::default();
+                let mut reply = String::new();
+                while let Some(delta) = stream.next().await {
+                    let delta = delta?;
+                    reply.push_str(&delta);
+                    let sentences = say.push(&delta);
+                    // A read-back or a submit: the engine speaks the words with what follows.
+                    if matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit)) {
+                        continue;
+                    }
+                    for sentence in sentences {
+                        let _ = says.send(Ev::AgentSay { turn, sentence });
+                    }
+                }
+                let value: Value = serde_json::from_str(&reply)
+                    .map_err(|e| anyhow::anyhow!("the agent's reply is not JSON ({e}): {reply}"))?;
+                let held = matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit));
+                let rest = say.rest().filter(|_| !held);
+                anyhow::Ok((value, rest))
+            };
+            let (result, rest) = match tokio::time::timeout(timeout, decide).await {
+                Ok(Ok((value, rest))) => (Ok(value), rest),
+                Ok(Err(e)) => (Err(e), None),
+                Err(_) => (Err(anyhow::anyhow!("timed out after {timeout:?}")), None),
+            };
+            let _ = tx.send(Ev::AgentDone { turn, result, rest });
+        });
+        if self.business.config.understanding.thinking_filler.is_some() {
+            let tx = self.events.clone();
+            let after = Duration::from_millis(cfg.filler_after_ms);
+            tokio::spawn(async move {
+                tokio::time::sleep(after).await;
+                let _ = tx.send(Ev::FillerDue { turn });
+            });
+        }
+        self.services.metrics.llm_calls_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.pending_agent = Some(PendingAgent {
+            turn,
+            transcript,
+            task,
+            started: Instant::now(),
+            speculative,
+            spoken: Vec::new(),
+            held: Vec::new(),
+            done: None,
+        });
+    }
+
+    /// Play one sentence of the agent's reply now.
+    fn say_now(&mut self, sentence: &str) {
+        let delivery = self.engine.state.delivery.clone().unwrap_or_else(|| "normal".into());
+        let recorded = self.library.get_loose(&delivery, sentence).is_some();
+        if let Some(c) = &mut self.clock {
+            c.agent_first.get_or_insert_with(Instant::now);
+            if c.audio.is_empty() {
+                c.audio = if recorded { "recorded" } else { "live tts" };
+            }
+        }
+        self.services.store.record(CallRecord::Turn {
+            call_id: self.info.call_id,
+            speaker: "agent".into(),
+            text: sentence.to_string(),
+            detail: json!({ "responses": ["agent"] }),
+        });
+        tracing::info!(call = %self.info.call_sid, agent = %sentence, "agent");
+        self.speak(SpeechPlan::free(sentence, &delivery, self.engine.state.gain_db));
+    }
+
+    fn finish_agent(&mut self, result: anyhow::Result<Value>, rest: Option<String>) {
+        let Some(mut p) = self.pending_agent.take() else { return };
+        self.services.metrics.llm_latency.observe(p.started.elapsed().as_millis() as u64);
+        match result {
+            Ok(reply) => {
+                if let Some(rest) = rest {
+                    p.spoken.push(rest.clone());
+                    self.say_now(&rest);
+                }
+                let decision = agent::parse(&self.business, &reply);
+                tracing::info!(call = %self.info.call_sid, action = ?decision.action, task = ?decision.task, fields = ?decision.fields, "agent decision");
+                let directives = self.engine.on_agent_turn(&p.transcript, decision, &p.spoken.join(" "));
+                self.execute(directives);
+            }
+            Err(error) => {
+                self.services.metrics.llm_failures_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(call = %self.info.call_sid, error = %format!("{error:#}"), "the agent failed; the rules take this turn");
+                let (mut fast, _) = fast_path(&self.business, &self.engine.context(), &p.transcript);
+                if fast.is_empty() && fast.transcript.split_whitespace().count() <= SHORT_GARBAGE_WORDS {
+                    fast.noise = true;
+                }
+                if fast.noise {
+                    return self.on_noise(&p.transcript);
+                }
+                self.understood(fast);
+            }
+        }
+    }
+
     fn understood(&mut self, u: Understanding) {
         self.services.store.record(CallRecord::Turn {
             call_id: self.info.call_id,
@@ -532,7 +823,12 @@ impl Session {
             Ev::FillerDue { turn } => {
                 let caller_turn = self.engine.state.turns;
                 let filler_last_turn = self.filler_turn.is_some_and(|t| t + 1 == caller_turn);
-                if self.pending_llm.as_ref().map(|p| p.turn) == Some(turn) && !self.agent_busy() && !filler_last_turn {
+                let waiting = self.pending_llm.as_ref().map(|p| p.turn) == Some(turn)
+                    || self
+                        .pending_agent
+                        .as_ref()
+                        .is_some_and(|p| p.turn == turn && !p.speculative && p.spoken.is_empty());
+                if waiting && !self.agent_busy() && !filler_last_turn {
                     if let Some(id) = self.business.config.understanding.thinking_filler.clone() {
                         if let Some(plan) = self.engine.render_response(&id) {
                             self.filler_turn = Some(caller_turn);
@@ -573,6 +869,23 @@ impl Session {
                 }
             }
             Ev::TtsFirstChunk { elapsed } => self.services.metrics.tts_first_chunk.observe(elapsed.as_millis() as u64),
+            Ev::AgentSay { turn, sentence } => {
+                let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) else { return };
+                if p.speculative {
+                    p.held.push(sentence);
+                    return;
+                }
+                p.spoken.push(sentence.clone());
+                self.say_now(&sentence);
+            }
+            Ev::AgentDone { turn, result, rest } => {
+                let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) else { return };
+                if p.speculative {
+                    p.done = Some((result, rest));
+                    return;
+                }
+                self.finish_agent(result, rest);
+            }
             Ev::TerminateNow => {}
         }
     }
@@ -631,7 +944,7 @@ impl Session {
         for seg in &plan.segments {
             let id = self.next_item;
             self.next_item += 1;
-            if let Some(clip) = self.library.get(&seg.delivery, &seg.text) {
+            if let Some(clip) = self.library.get_loose(&seg.delivery, &seg.text) {
                 self.services.metrics.segment(if seg.origin == SegmentOrigin::Template {
                     "template"
                 } else {
@@ -671,13 +984,18 @@ impl Session {
     /// Neither pre-generated nor already synthesized this process: it will take a while.
     fn needs_live_tts(&self, seg: &SpeechSegment) -> bool {
         self.services.tts.is_some()
-            && self.library.get(&seg.delivery, &seg.text).is_none()
+            && self.library.get_loose(&seg.delivery, &seg.text).is_none()
             && self.tts_request(seg).is_some_and(|r| self.services.tts_cache.get(&r.cache_key()).is_none())
     }
 
     /// The business's short opener, from the library only (it must never need TTS itself).
     fn cover_live_tts(&mut self, gain_db: f32) {
+        let turn = self.engine.state.turns;
+        if self.cover_turn.is_some_and(|t| t + 1 >= turn) || self.filler_turn.is_some_and(|t| t + 1 >= turn) {
+            return;
+        }
         let Some(id) = self.business.config.voice.dynamic_cover.clone() else { return };
+        self.cover_turn = Some(turn);
         let Some(plan) = self.engine.render_response(&id) else { return };
         for seg in &plan.segments {
             if let Some(clip) = self.library.get(&seg.delivery, &seg.text) {
@@ -698,6 +1016,19 @@ impl Session {
                 self.speaking = true;
                 if let Some(t) = self.speech_ended_at.take() {
                     self.services.metrics.response_latency.observe(at.saturating_duration_since(t).as_millis() as u64);
+                }
+                if let Some(c) = self.clock.take_if(|c| c.final_at.is_some()) {
+                    let ms = |a: Instant, b: Instant| b.saturating_duration_since(a).as_millis() as u64;
+                    let final_at = c.final_at.unwrap_or(c.speech_end);
+                    tracing::info!(
+                        call = %self.info.call_sid,
+                        stt_ms = ms(c.speech_end, final_at),
+                        agent_first_words_ms = c.agent_first.map(|a| ms(c.speech_end, a)),
+                        speculative_hit = c.speculative_hit,
+                        audio = c.audio,
+                        reply_ms = ms(c.speech_end, at),
+                        "turn timing (from the end of the caller's speech)"
+                    );
                 }
             }
             PlayoutEvent::Cancelled { ids } => {
@@ -765,6 +1096,18 @@ impl Session {
             }
         }
     }
+}
+
+/// The same words, ignoring punctuation, spacing and case: a partial transcript that
+/// already says what the final one says.
+fn same_words(a: &str, b: &str) -> bool {
+    let words = |s: &str| -> Vec<String> {
+        s.split_whitespace()
+            .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    words(a) == words(b)
 }
 
 fn spawn_tts(

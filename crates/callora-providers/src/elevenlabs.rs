@@ -66,6 +66,16 @@ pub fn request_body(req: &TtsRequest) -> serde_json::Value {
 
 #[async_trait]
 impl Synthesizer for ElevenLabs {
+    async fn warm(&self) {
+        let _ = self
+            .http
+            .get(format!("{}/v1/models", self.base_url))
+            .header("xi-api-key", &self.api_key)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
+    }
+
     async fn synthesize(&self, req: TtsRequest) -> anyhow::Result<AudioStream> {
         let url = format!("{}/v1/text-to-speech/{}/stream?output_format=ulaw_8000", self.base_url, req.voice_id);
         let resp = self.http.post(url).header("xi-api-key", &self.api_key).json(&request_body(&req)).send().await?;

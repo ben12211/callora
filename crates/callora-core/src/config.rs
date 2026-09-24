@@ -65,6 +65,10 @@ pub struct BusinessConfig {
     pub customer_lookup: Option<CustomerLookupConfig>,
     #[serde(default)]
     pub understanding: UnderstandingConfig,
+    /// When set (and an LLM is configured), an LLM agent runs the conversation: it decides
+    /// every reply and next step, and the engine enforces the business's hard rules.
+    #[serde(default)]
+    pub agent: Option<AgentConfig>,
     /// Response used when the business intent has nothing else to do ("anything else?").
     pub anything_else: ResponseId,
     /// Reads a single uncertain value back; must use `{value}` ("{value}, נכון?").
@@ -617,6 +621,34 @@ pub struct CustomerLookupConfig {
     /// Greeting used instead of the default when the customer is known; may use `{name}`.
     #[serde(default)]
     pub known_greeting: Option<ResponseId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    /// Who the agent is and how it talks, in the business's language.
+    pub persona: String,
+    /// Business-specific rules the agent must follow (areas served, what it may promise).
+    #[serde(default)]
+    pub rules: Vec<String>,
+    /// Responses offered to the agent as instant phrases: their fixed wording is
+    /// pre-recorded, so a reply that uses one verbatim plays at once.
+    #[serde(default)]
+    pub phrases: Vec<ResponseId>,
+    /// Filler delay on agent turns. The agent's first words take ~0.7 s, so a filler much
+    /// earlier than that would talk over its answer.
+    #[serde(default = "default_agent_filler_after")]
+    pub filler_after_ms: u64,
+    /// Ceiling for one agent decision; past it the rules decide the turn.
+    #[serde(default = "default_agent_timeout")]
+    pub timeout_ms: u64,
+}
+
+fn default_agent_filler_after() -> u64 {
+    1100
+}
+fn default_agent_timeout() -> u64 {
+    4000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

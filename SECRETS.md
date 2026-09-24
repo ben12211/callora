@@ -55,6 +55,7 @@ generated on the VM and never leaves it, and `PUBLIC_BASE_URL` comes from the Va
 
 ## Optional runtime tuning (environment)
 
+`AGENT_MODEL` (default `gpt-4.1`), `AGENT_BACKUP_MODEL` (default `gpt-4o`), `AGENT_HEDGE_MS` (default `900`),
 `RUST_LOG`, `LOG_FORMAT`, `HOST`, `PORT`, `BUSINESS_CONFIG_DIR`, `AUDIO_LIBRARY_DIR`,
 `TRANSCRIPT_RETENTION_DAYS` (*legacy*), `TTS_CACHE_ENTRIES`, `VAD_TRIGGER_MS`,
 `VAD_ENDPOINT_MS`, `ELEVENLABS_API_BASE_URL` (*legacy*), `ELEVENLABS_LIBRARY_MODEL`,

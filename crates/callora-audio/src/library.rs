@@ -32,6 +32,17 @@ pub fn clip_key(delivery: &str, text: &str) -> String {
     hex::encode(&h.finalize()[..12])
 }
 
+/// The same sentence, ignoring punctuation and spacing: an agent that says "לאן נוסעים"
+/// instead of "לאן נוסעים?" still gets the pre-recorded clip.
+fn loose_key(delivery: &str, text: &str) -> String {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| w.chars().filter(|c| c.is_alphanumeric() || *c == '\'').collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect();
+    format!("{delivery}\u{1f}{}", words.join(" "))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManifestEntry {
     pub key: String,
@@ -57,6 +68,8 @@ pub struct Manifest {
 #[derive(Debug, Default)]
 pub struct VoiceLibrary {
     clips: HashMap<String, Bytes>,
+    /// Loose key → clip key.
+    loose: HashMap<String, String>,
     pub voice_id: Option<String>,
     pub model: Option<String>,
 }
@@ -83,8 +96,19 @@ impl VoiceLibrary {
             .cloned()
     }
 
+    /// Like [`VoiceLibrary::get`], but also matches the sentence with different
+    /// punctuation or spacing. For free text, whose exact form is not known in advance.
+    pub fn get_loose(&self, delivery: &str, text: &str) -> Option<Bytes> {
+        self.get(delivery, text).or_else(|| {
+            let find = |d: &str| self.loose.get(&loose_key(d, text)).and_then(|k| self.clips.get(k));
+            find(delivery).or_else(|| (delivery != "normal").then(|| find("normal")).flatten()).cloned()
+        })
+    }
+
     pub fn insert(&mut self, delivery: &str, text: &str, audio: Bytes) {
-        self.clips.insert(clip_key(delivery, text), audio);
+        let key = clip_key(delivery, text);
+        self.loose.insert(loose_key(delivery, text), key.clone());
+        self.clips.insert(key, audio);
     }
 
     /// Load `<root>/<business>/`. A missing library is not an error (every response then
@@ -105,12 +129,14 @@ impl VoiceLibrary {
         }
         let mut lib = Self {
             clips: HashMap::new(),
+            loose: HashMap::new(),
             voice_id: Some(manifest.voice_id.clone()),
             model: Some(manifest.model.clone()),
         };
         for e in &manifest.entries {
             match std::fs::read(dir.join(&e.file)) {
                 Ok(bytes) => {
+                    lib.loose.insert(loose_key(&e.delivery, &e.text), e.key.clone());
                     lib.clips.insert(e.key.clone(), Bytes::from(bytes));
                 }
                 Err(err) => tracing::warn!(file = %e.file, %err, "voice library clip missing"),

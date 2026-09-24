@@ -61,6 +61,10 @@ services:
       TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
       TEXT_LLM_REASONING_EFFORT: ${TEXT_LLM_REASONING_EFFORT:-}
       TEXT_LLM_BASE_URL: ${TEXT_LLM_BASE_URL:-}
+      # The conversation agent (businesses with an `agent` block); unset uses the defaults.
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_BACKUP_MODEL: ${AGENT_BACKUP_MODEL:-}
+      AGENT_HEDGE_MS: ${AGENT_HEDGE_MS:-}
       # Turn-taking tuning; unset uses the built-in defaults.
       VAD_ENDPOINT_MS: ${VAD_ENDPOINT_MS:-}
       VAD_TRIGGER_MS: ${VAD_TRIGGER_MS:-}

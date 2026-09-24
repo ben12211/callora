@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use callora_core::agent::{AgentAction, AgentTurn};
 use callora_core::business::{validate, Business, BusinessRegistry};
 use callora_core::config::BusinessConfig;
 use callora_core::customer::{Customer, CustomerPlace};
@@ -267,6 +268,150 @@ fn the_llm_decides_whether_an_ununderstood_utterance_was_meant_for_the_agent() {
     let with_value =
         reply("not_for_agent", serde_json::json!([{ "slot": "destination", "value": "תל אביב", "confidence": 0.9 }]));
     assert!(!parse_response(&b, &call.engine.context(), text, &with_value).noise, "a value is never noise");
+}
+
+// The agent decides; the engine enforces.
+
+fn decide(action: AgentAction, say: &str, task: Option<&str>, fields: &[(&str, &str)]) -> AgentTurn {
+    AgentTurn {
+        say: say.into(),
+        action,
+        task: task.map(Into::into),
+        fields: fields.iter().map(|(s, v)| (s.to_string(), v.to_string())).collect(),
+    }
+}
+
+fn hangs_up(d: &[Directive]) -> bool {
+    d.iter().any(|d| matches!(d, Directive::Hangup))
+}
+
+#[test]
+fn agent_turns_fill_the_booking_through_the_parsers() {
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.engine.on_agent_turn(
+        "אני רוצה מונית מבאר שבע",
+        decide(AgentAction::None, "לאן נוסעים?", Some("book_ride"), &[("pickup", "מבאר שבע")]),
+        "",
+    );
+    assert_eq!(spoken(&d), "לאן נוסעים?");
+    assert_eq!(call.engine.state.run.as_ref().unwrap().pipeline, "book_ride");
+    assert_eq!(place(call.slot("pickup")), "באר שבע", "the leading preposition is stripped by the parser");
+    let history: Vec<_> = call.engine.state.history.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(history[history.len() - 2..], ["אני רוצה מונית מבאר שבע", "לאן נוסעים?"]);
+}
+
+#[test]
+fn nothing_is_sent_without_a_read_back_and_a_yes() {
+    let (mut call, _) = Call::new(business(&[]));
+    let fields = [("pickup", "רבי עקיבא 12"), ("destination", "תל אביב"), ("passengers", "אחד")];
+    // A submit straight away becomes the read-back.
+    let d = call.engine.on_agent_turn(
+        "מרבי עקיבא 12 לתל אביב, תשלח",
+        decide(AgentAction::Submit, "סגור.", Some("book_ride"), &fields),
+        "",
+    );
+    assert!(action(&d).is_none(), "no booking before the read-back: {d:?}");
+    assert!(spoken(&d).contains("לשלוח?"), "{}", spoken(&d));
+    assert_eq!(call.step(), Some(Step::AwaitingConfirmation));
+
+    // A correction instead of a yes reads everything back again.
+    let d = call.engine.on_agent_turn(
+        "לא, לרמת גן",
+        decide(AgentAction::Submit, "", None, &[("destination", "לרמת גן")]),
+        "",
+    );
+    assert!(action(&d).is_none(), "{d:?}");
+    assert_eq!(place(call.slot("destination")), "רמת גן");
+    assert!(spoken(&d).contains("לרמת גן") && spoken(&d).contains("לשלוח?"), "{}", spoken(&d));
+
+    // Now the yes: the booking goes out.
+    let d = call.engine.on_agent_turn("כן תשלח", decide(AgentAction::Submit, "סגור.", None, &[]), "");
+    let (_, name, input) = action(&d).expect("create_ride after the confirmed read-back");
+    assert_eq!(name, "create_ride");
+    assert_eq!(input["slots"]["destination"]["spoken"], "רמת גן");
+}
+
+#[test]
+fn a_read_back_with_a_detail_missing_asks_for_it() {
+    let (mut call, _) = Call::new(business(&[]));
+    let fields = [("pickup", "רבי עקיבא 12"), ("destination", "תל אביב")];
+    let d = call.engine.on_agent_turn(
+        "מרבי עקיבא 12 לתל אביב",
+        decide(AgentAction::ReadBack, "סגור.", Some("book_ride"), &fields),
+        "",
+    );
+    assert!(spoken(&d).contains("סגור.") && spoken(&d).contains("כמה"), "asks for the passengers: {}", spoken(&d));
+    assert_ne!(call.step(), Some(Step::AwaitingConfirmation));
+}
+
+#[test]
+fn a_question_before_the_read_back_is_dropped() {
+    let (mut call, _) = Call::new(business(&[]));
+    let fields = [("pickup", "רבי עקיבא 12"), ("destination", "תל אביב"), ("passengers", "שניים")];
+    let d = call.engine.on_agent_turn(
+        "אנחנו שניים",
+        decide(AgentAction::ReadBack, "סבבה, יש מזוודות?", Some("book_ride"), &fields),
+        "",
+    );
+    let text = spoken(&d);
+    assert!(!text.contains("מזוודות"), "{text}");
+    assert_eq!(text.matches('?').count(), 1, "one question, the read-back's: {text}");
+}
+
+#[test]
+fn the_agent_cannot_hang_up_on_garbled_speech() {
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.engine.on_agent_turn("אהה, מה חטאת?", decide(AgentAction::EndCall, "יאללה ביי!", None, &[]), "");
+    assert!(!hangs_up(&d), "{d:?}");
+    assert_eq!(call.engine.state.phase, callora_core::state::Phase::Active);
+
+    let d =
+        call.engine.on_agent_turn("לא, זהו, תודה", decide(AgentAction::EndCall, "יאללה, נסיעה טובה!", None, &[]), "");
+    assert!(hangs_up(&d), "a real goodbye ends the call: {d:?}");
+}
+
+#[test]
+fn speech_already_streamed_is_recorded_not_repeated() {
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.engine.on_agent_turn(
+        "מה המצב?",
+        decide(AgentAction::None, "הכל טוב, תודה! איך אפשר לעזור?", None, &[]),
+        "הכל טוב, תודה! איך אפשר לעזור?",
+    );
+    assert!(spoken(&d).is_empty(), "already played: {d:?}");
+    assert_eq!(
+        call.engine.state.last_plan.as_ref().map(|p| p.text()).as_deref(),
+        Some("הכל טוב, תודה! איך אפשר לעזור?")
+    );
+    let d = call.say("מה?");
+    assert_eq!(spoken(&d), "הכל טוב, תודה! איך אפשר לעזור?", "a repeat says it again");
+}
+
+#[test]
+fn an_empty_decision_never_leaves_the_caller_in_silence() {
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.engine.on_agent_turn("...", decide(AgentAction::None, "", None, &[]), "");
+    assert!(spoken(&d).contains("לא בטוח שהבנתי"), "{}", spoken(&d));
+}
+
+#[test]
+fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
+    let b = business(&[]);
+    let system = callora_core::agent::system_prompt(&b);
+    for needle in [
+        "מוניות קלורה",
+        "book_ride",
+        "pickup (required)",
+        "\"מאיפה אוספים?\"",
+        "\"לאן נוסעים?\"",
+        "Needs read_back then submit",
+    ] {
+        assert!(system.contains(needle), "{needle} missing from the prompt");
+    }
+    let request = callora_core::agent::build_request(&b, &Call::new(business(&[])).0.engine.state, "היי");
+    let order: Vec<&str> = request.schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(order, ["action", "say", "task", "fields"], "the action, then the words, stream first");
+    assert!(request.user.ends_with("CALLER NOW: \"היי\""), "{}", request.user);
 }
 
 // The next three come from one live call, turn by turn.
