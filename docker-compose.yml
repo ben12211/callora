@@ -12,7 +12,10 @@
 name: callora-dev
 
 x-toolchain: &toolchain
-  image: rust:1.94-bookworm
+  image: callora-dev-toolchain:1.94
+  build:
+    context: .
+    dockerfile: docker/dev.Dockerfile
   working_dir: /workspace
   volumes:
     - .:/workspace

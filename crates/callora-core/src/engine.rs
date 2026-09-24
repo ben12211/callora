@@ -593,6 +593,28 @@ impl Engine {
         self.finish(out)
     }
 
+    /// Render a response outside the conversation flow (e.g. a "thinking" filler). Not
+    /// remembered as the last thing said.
+    pub fn render_response(&mut self, response_id: &str) -> Option<SpeechPlan> {
+        let ctx = self.render_ctx(None);
+        self.render_plan(response_id, &ctx)
+    }
+
+    /// Hand the call to a human for a reason outside the conversation (speech recognition
+    /// unavailable, internal error). Falls back to the unavailable message and a hangup.
+    pub fn force_handoff(&mut self, reason: &str) -> Vec<Directive> {
+        let mut out = Out::default();
+        if self.state.phase != Phase::Active {
+            return Vec::new();
+        }
+        self.handoff(&mut out, reason);
+        if self.state.phase == Phase::Active {
+            self.state.phase = Phase::Ending;
+            out.push(Directive::Hangup);
+        }
+        self.finish(out)
+    }
+
     /// The caller said nothing for the configured silence.
     pub fn on_silence(&mut self) -> Vec<Directive> {
         let mut out = Out::default();

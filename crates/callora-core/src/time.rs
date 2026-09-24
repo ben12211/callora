@@ -122,7 +122,8 @@ fn parse_tokens(toks: &[&str]) -> Option<(TimeSpec, f32, (usize, usize))> {
         let mut probe: Vec<&str> = vec![word];
         probe.extend(toks.iter().skip(after_index).take(3));
         let Some(n) = find_numbers(&probe).first().copied() else { continue };
-        if n.start != 0 || (!(1..=12).contains(&n.value) && !(explicit && (0..24).contains(&n.value))) {
+        let plausible_hour = (1..=12).contains(&n.value) || (explicit && (0..24).contains(&n.value));
+        if n.start != 0 || !plausible_hour {
             continue;
         }
         let tail = probe.get(n.end).copied().unwrap_or("");

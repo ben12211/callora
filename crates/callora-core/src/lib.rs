@@ -10,6 +10,7 @@ pub mod config;
 pub mod customer;
 pub mod engine;
 pub mod hebrew;
+pub mod llm;
 pub mod render;
 pub mod speech;
 pub mod state;
