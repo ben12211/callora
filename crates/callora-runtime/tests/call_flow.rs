@@ -246,7 +246,7 @@ async fn a_full_call_greeting_booking_barge_in_and_goodbye() {
     }
     let (_, clears) = collect(&mut ws, Duration::from_millis(150)).await;
     assert!(clears >= 1, "barge-in clears Twilio's buffer");
-    for _ in 0..25 {
+    for _ in 0..40 {
         ws.send(Message::Text(quiet_frame().into())).await.unwrap();
     }
     let (frames, _) = collect(&mut ws, Duration::from_millis(200)).await;

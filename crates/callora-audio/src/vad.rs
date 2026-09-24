@@ -23,7 +23,9 @@ pub struct VadConfig {
 
 impl Default for VadConfig {
     fn default() -> Self {
-        Self { threshold_rms: 900.0, trigger_ms: 100, endpoint_ms: 400 }
+        // 400 ms cut live Hebrew calls mid-word ("אני רוצה לזמי"): quiet word endings fall
+        // under the threshold, and the finalize then drops the rest of the sentence.
+        Self { threshold_rms: 900.0, trigger_ms: 100, endpoint_ms: 700 }
     }
 }
 
@@ -110,7 +112,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(ended_after, Some(400));
+        assert_eq!(ended_after, Some(700));
     }
 
     #[test]

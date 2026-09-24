@@ -56,6 +56,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
       TEXT_LLM_BASE_URL: ${TEXT_LLM_BASE_URL:-}
+      # Turn-taking tuning; unset uses the built-in defaults.
+      VAD_ENDPOINT_MS: ${VAD_ENDPOINT_MS:-}
+      VAD_TRIGGER_MS: ${VAD_TRIGGER_MS:-}
       # The taxi business (businesses/taxi.json reads these by name).
       TAXI_PHONE_NUMBERS: ${TAXI_PHONE_NUMBERS:-}
       TAXI_HANDOFF_NUMBER: ${TAXI_HANDOFF_NUMBER:-}
