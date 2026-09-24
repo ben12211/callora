@@ -1,108 +1,79 @@
+# Local development stack. Everything runs in containers: a clean machine needs only
+# Docker. Use the `./dev` wrapper rather than calling this file directly.
+#
+#   ./dev test         cargo test for the whole workspace (with a real Postgres)
+#   ./dev check        fmt --check + clippy -D warnings + test
+#   ./dev up           Postgres + the Callora server on http://localhost:3000
+#   ./dev cargo ...    any cargo command inside the toolchain container
+#   ./dev callora ...  the Callora CLI (config validate, simulate, voice-library build)
+#
+# Build output and the cargo registry live in named volumes, never on the host.
+
 name: callora-dev
+
+x-toolchain: &toolchain
+  image: rust:1.94-bookworm
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+    - cargo_registry:/usr/local/cargo/registry
+    - cargo_git:/usr/local/cargo/git
+    - target:/workspace/target
+  environment:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: "1"
+    DATABASE_URL: postgresql://callora:callora@db:5432/callora
+    TEST_DATABASE_URL: postgresql://callora:callora@db:5432/callora
+  env_file:
+    - path: .env
+      required: false
 
 services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-callora}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-callora}
-      POSTGRES_DB: ${POSTGRES_DB:-callora}
-      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      POSTGRES_USER: callora
+      POSTGRES_PASSWORD: callora
+      POSTGRES_DB: callora
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 5s
-    restart: unless-stopped
-    stop_grace_period: 1m
+      test: ["CMD-SHELL", "pg_isready -U callora -d callora"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
-  backend:
-    build:
-      context: .
-      target: production
-    environment:
-      NODE_ENV: production
-      HOST: 0.0.0.0
-      PORT: 3000
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-callora}:${POSTGRES_PASSWORD:-callora}@db:5432/${POSTGRES_DB:-callora}
-      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-AC00000000000000000000000000000000}
-      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-local-development-token}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://callora.example.invalid}
-      # Encrypts credentials entered in the dashboard; keep it stable across restarts.
-      SECRETS_KEY: ${SECRETS_KEY:-callora-local-development-secrets-key}
-      # Default provider for newly created agents. Every business picks its own provider
-      # in the dashboard; a provider is usable once its credentials are present here or
-      # have been entered in the dashboard.
-      VOICE_PROVIDER: ${VOICE_PROVIDER:-openai}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-local-development-openai-key}
-      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
-      ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID:-}
-      ELEVENLABS_API_BASE_URL: ${ELEVENLABS_API_BASE_URL:-https://api.elevenlabs.io}
-      CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
-      CARTESIA_VOICE_ID: ${CARTESIA_VOICE_ID:-}
-      CARTESIA_TTS_MODEL: ${CARTESIA_TTS_MODEL:-}
-      CARTESIA_STT_MODEL: ${CARTESIA_STT_MODEL:-}
-      TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
-      DEEPDUB_API_KEY: ${DEEPDUB_API_KEY:-}
-      DEEPDUB_VOICE_ID: ${DEEPDUB_VOICE_ID:-}
-      DEEPDUB_MODEL: ${DEEPDUB_MODEL:-}
-      DEEPDUB_LOCALE: ${DEEPDUB_LOCALE:-}
-      DEEPDUB_WS_URL: ${DEEPDUB_WS_URL:-}
-      DEEPDUB_FIRST_AUDIO_TIMEOUT_MS: ${DEEPDUB_FIRST_AUDIO_TIMEOUT_MS:-50}
-      DEEPDUB_ENABLE_LOGGING: ${DEEPDUB_ENABLE_LOGGING:-false}
-      RENIKUD_URL: ${RENIKUD_URL:-}
-      RENIKUD_TIMEOUT_MS: ${RENIKUD_TIMEOUT_MS:-90}
-      # Control plane. These create the dashboard administrator on first start and reset
-      # its password if the value changes; ADMIN_API_KEY is the optional machine
-      # credential for the management API.
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@callora.local}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-callora-dev-password}
-      ADMIN_NAME: ${ADMIN_NAME:-Callora Administrator}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
-      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
-      # Optional caller allowlist; empty or unset allows every caller.
-      ALLOW_LIST: ${ALLOW_LIST:-}
-    ports:
-      - "3000:3000"
+  # One-off toolchain container: `./dev cargo test`, `./dev callora simulate`, ...
+  toolchain:
+    <<: *toolchain
+    profiles: ["tools"]
     depends_on:
       db:
         condition: service_healthy
-        restart: true
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 20s
-    init: true
-    restart: unless-stopped
-    stop_grace_period: 30s
 
-  renikud:
-    profiles: ["renikud"]
-    build: ./services/renikud
+  # The server itself, rebuilt from source on start.
+  app:
+    <<: *toolchain
+    command: ["cargo", "run", "--bin", "callora", "--", "serve"]
+    ports:
+      - "127.0.0.1:3000:3000"
     environment:
-      RENIKUD_MODEL_PATH: /models/model_int8.onnx
-      RENIKUD_WRAPPER_PATH: /models/renikud_onnx.py
-      RENIKUD_PORT: 8787
-    volumes:
-      - ${RENIKUD_MODEL_DIR:-./.models/renikud}:/models:ro
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health')"]
-      interval: 10s
-      timeout: 2s
-      retries: 5
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1777
+      CARGO_TERM_COLOR: always
+      RUST_LOG: ${RUST_LOG:-info,callora=debug}
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DATABASE_URL: postgresql://callora:callora@db:5432/callora
+      BUSINESS_CONFIG_DIR: /workspace/businesses
+      AUDIO_LIBRARY_DIR: /workspace/target/voice-library
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   postgres_data:
-    name: callora_dev_postgres_data
+  cargo_registry:
+  cargo_git:
+  target:

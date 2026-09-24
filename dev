@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Callora development wrapper. Requires only Docker (with Compose v2); the Rust toolchain,
+# Postgres and every build artifact stay inside containers and named volumes.
+set -Eeuo pipefail
+cd "$(dirname "$0")"
+
+# docker-compose.local.yml (gitignored) is for machine-specific additions, such as mounting
+# a corporate TLS-proxy CA into the containers. See README.md.
+files=(-f docker-compose.yml)
+[[ -f docker-compose.local.yml ]] && files+=(-f docker-compose.local.yml)
+compose() { docker compose "${files[@]}" "$@"; }
+run() { compose run --rm toolchain "$@"; }
+
+usage() {
+  cat <<'EOF'
+Usage: ./dev <command> [args]
+
+  test [args]        cargo test --workspace (Postgres-backed tests included)
+  check              cargo fmt --check, clippy -D warnings, and tests (what CI runs)
+  fmt                cargo fmt --all
+  cargo <args>       any cargo command in the toolchain container
+  callora <args>     the Callora CLI, e.g. `./dev callora config validate businesses`
+  simulate [biz]     text conversation with a business (default: taxi)
+  up                 start Postgres and the server on http://localhost:3000
+  down               stop the stack (volumes are kept)
+  logs               follow the server logs
+  psql               open psql against the development database
+  clean              remove the stack AND its volumes (database, build cache)
+EOF
+}
+
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  test) run cargo test --workspace "$@" ;;
+  check)
+    run bash -c 'cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace'
+    ;;
+  fmt) run cargo fmt --all ;;
+  cargo) run cargo "$@" ;;
+  callora) run cargo run -q --bin callora -- "$@" ;;
+  simulate) compose run --rm -it toolchain cargo run -q --bin callora -- simulate --business "${1:-taxi}" ;;
+  up) compose up -d app && echo 'Callora is starting on http://localhost:3000 (first build takes a few minutes; ./dev logs)' ;;
+  down) compose down ;;
+  logs) compose logs -f app ;;
+  psql) compose exec db psql -U callora -d callora ;;
+  clean) compose down --volumes ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac

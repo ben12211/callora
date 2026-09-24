@@ -1,0 +1,21 @@
+[package]
+name = "callora-core"
+description = "Generic Callora conversation runtime: business configuration, understanding, call state, pipelines and response planning. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+tracing.workspace = true
+rand.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[lints]
+workspace = true

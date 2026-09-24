@@ -1,0 +1,888 @@
+//! The conversation engine: understanding in, directives out.
+//!
+//! The engine owns the [`CallState`] and decides what happens next. It never performs I/O:
+//! speaking, running business actions, transferring and hanging up are [`Directive`]s the
+//! runtime executes in order. That keeps every conversational decision testable, and it
+//! keeps slow things (TTS, actions, the network) out of the decision path.
+
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::business::Business;
+use crate::config::{AfterPipeline, MetaIntent, PipelineConfig, RuleEffect};
+use crate::customer::Customer;
+use crate::render::{RenderContext, Renderer, SeededChooser, SpeechPlan};
+use crate::state::{CallState, CompletedRun, Phase, PipelineRun, SlotState, Speaker, Step, Turn};
+use crate::understanding::{default_value, Context, Understanding};
+use crate::values::{Provenance, SlotFill, SlotValue};
+
+/// Something the runtime must do, in order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "directive", rename_all = "snake_case")]
+pub enum Directive {
+    /// Play this plan (after anything already queued).
+    Speak { plan: SpeechPlan, filler: bool },
+    /// Run a business action; report back with [`Engine::on_action_result`].
+    RunAction { run_id: u64, action: String, input: serde_json::Value },
+    /// Transfer to a human once queued speech has played.
+    Handoff { summary: HandoffSummary },
+    /// Hang up once queued speech has played.
+    Hangup,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HandoffSummary {
+    pub reason: String,
+    pub business_id: String,
+    pub intent: Option<String>,
+    pub pipeline: Option<String>,
+    /// (slot description, spoken value)
+    pub slots: Vec<(String, String)>,
+    pub customer_name: Option<String>,
+    pub recent: Vec<Turn>,
+    /// Spoken to the human agent before the caller is connected.
+    pub text: String,
+}
+
+/// Directive builder that keeps speech ordered relative to other directives and tracks
+/// what should be remembered as "the last thing said" for repeats.
+#[derive(Default)]
+struct Out {
+    directives: Vec<Directive>,
+    pending: Option<SpeechPlan>,
+    recorded: Option<SpeechPlan>,
+}
+
+impl Out {
+    fn speak(&mut self, plan: SpeechPlan, record: bool) {
+        if record {
+            self.recorded = Some(match self.recorded.take() {
+                Some(r) => r.then(plan.clone()),
+                None => plan.clone(),
+            });
+        }
+        self.pending = Some(match self.pending.take() {
+            Some(p) => p.then(plan),
+            None => plan,
+        });
+    }
+
+    fn flush(&mut self, filler: bool) {
+        if let Some(plan) = self.pending.take() {
+            if !plan.is_empty() {
+                self.directives.push(Directive::Speak { plan, filler });
+            }
+        }
+    }
+
+    fn push(&mut self, d: Directive) {
+        self.flush(false);
+        self.directives.push(d);
+    }
+}
+
+pub struct Engine {
+    business: Arc<Business>,
+    pub state: CallState,
+    chooser: SeededChooser,
+    /// "Anything else?" was the last question.
+    offered_more: bool,
+}
+
+impl Engine {
+    pub fn new(business: Arc<Business>, seed: u64) -> Self {
+        let state = CallState::new(&business.config.id);
+        Self { business, state, chooser: SeededChooser(seed | 1), offered_more: false }
+    }
+
+    pub fn business(&self) -> &Arc<Business> {
+        &self.business
+    }
+
+    /// What the understanding layer needs to know about the conversation right now.
+    pub fn context(&self) -> Context<'_> {
+        let run = self.state.run.as_ref();
+        Context {
+            active_pipeline: run.map(|r| r.pipeline.as_str()),
+            awaiting_slot: run.and_then(PipelineRun::awaiting_slot),
+            awaiting_confirmation: matches!(run.map(|r| &r.step), Some(Step::AwaitingConfirmation))
+                || matches!(run.map(|r| &r.step), Some(Step::ConfirmingSlot { .. })),
+            customer: self.state.customer.as_ref(),
+        }
+    }
+
+    pub fn set_customer(&mut self, customer: Option<Customer>) {
+        self.state.customer = customer;
+    }
+
+    /// The customer lookup to run at call start, if the business has one.
+    pub fn customer_lookup(&self, caller: Option<&str>) -> Option<(String, serde_json::Value)> {
+        let cfg = self.business.config.customer_lookup.as_ref()?;
+        let caller = caller?;
+        Some((cfg.action.clone(), json!({ "phone": caller })))
+    }
+
+    /// The greeting. Call once, as soon as the call connects.
+    pub fn start(&mut self) -> Vec<Directive> {
+        let mut out = Out::default();
+        let known = self.state.customer.as_ref().is_some_and(|c| c.name.is_some());
+        let greeting = match (&self.business.config.customer_lookup, known) {
+            (Some(cl), true) => cl.known_greeting.clone().unwrap_or_else(|| self.business.config.greeting.clone()),
+            _ => self.business.config.greeting.clone(),
+        };
+        self.say(&mut out, &greeting, RenderContext { customer: self.state.customer.as_ref(), ..Default::default() }.into_owned(), true);
+        self.finish(out)
+    }
+
+    /// A final transcript, understood.
+    pub fn on_utterance(&mut self, u: Understanding) -> Vec<Directive> {
+        let mut out = Out::default();
+        if self.state.phase != Phase::Active {
+            return Vec::new();
+        }
+        self.state.turns += 1;
+        self.state.silence_reprompts = 0;
+        self.state.remember(Speaker::Caller, &u.transcript);
+        if u.frustrated && self.business.config.voice.deliveries.contains_key("calm") {
+            self.state.delivery = Some("calm".into());
+        }
+
+        let has_content = !u.slots.is_empty() || u.affirm.is_some() || u.intent.is_some();
+        let meta = match u.meta {
+            Some(MetaIntent::Wait) if has_content => None,
+            m => m,
+        };
+        if let Some(m) = meta {
+            self.meta(&mut out, m);
+            return self.finish(out);
+        }
+        self.understood(&mut out, u);
+        self.finish(out)
+    }
+
+    fn understood(&mut self, out: &mut Out, u: Understanding) {
+        let offered_more = std::mem::take(&mut self.offered_more);
+        let mut progressed = false;
+
+        // A single value being read back.
+        if let Some(run) = &mut self.state.run {
+            if let Step::ConfirmingSlot { slot } = run.step.clone() {
+                if u.slot(&slot).is_none() {
+                    match u.affirm {
+                        Some(true) => {
+                            if let Some(s) = run.slots.get_mut(&slot) {
+                                s.confirmed = true;
+                                s.provenance = Provenance::Confirmed;
+                            }
+                            run.step = Step::Collecting { awaiting: None };
+                            self.state.fallback_level = 0;
+                            self.advance(out, false);
+                            return;
+                        }
+                        Some(false) => {
+                            run.clear(&slot);
+                            run.step = Step::Collecting { awaiting: Some(slot.clone()) };
+                            self.state.fallback_level = 0;
+                            self.ask(out, &slot, false);
+                            return;
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+
+        // The full read-back.
+        if let Some(run) = &self.state.run {
+            if run.step == Step::AwaitingConfirmation {
+                let pipeline = self.pipeline_of(run);
+                let corrections = u.slots.iter().any(|s| pipeline.slots.iter().any(|p| p.slot == s.slot));
+                if !corrections {
+                    match u.affirm {
+                        Some(true) => {
+                            if let Some(run) = &mut self.state.run {
+                                run.confirmed = true;
+                                for s in run.slots.values_mut() {
+                                    s.confirmed = true;
+                                }
+                            }
+                            self.state.fallback_level = 0;
+                            self.advance(out, false);
+                            return;
+                        }
+                        Some(false) => {
+                            let ask_change = pipeline.confirm.as_ref().map(|c| c.ask_change.clone());
+                            let nothing_to_change = pipeline.slots.is_empty();
+                            self.state.fallback_level = 0;
+                            if let Some(r) = ask_change {
+                                let ctx = self.render_ctx(None);
+                                self.say(out, &r, ctx, true);
+                            }
+                            if nothing_to_change {
+                                // A bare "are you sure?" answered no: the flow is simply dropped.
+                                self.finish_run(out, "declined", None);
+                            } else if let Some(run) = &mut self.state.run {
+                                run.step = Step::Collecting { awaiting: None };
+                            }
+                            return;
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+
+        // Business intent: start, switch, or answer.
+        if let Some(guess) = &u.intent {
+            let Some(intent) = self.business.intent(&guess.id).cloned() else {
+                tracing::warn!(intent = %guess.id, "understanding returned an unknown intent");
+                return self.fallback(out);
+            };
+            let current = self.state.run.as_ref().map(|r| r.intent.clone());
+            // Answer-only intents (FAQ) never disturb the flow, so they need less certainty
+            // to interrupt it than an intent that would replace the active pipeline.
+            let threshold = if intent.respond.is_some() { intent.switch_confidence.min(0.6) } else { intent.switch_confidence };
+            let switch = match &current {
+                None => true,
+                Some(c) => *c != intent.id && guess.confidence >= threshold,
+            };
+            if switch {
+                if intent.handoff {
+                    return self.handoff(out, &format!("intent:{}", intent.id));
+                }
+                if let Some(r) = &intent.respond {
+                    self.state.fallback_level = 0;
+                    let ctx = self.render_ctx(None);
+                    self.say(out, r, ctx, true);
+                    if self.state.run.is_some() {
+                        // Answer, then pick the pipeline back up where it was.
+                        self.advance(out, false);
+                    } else {
+                        self.offer_more(out);
+                    }
+                    return;
+                }
+                if let Some(p) = &intent.pipeline {
+                    if let Some(run) = self.state.run.take() {
+                        if run.pipeline != *p && !run.slots.is_empty() {
+                            self.state.suspended.push(run);
+                        }
+                    }
+                    self.state.run = Some(self.new_run(p, &intent.id));
+                    progressed = true;
+                }
+            }
+        }
+
+        // Values with no intent yet: infer the pipeline they belong to.
+        if self.state.run.is_none() && !u.slots.is_empty() {
+            if let Some((pipeline, intent)) = self.infer_pipeline(&u.slots) {
+                self.state.run = Some(self.new_run(&pipeline, &intent));
+                progressed = true;
+            }
+        }
+
+        if self.state.run.is_none() {
+            if offered_more && u.affirm == Some(false) {
+                return self.goodbye(out);
+            }
+            if offered_more && u.affirm == Some(true) {
+                let ctx = self.render_ctx(None);
+                let greeting = self.business.config.greeting.clone();
+                self.say(out, &greeting, ctx, true);
+                return;
+            }
+            return self.fallback(out);
+        }
+
+        let applied = self.apply_fills(&u.slots);
+        if applied == 0 && !progressed {
+            return self.fallback(out);
+        }
+        self.state.fallback_level = 0;
+        if self.apply_rules(out) {
+            return;
+        }
+        self.advance(out, applied > 0);
+    }
+
+    /// Store understood values for slots of the active pipeline. Returns how many were
+    /// accepted.
+    fn apply_fills(&mut self, fills: &[SlotFill]) -> usize {
+        let Some(run) = &self.state.run else { return 0 };
+        let pipeline = self.pipeline_of(run).clone();
+        let mut accepted = 0;
+        for fill in fills {
+            if !pipeline.slots.iter().any(|p| p.slot == fill.slot) {
+                continue;
+            }
+            let Some(cfg) = self.business.config.slots.get(&fill.slot) else { continue };
+            if fill.confidence < cfg.reject_below {
+                tracing::debug!(slot = %fill.slot, confidence = fill.confidence, "value rejected: too uncertain");
+                continue;
+            }
+            let Some(run) = &mut self.state.run else { return accepted };
+            if run.slots.get(&fill.slot).is_some_and(|s| s.value == fill.value) {
+                accepted += 1;
+                continue;
+            }
+            run.set(
+                &fill.slot,
+                SlotState { value: fill.value.clone(), confidence: fill.confidence, provenance: fill.provenance, confirmed: false },
+            );
+            accepted += 1;
+        }
+        if accepted > 0 {
+            if let Some(run) = &mut self.state.run {
+                if matches!(run.step, Step::AwaitingConfirmation | Step::ConfirmingSlot { .. }) {
+                    run.step = Step::Collecting { awaiting: None };
+                }
+            }
+        }
+        accepted
+    }
+
+    /// Business rules. Returns true when a rule took over the turn.
+    fn apply_rules(&mut self, out: &mut Out) -> bool {
+        let rules = self.business.config.rules.clone();
+        for rule in rules {
+            let Some(run) = &self.state.run else { return false };
+            if rule.pipeline.as_ref().is_some_and(|p| *p != run.pipeline) || run.fired_rules.contains(&rule.id) {
+                continue;
+            }
+            let value = run.slots.get(&rule.when.slot).map(|s| &s.value);
+            let hit = match &rule.when.test {
+                crate::config::ConditionTest::Gt(x) => value.and_then(SlotValue::as_f64).is_some_and(|v| v > *x),
+                crate::config::ConditionTest::Lt(x) => value.and_then(SlotValue::as_f64).is_some_and(|v| v < *x),
+                crate::config::ConditionTest::Eq(x) => value.is_some_and(|v| v.matches_json(x)),
+                crate::config::ConditionTest::Present(p) => value.is_some() == *p,
+            };
+            if !hit {
+                continue;
+            }
+            tracing::debug!(rule = %rule.id, "business rule fired");
+            if let Some(run) = &mut self.state.run {
+                run.fired_rules.push(rule.id.clone());
+            }
+            match &rule.then {
+                RuleEffect::Reject { response } => {
+                    if let Some(run) = &mut self.state.run {
+                        run.clear(&rule.when.slot);
+                        run.step = Step::Collecting { awaiting: Some(rule.when.slot.clone()) };
+                    }
+                    let ctx = self.render_ctx(None);
+                    self.say(out, response, ctx, true);
+                    self.ask(out, &rule.when.slot, false);
+                    return true;
+                }
+                RuleEffect::Handoff { response, reason } => {
+                    if let Some(r) = response {
+                        let ctx = self.render_ctx(None);
+                        self.say(out, r, ctx, true);
+                    }
+                    self.handoff(out, &format!("rule:{reason}"));
+                    return true;
+                }
+                RuleEffect::Set { slot, value } => {
+                    if let Some(v) = default_value(&self.business, slot, value) {
+                        if let Some(run) = &mut self.state.run {
+                            run.set(slot, SlotState { value: v, confidence: 1.0, provenance: Provenance::Rule, confirmed: true });
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Move the active pipeline forward: confirm a doubtful value, ask for the next
+    /// missing one, read everything back, or run the action.
+    fn advance(&mut self, out: &mut Out, acknowledge: bool) {
+        let Some(run) = &self.state.run else { return };
+        let pipeline = self.pipeline_of(run).clone();
+
+        // Defaults and customer-known values for anything still missing.
+        let customer = self.state.customer.clone();
+        if let Some(run) = &mut self.state.run {
+            for ps in &pipeline.slots {
+                if run.slots.contains_key(&ps.slot) {
+                    continue;
+                }
+                if let (Some(key), Some(c)) = (&ps.from_customer, &customer) {
+                    if let Some(place) = c.places.get(key) {
+                        run.slots.insert(
+                            ps.slot.clone(),
+                            SlotState {
+                                value: SlotValue::Place { spoken: place.spoken.clone(), address: place.address.clone(), customer_place: Some(key.clone()) },
+                                confidence: 0.8,
+                                provenance: Provenance::Customer,
+                                confirmed: false,
+                            },
+                        );
+                        continue;
+                    }
+                }
+                if let Some(default) = &ps.default {
+                    if let Some(v) = default_value(&self.business, &ps.slot, default) {
+                        run.slots.insert(ps.slot.clone(), SlotState { value: v, confidence: 1.0, provenance: Provenance::Default, confirmed: false });
+                    }
+                }
+            }
+        }
+
+        let Some(run) = &self.state.run else { return };
+        // A value too uncertain to use without asking.
+        for ps in &pipeline.slots {
+            let Some(s) = run.slots.get(&ps.slot) else { continue };
+            let Some(cfg) = self.business.config.slots.get(&ps.slot) else { continue };
+            if !s.confirmed && s.confidence < cfg.confirm_below {
+                let spoken = s.value.spoken();
+                if let Some(run) = &mut self.state.run {
+                    run.step = Step::ConfirmingSlot { slot: ps.slot.clone() };
+                }
+                let mut ctx = self.render_ctx(None);
+                ctx.extra.insert("value".into(), spoken);
+                let r = self.business.config.confirm_slot.clone();
+                self.say(out, &r, ctx, true);
+                return;
+            }
+        }
+
+        // The next missing required value.
+        if let Some(missing) = pipeline.slots.iter().find(|ps| ps.required && !run.slots.contains_key(&ps.slot)) {
+            let slot = missing.slot.clone();
+            if let Some(run) = &mut self.state.run {
+                run.step = Step::Collecting { awaiting: Some(slot.clone()) };
+            }
+            self.ask(out, &slot, acknowledge);
+            return;
+        }
+
+        // Read-back.
+        if let Some(confirm) = &pipeline.confirm {
+            if !run.confirmed {
+                if let Some(run) = &mut self.state.run {
+                    run.step = Step::AwaitingConfirmation;
+                }
+                let ctx = self.render_ctx(None);
+                self.say(out, &confirm.response, ctx, true);
+                return;
+            }
+        }
+
+        // The business action.
+        if let Some(action_id) = &pipeline.action {
+            let action = self.business.config.actions.get(action_id).cloned();
+            if let Some(action) = &action {
+                if let Some((slot, s)) = run.slots.iter().find(|(_, s)| !s.confirmed && s.confidence < action.min_confidence) {
+                    let (slot, spoken) = (slot.clone(), s.value.spoken());
+                    if let Some(run) = &mut self.state.run {
+                        run.step = Step::ConfirmingSlot { slot };
+                    }
+                    let mut ctx = self.render_ctx(None);
+                    ctx.extra.insert("value".into(), spoken);
+                    let r = self.business.config.confirm_slot.clone();
+                    self.say(out, &r, ctx, true);
+                    return;
+                }
+            }
+            let run_id = self.state.next_action_run;
+            self.state.next_action_run += 1;
+            let input = self.action_input();
+            if let Some(run) = &mut self.state.run {
+                run.step = Step::Executing { action_run: run_id };
+                run.attempts = 1;
+            }
+            if let Some(filler) = &pipeline.filler {
+                let ctx = self.render_ctx(None);
+                if let Some(plan) = self.render_plan(filler, &ctx) {
+                    out.speak(plan, false);
+                    out.flush(true);
+                }
+            }
+            out.push(Directive::RunAction { run_id, action: action_id.clone(), input });
+            return;
+        }
+
+        if let Some(r) = &pipeline.on_complete {
+            let ctx = self.render_ctx(None);
+            self.say(out, r, ctx, true);
+        }
+        self.finish_run(out, "completed", None);
+    }
+
+    /// A new run, pre-filled with values the caller already gave earlier in this call for
+    /// the same slots ("how much to the airport?" ... "ok, book it"). They are unconfirmed,
+    /// so a read-back still covers them.
+    fn new_run(&self, pipeline: &str, intent: &str) -> PipelineRun {
+        let mut run = PipelineRun::new(pipeline, intent);
+        let Some(config) = self.business.pipeline(pipeline) else { return run };
+        for completed in self.state.completed.iter().rev().filter(|c| c.outcome != "cancelled").take(1) {
+            for ps in &config.slots {
+                if let Some(value) = completed.slots.get(&ps.slot) {
+                    run.slots.entry(ps.slot.clone()).or_insert_with(|| SlotState {
+                        value: value.clone(),
+                        confidence: 0.85,
+                        provenance: Provenance::Rules,
+                        confirmed: false,
+                    });
+                }
+            }
+        }
+        run
+    }
+
+    fn action_input(&self) -> serde_json::Value {
+        let Some(run) = &self.state.run else { return json!({}) };
+        let slots: serde_json::Map<String, serde_json::Value> =
+            run.slots.iter().map(|(k, v)| (k.clone(), v.value.to_action_json())).collect();
+        json!({
+            "pipeline": run.pipeline,
+            "intent": run.intent,
+            "slots": slots,
+            "customer": self.state.customer,
+        })
+    }
+
+    /// Result of a [`Directive::RunAction`].
+    pub fn on_action_result(&mut self, run_id: u64, result: Result<serde_json::Value, String>) -> Vec<Directive> {
+        let mut out = Out::default();
+        let current = self.state.run.as_ref().map(|r| r.step.clone());
+        if current != Some(Step::Executing { action_run: run_id }) {
+            tracing::warn!(run_id, "action result for a run that is no longer active; ignored");
+            return Vec::new();
+        }
+        let Some(run) = &self.state.run else { return Vec::new() };
+        let pipeline = self.pipeline_of(run).clone();
+        let action_id = pipeline.action.clone().unwrap_or_default();
+        let max_attempts = self.business.config.actions.get(&action_id).map_or(1, |a| a.max_attempts);
+        match result {
+            Ok(value) => {
+                if let Some(r) = &pipeline.on_success {
+                    let ctx = self.render_ctx(Some(&value));
+                    let ctx = RenderContext { result: Some(&value), ..ctx };
+                    self.say(&mut out, r, ctx, true);
+                }
+                self.finish_run(&mut out, "success", Some(value));
+            }
+            Err(error) => {
+                tracing::warn!(action = %action_id, %error, "business action failed");
+                let attempts = run.attempts;
+                if attempts < max_attempts {
+                    let input = self.action_input();
+                    if let Some(run) = &mut self.state.run {
+                        run.attempts += 1;
+                    }
+                    out.push(Directive::RunAction { run_id, action: action_id, input });
+                    return self.finish(out);
+                }
+                self.state.action_failures += 1;
+                if let Some(r) = &pipeline.on_failure {
+                    let ctx = self.render_ctx(None);
+                    self.say(&mut out, r, ctx, true);
+                }
+                if self.state.action_failures >= self.business.config.handoff.after_action_failures {
+                    self.handoff(&mut out, "action_failed");
+                } else {
+                    self.finish_run(&mut out, "failed", Some(json!({ "error": error })));
+                }
+            }
+        }
+        self.finish(out)
+    }
+
+    /// The caller said nothing for the configured silence.
+    pub fn on_silence(&mut self) -> Vec<Directive> {
+        let mut out = Out::default();
+        if self.state.phase != Phase::Active || matches!(self.state.run.as_ref().map(|r| &r.step), Some(Step::Executing { .. })) {
+            return Vec::new();
+        }
+        self.state.silence_reprompts += 1;
+        let silence = self.business.config.silence.clone();
+        if self.state.silence_reprompts > silence.max_reprompts {
+            self.goodbye(&mut out);
+            return self.finish(out);
+        }
+        match &silence.response {
+            Some(r) => {
+                let ctx = self.render_ctx(None);
+                self.say(&mut out, r, ctx, false);
+                if let Some(last) = self.state.last_plan.clone() {
+                    out.speak(last, false);
+                }
+            }
+            None => {
+                if let Some(last) = self.state.last_plan.clone() {
+                    out.speak(last, false);
+                }
+            }
+        }
+        self.finish(out)
+    }
+
+    // -----------------------------------------------------------------------------------
+
+    fn meta(&mut self, out: &mut Out, m: MetaIntent) {
+        let meta_response = self.business.meta(m).and_then(|c| c.response.clone());
+        let has_slow = self.business.config.voice.deliveries.contains_key("slow");
+        match m {
+            MetaIntent::RepeatLast | MetaIntent::DidNotUnderstand | MetaIntent::SpeakSlower | MetaIntent::SpeakLouder => {
+                if m == MetaIntent::SpeakSlower && has_slow {
+                    self.state.delivery = Some("slow".into());
+                }
+                if m == MetaIntent::SpeakLouder {
+                    self.state.gain_db = (self.state.gain_db + 4.0).min(8.0);
+                }
+                if let Some(r) = meta_response {
+                    let ctx = self.render_ctx(None);
+                    self.say(out, &r, ctx, false);
+                }
+                let mut last = match self.state.last_plan.clone() {
+                    Some(p) => p,
+                    None => {
+                        let ctx = self.render_ctx(None);
+                        let g = self.business.config.greeting.clone();
+                        self.render_plan(&g, &ctx).unwrap_or_else(SpeechPlan::empty)
+                    }
+                };
+                let slower = matches!(m, MetaIntent::DidNotUnderstand | MetaIntent::SpeakSlower) && has_slow;
+                for seg in &mut last.segments {
+                    if slower {
+                        seg.delivery = "slow".into();
+                    } else if let Some(d) = &self.state.delivery {
+                        seg.delivery = d.clone();
+                    }
+                }
+                last.gain_db = self.state.gain_db;
+                out.speak(last, true);
+            }
+            MetaIntent::CancelCurrentFlow => {
+                if let Some(run) = self.state.run.take() {
+                    self.state.completed.push(CompletedRun {
+                        pipeline: run.pipeline.clone(),
+                        outcome: "cancelled".into(),
+                        slots: run.slots.iter().map(|(k, v)| (k.clone(), v.value.clone())).collect(),
+                        result: None,
+                    });
+                }
+                self.state.suspended.clear();
+                if let Some(r) = meta_response {
+                    let ctx = self.render_ctx(None);
+                    self.say(out, &r, ctx, true);
+                }
+                self.offered_more = true;
+            }
+            MetaIntent::GoBack => {
+                let undone = self.state.run.as_mut().and_then(PipelineRun::undo);
+                match undone {
+                    Some(slot) => {
+                        if let Some(run) = &mut self.state.run {
+                            run.step = Step::Collecting { awaiting: Some(slot.clone()) };
+                        }
+                        if let Some(r) = meta_response {
+                            let ctx = self.render_ctx(None);
+                            self.say(out, &r, ctx, false);
+                        }
+                        self.ask(out, &slot, false);
+                    }
+                    None => {
+                        if let Some(last) = self.state.last_plan.clone() {
+                            out.speak(last, true);
+                        }
+                    }
+                }
+            }
+            MetaIntent::TransferHuman => self.handoff(out, "caller_requested"),
+            MetaIntent::Goodbye => self.goodbye(out),
+            MetaIntent::Wait => {}
+        }
+    }
+
+    fn fallback(&mut self, out: &mut Out) {
+        self.state.fallback_level += 1;
+        let ladder = self.business.config.fallback.ladder.clone();
+        let level = self.state.fallback_level as usize;
+        if level > ladder.len() {
+            self.handoff(out, "not_understood");
+            return;
+        }
+        let in_pipeline = self.state.run.as_ref().is_some_and(|r| !matches!(r.step, Step::Executing { .. }));
+        if in_pipeline {
+            // Inside a flow: a short "didn't catch that" and the pending question again,
+            // so the caller is never pulled out of what they were doing.
+            let ctx = self.render_ctx(None);
+            self.say(out, &ladder[0], ctx, false);
+            self.advance(out, false);
+        } else {
+            let ctx = self.render_ctx(None);
+            self.say(out, &ladder[level - 1], ctx, true);
+        }
+    }
+
+    fn handoff(&mut self, out: &mut Out, reason: &str) {
+        let handoff = self.business.config.handoff.clone();
+        if self.business.handoff_number.is_some() {
+            let ctx = self.render_ctx(None);
+            self.say(out, &handoff.response, ctx, true);
+            self.state.phase = Phase::HandingOff;
+            let summary = self.summary(reason);
+            out.push(Directive::Handoff { summary });
+            return;
+        }
+        let ctx = self.render_ctx(None);
+        self.say(out, &handoff.unavailable_response, ctx, true);
+        if reason == "not_understood" || reason == "action_failed" {
+            self.state.phase = Phase::Ending;
+            out.push(Directive::Hangup);
+        } else if self.state.run.is_some() {
+            self.advance(out, false);
+        }
+    }
+
+    fn goodbye(&mut self, out: &mut Out) {
+        let ctx = self.render_ctx(None);
+        let goodbye = self.business.meta(MetaIntent::Goodbye).and_then(|m| m.response.clone()).unwrap_or_else(|| self.business.config.goodbye.clone());
+        self.say(out, &goodbye, ctx, true);
+        self.state.phase = Phase::Ending;
+        out.push(Directive::Hangup);
+    }
+
+    fn offer_more(&mut self, out: &mut Out) {
+        let ctx = self.render_ctx(None);
+        let r = self.business.config.anything_else.clone();
+        self.say(out, &r, ctx, true);
+        self.offered_more = true;
+    }
+
+    fn finish_run(&mut self, out: &mut Out, outcome: &str, result: Option<serde_json::Value>) {
+        let Some(run) = self.state.run.take() else { return };
+        let after = self.pipeline_of(&run).after;
+        self.state.completed.push(CompletedRun {
+            pipeline: run.pipeline.clone(),
+            outcome: outcome.to_string(),
+            slots: run.slots.iter().map(|(k, v)| (k.clone(), v.value.clone())).collect(),
+            result,
+        });
+        if let Some(resumed) = self.state.suspended.pop() {
+            self.state.run = Some(resumed);
+            self.advance(out, false);
+            return;
+        }
+        match after {
+            AfterPipeline::Continue => self.offer_more(out),
+            AfterPipeline::End => self.goodbye(out),
+        }
+    }
+
+    fn ask(&mut self, out: &mut Out, slot: &str, acknowledge: bool) {
+        let Some(run) = &self.state.run else { return };
+        let pipeline = self.pipeline_of(run);
+        let Some(ask) = pipeline.slots.iter().find(|p| p.slot == slot).and_then(|p| p.ask.clone()) else { return };
+        let has_prefix = self.business.response(&ask).is_some_and(|r| r.prefix.is_some());
+        if acknowledge && !has_prefix {
+            if let Some(ack) = self.business.config.acknowledgement.clone() {
+                let ctx = self.render_ctx(None);
+                self.say(out, &ack, ctx, true);
+            }
+        }
+        let ctx = self.render_ctx(None);
+        self.say(out, &ask, ctx, true);
+    }
+
+    fn infer_pipeline(&self, fills: &[SlotFill]) -> Option<(String, String)> {
+        let mut candidates = self.business.config.intents.iter().filter_map(|i| {
+            let p = i.pipeline.as_ref()?;
+            let pipeline = self.business.pipeline(p)?;
+            fills.iter().all(|f| pipeline.slots.iter().any(|s| s.slot == f.slot)).then(|| (p.clone(), i.id.clone()))
+        });
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
+    }
+
+    fn summary(&self, reason: &str) -> HandoffSummary {
+        let run = self.state.run.as_ref().or(self.state.suspended.last());
+        let mut slots = Vec::new();
+        if let Some(run) = run {
+            let pipeline = self.pipeline_of(run);
+            for ps in &pipeline.slots {
+                if let (Some(s), Some(cfg)) = (run.slots.get(&ps.slot), self.business.config.slots.get(&ps.slot)) {
+                    slots.push((cfg.description.clone(), s.value.spoken()));
+                }
+            }
+        }
+        let intent = run.map(|r| r.intent.clone());
+        let intent_description = intent.as_deref().and_then(|i| self.business.intent(i)).map(|i| i.description.clone());
+        let customer_name = self.state.customer.as_ref().and_then(|c| c.name.clone());
+        let mut text = format!("שיחה מועברת מ{}.", self.business.config.name);
+        if let Some(name) = &customer_name {
+            text.push_str(&format!(" הלקוח: {name}."));
+        }
+        if let Some(d) = &intent_description {
+            text.push_str(&format!(" בקשה: {d}."));
+        }
+        for (label, value) in &slots {
+            text.push_str(&format!(" {label}: {value}."));
+        }
+        let recent_start = self.state.history.len().saturating_sub(6);
+        HandoffSummary {
+            reason: reason.to_string(),
+            business_id: self.business.config.id.clone(),
+            intent,
+            pipeline: run.map(|r| r.pipeline.clone()),
+            slots,
+            customer_name,
+            recent: self.state.history[recent_start..].to_vec(),
+            text,
+        }
+    }
+
+    fn pipeline_of(&self, run: &PipelineRun) -> &PipelineConfig {
+        // Runs are only ever created from validated pipeline ids.
+        self.business.pipeline(&run.pipeline).expect("run refers to a validated pipeline")
+    }
+
+    fn render_plan(&mut self, response: &str, ctx: &RenderContext<'_>) -> Option<SpeechPlan> {
+        let renderer = Renderer { business: &self.business, delivery_override: self.state.delivery.as_deref(), gain_db: self.state.gain_db };
+        renderer.render(response, ctx, &mut self.chooser, &mut self.state.last_variant)
+    }
+
+    fn render_ctx(&self, _result: Option<&serde_json::Value>) -> RenderContext<'static> {
+        let mut ctx = RenderContext::default();
+        if let Some(run) = &self.state.run {
+            ctx.slots = run.slots.iter().map(|(k, v)| (k.clone(), v.value.clone())).collect();
+        }
+        if let Some(name) = self.state.customer.as_ref().and_then(|c| c.name.clone()) {
+            ctx.extra.insert("customer_name".into(), name);
+        }
+        ctx
+    }
+
+    fn say(&mut self, out: &mut Out, response: &str, ctx: RenderContext<'_>, record: bool) {
+        match self.render_plan(response, &ctx) {
+            Some(plan) => out.speak(plan, record),
+            None => tracing::error!(response, "response could not be rendered"),
+        }
+    }
+
+    fn finish(&mut self, mut out: Out) -> Vec<Directive> {
+        out.flush(false);
+        if let Some(recorded) = out.recorded.take() {
+            self.state.remember(Speaker::Agent, &recorded.text());
+            self.state.last_plan = Some(recorded);
+        }
+        out.directives
+    }
+}
+
+impl RenderContext<'_> {
+    /// Detach from borrowed data (the customer is copied into `extra`).
+    fn into_owned(self) -> RenderContext<'static> {
+        let mut extra = self.extra;
+        if let Some(name) = self.customer.and_then(|c| c.name.clone()) {
+            extra.insert("customer_name".into(), name);
+        }
+        RenderContext { slots: self.slots, result: None, customer: None, extra }
+    }
+}

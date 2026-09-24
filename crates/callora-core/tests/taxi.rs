@@ -1,0 +1,344 @@
+//! End-to-end conversation behaviour against the real taxi business config, driven
+//! through the same path the runtime uses: fast-path understanding → engine → directives.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use callora_core::business::{validate, Business, BusinessRegistry};
+use callora_core::config::BusinessConfig;
+use callora_core::customer::{Customer, CustomerPlace};
+use callora_core::engine::{Directive, Engine};
+use callora_core::render::{library_entries, SegmentOrigin};
+use callora_core::state::Step;
+use callora_core::understanding::fast_path;
+use callora_core::values::SlotValue;
+
+const TAXI: &str = include_str!("../../../businesses/taxi.json");
+
+fn business(env: &[(&str, &str)]) -> Arc<Business> {
+    let env: HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    Arc::new(Business::from_json(TAXI, "taxi.json", &|k| env.get(k).cloned()).expect("taxi config is valid"))
+}
+
+fn with_desk() -> Arc<Business> {
+    business(&[("TAXI_HANDOFF_NUMBER", "+972500000001"), ("TAXI_PHONE_NUMBERS", "+972500000000")])
+}
+
+struct Call {
+    engine: Engine,
+}
+
+impl Call {
+    fn new(b: Arc<Business>) -> (Self, Vec<Directive>) {
+        let mut engine = Engine::new(b, 7);
+        let greeting = engine.start();
+        (Self { engine }, greeting)
+    }
+
+    fn say(&mut self, text: &str) -> Vec<Directive> {
+        let b = self.engine.business().clone();
+        let (u, _needs_llm) = fast_path(&b, &self.engine.context(), text);
+        self.engine.on_utterance(u)
+    }
+
+    fn slot(&self, id: &str) -> Option<SlotValue> {
+        self.engine.state.run.as_ref()?.slots.get(id).map(|s| s.value.clone())
+    }
+
+    fn step(&self) -> Option<Step> {
+        self.engine.state.run.as_ref().map(|r| r.step.clone())
+    }
+}
+
+fn spoken(directives: &[Directive]) -> String {
+    directives
+        .iter()
+        .filter_map(|d| match d {
+            Directive::Speak { plan, .. } => Some(plan.text()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn action(directives: &[Directive]) -> Option<(u64, String, serde_json::Value)> {
+    directives.iter().find_map(|d| match d {
+        Directive::RunAction { run_id, action, input } => Some((*run_id, action.clone(), input.clone())),
+        _ => None,
+    })
+}
+
+fn place(v: Option<SlotValue>) -> String {
+    match v {
+        Some(SlotValue::Place { spoken, .. }) => spoken,
+        other => panic!("expected a place, got {other:?}"),
+    }
+}
+
+#[test]
+fn config_is_valid_and_routes_by_number() {
+    let b = with_desk();
+    assert!(validate(&b.config).is_empty());
+    let reg = BusinessRegistry::new(vec![Business::from_json(TAXI, "taxi.json", &|k| {
+        (k == "TAXI_PHONE_NUMBERS").then(|| "+972500000000, +972500000009".to_string())
+    })
+    .unwrap()])
+    .unwrap();
+    assert_eq!(reg.by_number("+972500000009").unwrap().config.id, "taxi");
+    assert!(reg.by_number("+972599999999").is_none());
+}
+
+#[test]
+fn md_example_29_full_booking_in_one_sentence() {
+    let (mut call, greeting) = Call::new(with_desk());
+    assert_eq!(spoken(&greeting), "אהלן, איך אפשר לעזור?");
+
+    let d = call.say("צריך מונית עכשיו מרבי עקיבא 12 לנתב\"ג, אנחנו ארבעה.");
+    assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12");
+    assert_eq!(place(call.slot("destination")), "נתב״ג");
+    assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 4 }));
+    assert_eq!(call.step(), Some(Step::AwaitingConfirmation));
+    let text = spoken(&d);
+    assert!(text.contains("ארבעה נוסעים מרבי עקיבא 12 לנתב״ג, עכשיו. לשלוח?"), "{text}");
+
+    let d = call.say("כן");
+    assert!(matches!(&d[0], Directive::Speak { filler: true, .. }), "filler first: {d:?}");
+    let (run_id, name, input) = action(&d).expect("create_ride runs");
+    assert_eq!(name, "create_ride");
+    assert_eq!(input["slots"]["passengers"], 4);
+    assert_eq!(input["slots"]["destination"]["address"], "נמל התעופה בן גוריון, טרמינל 3");
+
+    let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "eta_minutes": 4 })));
+    let text = spoken(&d);
+    assert!(text.contains("ארבע דקות"), "{text}");
+    assert!(call.engine.state.run.is_none());
+    // The ETA sentence is a pre-generated template, not dynamic TTS.
+    let Directive::Speak { plan, .. } = &d[0] else { panic!() };
+    assert_eq!(plan.segments[0].origin, SegmentOrigin::Template);
+}
+
+#[test]
+fn md_example_30_meta_intent_keeps_the_pipeline() {
+    let (mut call, _) = Call::new(with_desk());
+    let d = call.say("צריך מונית");
+    assert!(spoken(&d).contains("לאסוף") || spoken(&d).contains("אוספים"), "{}", spoken(&d));
+    let asked = spoken(&d);
+
+    let d = call.say("מה?");
+    assert_eq!(spoken(&d), asked, "repeat the exact question");
+    assert_eq!(call.step(), Some(Step::Collecting { awaiting: Some("pickup".into()) }));
+
+    let d = call.say("לא הבנתי");
+    assert_eq!(spoken(&d), asked);
+    let Directive::Speak { plan, .. } = &d[0] else { panic!() };
+    assert_eq!(plan.segments[0].delivery, "slow", "did-not-understand repeats slower");
+
+    let d = call.say("מעזרא 7");
+    assert_eq!(place(call.slot("pickup")), "עזרא 7");
+    let text = spoken(&d);
+    assert!(text.contains("לאן") , "asks only for what is missing: {text}");
+    assert!(!text.contains("מאיפה"), "{text}");
+}
+
+#[test]
+fn md_example_31_lost_item() {
+    let (mut call, _) = Call::new(with_desk());
+    let d = call.say("השארתי תיק במונית שהייתה אצלי לפני שעה");
+    assert_eq!(call.engine.state.run.as_ref().unwrap().pipeline, "lost_item");
+    assert_eq!(call.slot("item"), Some(SlotValue::Text { text: "תיק".into() }));
+    let (_, name, _) = action(&d).expect("nothing is missing, so the report is filed");
+    assert_eq!(name, "report_lost_item");
+}
+
+#[test]
+fn asks_only_for_missing_information() {
+    let (mut call, _) = Call::new(with_desk());
+    let d = call.say("תשלח לי מונית לתל השומר בעוד עשר דקות");
+    assert_eq!(place(call.slot("destination")), "תל השומר");
+    assert!(matches!(call.slot("pickup_time"), Some(SlotValue::Time { .. })));
+    assert_eq!(call.step(), Some(Step::Collecting { awaiting: Some("pickup".into()) }));
+    assert!(!spoken(&d).contains("לאן"));
+
+    call.say("מז'בוטינסקי 5 רמת גן");
+    assert_eq!(place(call.slot("pickup")), "ז'בוטינסקי 5 רמת גן");
+    let d = call.say("שלושה");
+    assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 3 }));
+    assert!(spoken(&d).contains("בעוד עשר דקות"), "{}", spoken(&d));
+}
+
+#[test]
+fn correction_during_read_back_updates_and_reconfirms() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית מרבי עקיבא 12 לנתב\"ג, אנחנו שניים");
+    assert_eq!(call.step(), Some(Step::AwaitingConfirmation));
+    let d = call.say("לא, לעזריאלי");
+    assert_eq!(place(call.slot("destination")), "עזריאלי");
+    assert_eq!(call.step(), Some(Step::AwaitingConfirmation));
+    assert!(spoken(&d).contains("לעזריאלי"), "{}", spoken(&d));
+    assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12", "other values survive");
+}
+
+#[test]
+fn saying_no_to_the_read_back_asks_what_to_change() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית מרבי עקיבא 12 לנתב\"ג, אנחנו שניים");
+    let d = call.say("לא");
+    assert!(spoken(&d).contains("לתקן") || spoken(&d).contains("לשנות"));
+    let d = call.say("אנחנו שלושה");
+    assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 3 }));
+    assert!(spoken(&d).contains("שלושה נוסעים"));
+}
+
+#[test]
+fn go_back_undoes_the_last_value() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית");
+    call.say("מרבי עקיבא 12");
+    assert_eq!(call.step(), Some(Step::Collecting { awaiting: Some("destination".into()) }));
+    let d = call.say("רגע טעיתי");
+    assert_eq!(call.slot("pickup"), None);
+    assert_eq!(call.step(), Some(Step::Collecting { awaiting: Some("pickup".into()) }));
+    assert!(spoken(&d).contains("אין בעיה"));
+}
+
+#[test]
+fn cancel_then_no_more_ends_the_call() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית מרבי עקיבא 12");
+    let d = call.say("עזוב, תבטל");
+    assert!(call.engine.state.run.is_none());
+    assert!(spoken(&d).contains("ביטלתי"));
+    let d = call.say("לא, תודה");
+    assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{d:?}");
+}
+
+#[test]
+fn wait_says_nothing_and_changes_nothing() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית");
+    let before = call.engine.state.run.clone();
+    assert!(call.say("רגע").is_empty());
+    assert_eq!(call.engine.state.run, before);
+}
+
+#[test]
+fn fallback_ladder_then_handoff_with_context() {
+    let (mut call, _) = Call::new(with_desk());
+    let d1 = call.say("בלה בלה בלה");
+    assert!(spoken(&d1).contains("לא בטוח שהבנתי"));
+    let d2 = call.say("גלגל ענק ירוק");
+    assert!(spoken(&d2).contains("להזמין מונית"));
+    let d3 = call.say("פלפל שחור");
+    assert!(spoken(&d3).contains("מעביר"));
+    assert!(d3.iter().any(|d| matches!(d, Directive::Handoff { .. })));
+}
+
+#[test]
+fn handoff_carries_collected_context() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית מרבי עקיבא 12 לנתב\"ג");
+    let d = call.say("אני רוצה לדבר עם נציג");
+    let summary = d
+        .iter()
+        .find_map(|d| match d {
+            Directive::Handoff { summary } => Some(summary.clone()),
+            _ => None,
+        })
+        .expect("handoff");
+    assert_eq!(summary.reason, "caller_requested");
+    assert!(summary.text.contains("כתובת איסוף: רבי עקיבא 12"), "{}", summary.text);
+    assert!(summary.text.contains("יעד: נתב״ג"), "{}", summary.text);
+}
+
+#[test]
+fn no_desk_means_no_transfer() {
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.say("נציג בבקשה");
+    assert!(spoken(&d).contains("אין מוקדן פנוי"));
+    assert!(!d.iter().any(|d| matches!(d, Directive::Handoff { .. })));
+}
+
+#[test]
+fn action_failure_speaks_and_eventually_hands_off() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית מרבי עקיבא 12 לנתב\"ג, אנחנו שניים");
+    let (run_id, ..) = action(&call.say("כן")).unwrap();
+    let d = call.engine.on_action_result(run_id, Err("timeout".into()));
+    assert!(spoken(&d).contains("אין נהג פנוי"));
+    assert_eq!(call.engine.state.action_failures, 1);
+
+    call.say("צריך מונית מרבי עקיבא 12 לנתב\"ג, אנחנו שניים");
+    let (run_id, ..) = action(&call.say("כן")).unwrap();
+    let d = call.engine.on_action_result(run_id, Err("timeout".into()));
+    assert!(d.iter().any(|d| matches!(d, Directive::Handoff { .. })), "second failure hands off: {d:?}");
+}
+
+#[test]
+fn known_customer_home_alias_and_default_pickup() {
+    let b = with_desk();
+    let mut engine = Engine::new(b.clone(), 3);
+    let mut customer = Customer { name: Some("בניהו".into()), ..Default::default() };
+    customer.places.insert("home".into(), CustomerPlace { spoken: "הבית".into(), address: Some("הרצל 10, בני ברק".into()) });
+    engine.set_customer(Some(customer));
+    let greeting = engine.start();
+    assert_eq!(spoken(&greeting), "אהלן בניהו, איך אפשר לעזור?");
+
+    let mut call = Call { engine };
+    let d = call.say("צריך מונית לנתב\"ג, אני לבד");
+    // Pickup comes from the customer record; the read-back lets the caller correct it.
+    assert!(spoken(&d).contains("נוסע אחד מהבית לנתב״ג"), "{}", spoken(&d));
+}
+
+#[test]
+fn price_question_then_booking_carries_the_destination() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("כמה עולה נסיעה לנתב\"ג?");
+    let (run_id, name, _) = action(&call.say("מרבי עקיבא 12")).expect("estimate runs once both places are known");
+    assert_eq!(name, "estimate_price");
+    let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "price": 82 })));
+    assert!(spoken(&d).contains("שמונים ושניים שקלים"), "{}", spoken(&d));
+
+    call.say("אוקיי תזמין לי מונית");
+    assert_eq!(place(call.slot("destination")), "נתב״ג");
+    assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12");
+}
+
+#[test]
+fn business_rule_sets_a_van_for_large_groups() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית מרבי עקיבא 12 לנתב\"ג, אנחנו שישה");
+    assert_eq!(call.slot("vehicle"), Some(SlotValue::Enum { value: "van".into() }));
+}
+
+#[test]
+fn faq_mid_flow_answers_then_resumes() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית");
+    let d = call.say("רגע, אתם עובדים בשבת? מה שעות הפעילות?");
+    let text = spoken(&d);
+    assert!(text.contains("עשרים וארבע"), "{text}");
+    assert!(text.contains("לאסוף") || text.contains("אוספים"), "resumes the pending question: {text}");
+}
+
+#[test]
+fn voice_library_is_mostly_pregenerated() {
+    let b = with_desk();
+    let entries = library_entries(&b);
+    assert!(entries.iter().any(|e| e.text == "מצאתי. יש נהג בערך ארבע דקות ממך."));
+    assert!(entries.iter().any(|e| e.text == "זה יוצא בערך שמונים ושניים שקלים."));
+    assert!(entries.iter().any(|e| e.text == "מאיפה לאסוף אותך?" && e.delivery == "slow"));
+    assert!(!entries.iter().any(|e| e.text.contains('{')));
+}
+
+#[test]
+fn validation_reports_broken_references() {
+    let mut config: BusinessConfig = serde_json::from_str(TAXI).unwrap();
+    config.greeting = "nope".into();
+    config.pipelines.get_mut("book_ride").unwrap().action = Some("missing_action".into());
+    config.intents[0].pipeline = Some("ghost".into());
+    let issues = validate(&config);
+    let paths: Vec<&str> = issues.iter().map(|i| i.path.as_str()).collect();
+    assert!(paths.contains(&"greeting"), "{paths:?}");
+    assert!(paths.contains(&"pipelines.book_ride.action"), "{paths:?}");
+    assert!(paths.iter().any(|p| p.starts_with("intents[0]")), "{paths:?}");
+}

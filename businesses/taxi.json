@@ -1,0 +1,445 @@
+{
+  "schema_version": 1,
+  "id": "taxi",
+  "name": "מוניות קלורה",
+  "language": "he-IL",
+  "timezone": "Asia/Jerusalem",
+  "phone_numbers": [],
+  "phone_numbers_env": "TAXI_PHONE_NUMBERS",
+
+  "voice": {
+    "provider": "elevenlabs",
+    "voice_id_env": "ELEVENLABS_VOICE_ID",
+    "library_model": "eleven_v3",
+    "dynamic_model": "eleven_v3",
+    "personality": ["צעיר", "ישראלי", "חברי", "מהיר", "ישיר", "לא פורמלי מדי", "רגוע", "יעיל"],
+    "settings": { "stability": 0.5, "similarity_boost": 0.75, "style": 0.0, "speed": 1.0 },
+    "deliveries": {
+      "normal": {},
+      "quick": { "speed": 1.08 },
+      "calm": { "speed": 0.93, "stability": 1.0 },
+      "important": { "speed": 0.92 },
+      "slow": { "speed": 0.85, "pregenerate": true }
+    }
+  },
+
+  "greeting": "greeting",
+  "anything_else": "anything_else",
+  "goodbye": "goodbye",
+  "confirm_slot": "confirm_value",
+  "acknowledgement": "ack",
+
+  "lexicon": {
+    "affirm": ["כן", "כן כן", "בטח", "סבבה", "יאללה", "נכון", "אוקיי", "אוקי", "בדיוק", "מאשר", "תשלח", "שלח", "יופי", "מעולה", "בסדר", "כן תשלח", "נכון מאוד", "yes"],
+    "deny": ["לא", "לא לא", "ממש לא", "אל תשלח", "לא נכון", "no"],
+    "fillers": ["אה", "אממ", "אמ", "אהה", "אהמ", "כאילו", "בעצם", "בבקשה", "לי", "לנו", "טוב", "שמע", "תשמע", "אחי", "אחותי", "מותק", "צריך", "רוצה", "אני", "היי", "הלו", "שלום", "אהלן", "תודה"],
+    "now": ["עכשיו", "כמה שיותר מהר", "מיד", "כרגע", "דחוף", "בהקדם", "עכשיו עכשיו", "הכי מהר"]
+  },
+
+  "meta_intents": {
+    "repeat_last": {
+      "exact": ["מה", "מה אמרת", "סליחה", "תחזור", "עוד פעם", "שוב", "אפשר שוב"],
+      "phrases": ["תחזור על זה", "תגיד שוב", "תגיד עוד פעם", "אפשר לחזור על זה"]
+    },
+    "did_not_understand": {
+      "exact": ["לא הבנתי", "לא שמעתי", "לא הבנתי אותך", "לא שמעתי טוב", "לא הבנתי מה אמרת"]
+    },
+    "speak_slower": { "phrases": ["יותר לאט", "לאט יותר", "תדבר לאט", "דבר לאט", "לאט לאט"] },
+    "speak_louder": { "phrases": ["יותר חזק", "לא שומע אותך", "לא שומעת אותך", "תדבר חזק", "דבר חזק", "תדבר יותר חזק"] },
+    "cancel_current_flow": {
+      "exact": ["עזוב", "עזוב תבטל", "תבטל", "בטל", "לא משנה", "עזוב את זה", "לא צריך", "תשכח מזה", "עזוב לא צריך"],
+      "response": "flow_cancelled"
+    },
+    "go_back": {
+      "phrases": ["רגע טעיתי", "טעיתי", "תחזור אחורה", "רגע חזור"],
+      "response": "go_back"
+    },
+    "transfer_human": {
+      "phrases": ["נציג", "נציגה", "מוקדן", "מוקדנית", "בן אדם", "נציג אנושי", "לדבר עם מישהו", "לדבר עם בן אדם"]
+    },
+    "goodbye": {
+      "exact": ["ביי", "להתראות", "תודה ביי", "יאללה ביי", "זהו תודה", "זה הכל", "זהו", "תודה זהו", "ביי ביי", "זהו זה"],
+      "response": "goodbye"
+    },
+    "wait": { "exact": ["רגע", "שנייה", "רק רגע", "חכה", "רגע רגע", "לא לא רגע", "שנייה אחת", "רגע אחד"] }
+  },
+
+  "intents": [
+    {
+      "id": "book_ride",
+      "description": "הזמנת מונית",
+      "keywords": ["מונית", "טקסי", "להזמין", "תזמין", "הסעה", "תשלח", "לשלוח", "נהג"],
+      "examples": ["צריך מונית עכשיו מרבי עקיבא 12 לנתב\"ג, אנחנו ארבעה", "תשלח לי מונית לתל השומר", "אפשר להזמין מונית לעוד חצי שעה?"],
+      "pipeline": "book_ride"
+    },
+    {
+      "id": "ride_status",
+      "description": "בירור סטטוס נסיעה קיימת",
+      "keywords": ["איפה הנהג", "איפה המונית", "מתי מגיע", "מתי הוא מגיע", "מתי הנהג", "כמה זמן עוד", "מתי יגיע", "הנהג בדרך", "עוד לא הגיע"],
+      "examples": ["איפה הנהג שלי?", "הזמנתי מונית והיא עוד לא הגיעה"],
+      "pipeline": "ride_status"
+    },
+    {
+      "id": "cancel_ride",
+      "description": "ביטול נסיעה שהוזמנה",
+      "keywords": ["לבטל את הנסיעה", "תבטל את הנסיעה", "לבטל את המונית", "תבטל את המונית", "ביטול נסיעה", "לבטל את ההזמנה", "תבטל את ההזמנה"],
+      "examples": ["אני רוצה לבטל את המונית שהזמנתי"],
+      "pipeline": "cancel_ride",
+      "switch_confidence": 0.7
+    },
+    {
+      "id": "price_question",
+      "description": "שאלת מחיר לנסיעה",
+      "keywords": ["כמה עולה", "כמה זה עולה", "מחיר", "המחיר", "כמה יעלה", "כמה זה יוצא", "כמה יוצא"],
+      "examples": ["כמה עולה נסיעה לנתב\"ג?"],
+      "pipeline": "price_question"
+    },
+    {
+      "id": "lost_item",
+      "description": "דיווח על אבדה במונית",
+      "keywords": ["שכחתי", "השארתי", "איבדתי", "אבדה", "אבד לי"],
+      "examples": ["השארתי תיק במונית שהייתה אצלי לפני שעה"],
+      "pipeline": "lost_item"
+    },
+    {
+      "id": "complaint",
+      "description": "תלונה על נסיעה או נהג",
+      "keywords": ["תלונה", "להתלונן", "חצוף", "לא בסדר"],
+      "examples": ["אני רוצה להגיש תלונה על הנהג"],
+      "handoff": true
+    },
+    {
+      "id": "driver_contact",
+      "description": "יצירת קשר עם הנהג",
+      "keywords": ["לדבר עם הנהג", "המספר של הנהג", "הטלפון של הנהג", "קשר עם הנהג"],
+      "handoff": true
+    },
+    {
+      "id": "invoice",
+      "description": "קבלה או חשבונית על נסיעה",
+      "keywords": ["חשבונית", "קבלה"],
+      "respond": "invoice_answer"
+    },
+    {
+      "id": "business_hours",
+      "description": "שעות פעילות",
+      "keywords": ["שעות פעילות", "עד מתי אתם", "אתם פתוחים", "שעות"],
+      "respond": "hours_answer"
+    }
+  ],
+
+  "slots": {
+    "pickup_time": {
+      "type": "time",
+      "description": "זמן איסוף",
+      "priority": 5
+    },
+    "passengers": {
+      "type": "integer",
+      "description": "מספר נוסעים",
+      "priority": 10,
+      "min": 1,
+      "max": 20,
+      "patterns": [
+        "(?:^| )(?:אנחנו|אנו|נהיה|נוסעים|נוסעות)(?: רק)? (?P<value>[^ _]+)",
+        "(?:^| )(?P<value>[^ _]+) (?:נוסעים|נוסעות|אנשים|איש)"
+      ],
+      "synonyms": { "לבד": 1, "רק אני": 1, "זוג": 2, "אני ואשתי": 2, "אני ובעלי": 2 }
+    },
+    "luggage": {
+      "type": "integer",
+      "description": "מזוודות",
+      "priority": 11,
+      "min": 0,
+      "max": 10,
+      "patterns": [
+        "(?:^| )(?P<value>[^ _]+) (?:מזוודות|תיקים|מזוודות גדולות)",
+        "(?:^| )(?:מזוודה|תיק) (?P<value>אחת|אחד)"
+      ],
+      "synonyms": { "בלי מזוודות": 0, "בלי תיקים": 0 }
+    },
+    "wheelchair": {
+      "type": "boolean",
+      "description": "נגישות לכיסא גלגלים",
+      "priority": 12,
+      "patterns": ["(?P<value>כיסא גלגלים|כסא גלגלים|כסא נכים|כיסא נכים)"]
+    },
+    "child_seat": {
+      "type": "boolean",
+      "description": "כיסא בטיחות לילד",
+      "priority": 12,
+      "patterns": ["(?P<value>כיסא לתינוק|כסא לתינוק|בוסטר|כיסא בטיחות|כסא בטיחות)"]
+    },
+    "vehicle": {
+      "type": "enum",
+      "description": "סוג רכב",
+      "priority": 13,
+      "values": { "standard": ["מונית רגילה"], "van": ["ואן", "מיניבוס", "מונית גדולה"] }
+    },
+    "pickup": {
+      "type": "place",
+      "description": "כתובת איסוף",
+      "priority": 40,
+      "patterns": [
+        "(?:^| )(?:לאסוף|תאסוף|תאספו|איסוף|אוספים)(?: אותי| אותנו)? (?:מ|ב)?(?P<value>[^ _]{2,}(?: [^ _]+)*?)(?: ל[^ _]| _|$)",
+        "(?:^| )מ(?P<value>[^ _]{2,}(?: [^ _]+)*?)(?: ל[^ _]| _|$)"
+      ],
+      "strip_prefixes": ["מה", "מ"],
+      "context_aliases": { "מהבית": "home", "מהעבודה": "work", "מהמקום הרגיל": "usual" },
+      "confirm_below": 0.6
+    },
+    "destination": {
+      "type": "place",
+      "description": "יעד",
+      "priority": 41,
+      "patterns": [
+        "(?:^| )(?:ל|אל |עד )(?P<value>[^ _]{2,}(?: [^ _]+)*?)(?: מ[^ _]| _|$)"
+      ],
+      "strip_prefixes": ["ל"],
+      "context_aliases": { "הביתה": "home", "לבית": "home", "לעבודה": "work" },
+      "confirm_below": 0.6
+    },
+    "notes": {
+      "type": "text",
+      "description": "הערות לנהג",
+      "priority": 90
+    },
+    "item": {
+      "type": "text",
+      "description": "החפץ שנשכח",
+      "priority": 30,
+      "patterns": ["(?:^| )(?:שכחתי|השארתי|איבדתי)(?: את)? (?P<value>[^ _]+(?: [^ _]+)*?)(?: במונית| באוטו| ברכב| _|$)"]
+    },
+    "ride_time": {
+      "type": "text",
+      "description": "מתי הייתה הנסיעה",
+      "priority": 31,
+      "patterns": ["(?P<value>(?:לפני|אתמול|היום|הבוקר|בלילה)(?: [^ _]+)?)"]
+    }
+  },
+
+  "places": [
+    { "name": "נתב״ג", "aliases": ["נתבג", "נמל התעופה", "שדה התעופה", "בן גוריון", "נמל התעופה בן גוריון", "השדה", "טרמינל 3"], "address": "נמל התעופה בן גוריון, טרמינל 3" },
+    { "name": "עזריאלי", "aliases": ["מגדלי עזריאלי", "קניון עזריאלי", "עזריאלי תל אביב"], "address": "דרך מנחם בגין 132, תל אביב" },
+    { "name": "תל השומר", "aliases": ["שיבא", "בית חולים שיבא", "בית החולים תל השומר"], "address": "המרכז הרפואי שיבא, רמת גן" },
+    { "name": "תחנת רכבת בני ברק", "aliases": ["רכבת בני ברק", "התחנה בבני ברק"], "address": "תחנת רכבת בני ברק, ז'בוטינסקי, בני ברק" },
+    { "name": "תחנה מרכזית", "aliases": ["התחנה המרכזית", "התחנה המרכזית החדשה"], "address": "התחנה המרכזית החדשה, לוינסקי 108, תל אביב" },
+    { "name": "רכבת סבידור", "aliases": ["סבידור", "תל אביב מרכז", "רכבת מרכז", "תחנת רכבת מרכז"], "address": "תחנת רכבת תל אביב סבידור מרכז" }
+  ],
+
+  "pipelines": {
+    "book_ride": {
+      "description": "הזמנת מונית",
+      "slots": [
+        { "slot": "pickup", "required": true, "ask": "ask_pickup", "from_customer": "home" },
+        { "slot": "destination", "required": true, "ask": "ask_destination" },
+        { "slot": "pickup_time", "required": true, "default": "now" },
+        { "slot": "passengers", "required": true, "ask": "ask_passengers" },
+        { "slot": "luggage" },
+        { "slot": "wheelchair" },
+        { "slot": "child_seat" },
+        { "slot": "vehicle" },
+        { "slot": "notes" }
+      ],
+      "confirm": { "response": "confirm_ride", "ask_change": "ask_change" },
+      "action": "create_ride",
+      "filler": "filler_searching",
+      "on_success": "ride_booked",
+      "on_failure": "ride_failed",
+      "after": "continue"
+    },
+    "ride_status": {
+      "description": "סטטוס נסיעה קיימת",
+      "slots": [],
+      "action": "get_ride_status",
+      "filler": "filler_checking",
+      "on_success": "ride_status_answer",
+      "on_failure": "status_failed"
+    },
+    "cancel_ride": {
+      "description": "ביטול נסיעה",
+      "slots": [],
+      "confirm": { "response": "confirm_cancel", "ask_change": "cancel_declined" },
+      "action": "cancel_ride",
+      "filler": "filler_checking",
+      "on_success": "ride_cancelled",
+      "on_failure": "cancel_failed"
+    },
+    "price_question": {
+      "description": "הערכת מחיר",
+      "slots": [
+        { "slot": "destination", "required": true, "ask": "ask_destination_price" },
+        { "slot": "pickup", "required": true, "ask": "ask_pickup", "from_customer": "home" }
+      ],
+      "action": "estimate_price",
+      "filler": "filler_checking",
+      "on_success": "price_answer",
+      "on_failure": "price_failed"
+    },
+    "lost_item": {
+      "description": "דיווח על אבדה",
+      "slots": [
+        { "slot": "item", "required": true, "ask": "ask_item" },
+        { "slot": "ride_time", "required": true, "ask": "ask_ride_time" }
+      ],
+      "action": "report_lost_item",
+      "on_success": "lost_item_recorded",
+      "on_failure": "lost_item_failed"
+    }
+  },
+
+  "actions": {
+    "create_ride": {
+      "description": "יוצר הזמנה במערכת ההסעות ומחזיר זמן הגעה",
+      "backends": [
+        { "kind": "http", "url_env": "TAXI_DISPATCH_URL", "token_env": "TAXI_DISPATCH_TOKEN" },
+        { "kind": "mock", "result": { "ride_id": "DEMO-1001", "eta_minutes": 4 }, "latency_ms": 900 }
+      ],
+      "requires_confirmation": true,
+      "min_confidence": 0.7,
+      "timeout_ms": 6000,
+      "max_attempts": 1
+    },
+    "get_ride_status": {
+      "description": "סטטוס הנסיעה הפעילה של המתקשר",
+      "backends": [
+        { "kind": "http", "url_env": "TAXI_DISPATCH_URL", "token_env": "TAXI_DISPATCH_TOKEN" },
+        { "kind": "mock", "result": { "status": "on_the_way", "eta_minutes": 3 }, "latency_ms": 400 }
+      ],
+      "timeout_ms": 3000,
+      "max_attempts": 2
+    },
+    "cancel_ride": {
+      "description": "ביטול הנסיעה הפעילה של המתקשר",
+      "backends": [
+        { "kind": "http", "url_env": "TAXI_DISPATCH_URL", "token_env": "TAXI_DISPATCH_TOKEN" },
+        { "kind": "mock", "result": { "cancelled": true }, "latency_ms": 500 }
+      ],
+      "requires_confirmation": true,
+      "timeout_ms": 4000
+    },
+    "estimate_price": {
+      "description": "הערכת מחיר לנסיעה",
+      "backends": [
+        { "kind": "http", "url_env": "TAXI_DISPATCH_URL", "token_env": "TAXI_DISPATCH_TOKEN" },
+        { "kind": "mock", "result": { "price": 82 }, "latency_ms": 300 }
+      ],
+      "timeout_ms": 3000,
+      "max_attempts": 2
+    },
+    "report_lost_item": {
+      "description": "רישום אבדה",
+      "backends": [
+        { "kind": "http", "url_env": "TAXI_DISPATCH_URL", "token_env": "TAXI_DISPATCH_TOKEN" },
+        { "kind": "mock", "result": { "ticket": "L-17" }, "latency_ms": 300 }
+      ],
+      "timeout_ms": 4000
+    },
+    "find_customer": {
+      "description": "איתור לקוח לפי מספר טלפון",
+      "backends": [
+        { "kind": "http", "url_env": "TAXI_CRM_URL", "token_env": "TAXI_CRM_TOKEN" },
+        { "kind": "mock", "result": { "customer": null } }
+      ],
+      "timeout_ms": 1500
+    }
+  },
+
+  "customer_lookup": { "action": "find_customer", "known_greeting": "greeting_known" },
+
+  "responses": {
+    "greeting": { "variants": ["אהלן, איך אפשר לעזור?"] },
+    "greeting_known": { "variants": ["אהלן {customer_name}, איך אפשר לעזור?"] },
+    "ack": { "variants": ["סגור.", "אוקיי.", "מעולה.", "הבנתי.", "סבבה."], "delivery": "quick" },
+    "anything_else": { "variants": ["משהו נוסף?", "אפשר לעזור במשהו נוסף?"] },
+    "goodbye": { "variants": ["יאללה, נסיעה טובה!", "תודה, יום טוב!"] },
+    "confirm_value": { "variants": ["{value}, נכון?"] },
+    "ask_change": { "variants": ["אוקיי, מה לתקן?", "מה לשנות?"] },
+    "go_back": { "variants": ["אין בעיה."] },
+    "flow_cancelled": { "variants": ["אוקיי, ביטלתי. משהו אחר?"] },
+    "still_there": { "variants": ["הלו, אתה איתי?"] },
+
+    "fallback_1": { "variants": ["לא בטוח שהבנתי, אתה יכול להגיד שוב?"] },
+    "fallback_2": { "variants": ["אתה רוצה להזמין מונית, לבדוק נסיעה קיימת או משהו אחר?"] },
+    "handoff": { "variants": ["אני מעביר אותך למוקדן."] },
+    "handoff_unavailable": { "variants": ["כרגע אין מוקדן פנוי. אפשר לנסות שוב בעוד כמה דקות."], "delivery": "calm" },
+
+    "ask_pickup": { "variants": ["מאיפה לאסוף אותך?", "מאיפה אוספים?"] },
+    "ask_destination": { "variants": ["לאן נוסעים?", "ולאן?"] },
+    "ask_destination_price": { "variants": ["לאן הנסיעה?"] },
+    "ask_passengers": { "variants": ["כמה נוסעים?", "כמה אתם?"] },
+    "confirm_ride": {
+      "prefix": "ack",
+      "variants": ["{passengers} מ{pickup} ל{destination}, {pickup_time}. לשלוח?"],
+      "params": {
+        "passengers": { "kind": "count", "gender": "masculine", "singular": "נוסע אחד", "plural": "נוסעים", "range": [1, 8] },
+        "pickup_time": { "kind": "time" }
+      }
+    },
+    "filler_searching": { "variants": ["שנייה, אני בודק מי קרוב.", "רגע, בודק מי קרוב.", "אוקיי, בודק מי קרוב."] },
+    "filler_checking": { "variants": ["שנייה, אני בודק.", "רגע, בודק."] },
+    "filler_thinking": { "variants": ["אממ, שנייה."] },
+    "ride_booked": {
+      "variants": ["מצאתי. יש נהג בערך {eta_minutes} ממך.", "סגור, יש נהג. הוא יגיע בעוד {eta_minutes}."],
+      "params": { "eta_minutes": { "kind": "count", "gender": "feminine", "singular": "דקה", "plural": "דקות", "range": [1, 30] } },
+      "delivery": "important"
+    },
+    "ride_failed": { "variants": ["אוי, כרגע אין נהג פנוי באזור."], "delivery": "calm" },
+    "ride_status_answer": {
+      "variants": ["{status}."],
+      "params": {
+        "status": {
+          "kind": "enum",
+          "values": {
+            "assigned": "שובץ לך נהג, הוא יוצא אליך עכשיו",
+            "on_the_way": "הנהג בדרך אליך",
+            "arrived": "הנהג כבר הגיע, הוא מחכה לך",
+            "none": "לא מצאתי נסיעה פעילה על המספר הזה"
+          }
+        }
+      }
+    },
+    "status_failed": { "variants": ["לא הצלחתי לבדוק את הנסיעה כרגע."], "delivery": "calm" },
+    "confirm_cancel": { "variants": ["לבטל את הנסיעה שהזמנת?"] },
+    "cancel_declined": { "variants": ["אוקיי, לא מבטל."] },
+    "ride_cancelled": { "variants": ["ביטלתי את הנסיעה."] },
+    "cancel_failed": { "variants": ["לא הצלחתי לבטל את הנסיעה."], "delivery": "calm" },
+    "price_answer": {
+      "variants": ["זה יוצא בערך {price}.", "בערך {price}."],
+      "params": { "price": { "kind": "count", "gender": "masculine", "singular": "שקל אחד", "plural": "שקלים", "range": [20, 300] } },
+      "delivery": "important"
+    },
+    "price_failed": { "variants": ["אין לי כרגע הערכת מחיר לנסיעה הזאת."], "delivery": "calm" },
+    "ask_item": { "variants": ["מה שכחת?"] },
+    "ask_ride_time": { "variants": ["מתי בערך הייתה הנסיעה?"] },
+    "lost_item_recorded": { "variants": ["רשמתי. נחזור אליך ברגע שנמצא משהו."] },
+    "lost_item_failed": { "variants": ["לא הצלחתי לרשום את זה כרגע."], "delivery": "calm" },
+    "invoice_answer": { "variants": ["חשבונית נשלחת אוטומטית במייל בסוף כל נסיעה."] },
+    "hours_answer": { "variants": ["אנחנו עובדים עשרים וארבע שעות, כל השבוע."] },
+    "large_group": { "variants": ["לקבוצה גדולה כזאת עדיף שמוקדן יסדר לך את זה."], "delivery": "calm" }
+  },
+
+  "rules": [
+    { "id": "van_for_large_groups", "pipeline": "book_ride", "when": { "slot": "passengers", "gt": 4 }, "then": { "do": "set", "slot": "vehicle", "value": "van" } },
+    { "id": "very_large_group", "pipeline": "book_ride", "when": { "slot": "passengers", "gt": 8 }, "then": { "do": "handoff", "response": "large_group", "reason": "large_group" } }
+  ],
+
+  "pronunciations": {
+    "Waze": "וֵייז",
+    "Gett": "גֶט",
+    "Bit": "בִּיט",
+    "Callora": "קָלוֹרָה",
+    "SMS": "אֶס אֶם אֶס",
+    "CRM": "סִי אָר אֶם"
+  },
+
+  "fallback": { "ladder": ["fallback_1", "fallback_2"] },
+  "handoff": {
+    "phone_number_env": "TAXI_HANDOFF_NUMBER",
+    "response": "handoff",
+    "unavailable_response": "handoff_unavailable",
+    "after_action_failures": 2
+  },
+  "silence": { "reprompt_after_ms": 7000, "max_reprompts": 2, "response": "still_there" },
+  "understanding": { "llm_below_coverage": 0.55, "llm_timeout_ms": 1500, "thinking_filler": "filler_thinking", "filler_after_ms": 450 }
+}

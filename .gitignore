@@ -1,10 +1,7 @@
-node_modules/
-dist/
-coverage/
-.env*
+target/
+.env
+.env.*
 !.env.example
 *.log
 .DS_Store
-
-# Development-only caller allowlist; see allowlist.example.js
-allowlist.local.js
+docker-compose.local.yml
