@@ -42,6 +42,10 @@ pub struct Understanding {
     /// Fraction of the utterance the fast path explained.
     pub coverage: f32,
     pub source: Source,
+    /// Nothing but filler words ("תודה.", "אה"). Recognizers invent these on line noise,
+    /// so the runtime does not treat them as the caller talking.
+    #[serde(default)]
+    pub noise: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,6 +65,7 @@ impl Understanding {
             frustrated: false,
             coverage: 0.0,
             source: Source::Rules,
+            noise: false,
         }
     }
 
@@ -144,6 +149,11 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
     // A meta phrase that is really a denial ("לא הבנתי") must not also count as "no".
     if u.meta.is_some() && u.affirm == Some(false) && meta_exact {
         u.affirm = None;
+    }
+    if u.meta.is_none() && u.affirm.is_none() && b.fillers.strip(&norm).is_empty() {
+        u.noise = true;
+        u.coverage = 1.0;
+        return (u, false);
     }
 
     // Business intent by keywords: most hits wins; on a tie, the one mentioned first
@@ -238,6 +248,9 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
 
     // A bare answer to the question just asked.
     let mut answered = false;
+    // A doubtful value offered while one is being read back is usually a misheard "no,
+    // <value>": worth the LLM, which knows what was just asked.
+    let mut unsure_correction = false;
     if let (Some(slot_id), None) = (ctx.awaiting_slot, u.meta) {
         let switching =
             u.intent.as_ref().is_some_and(|i| Some(i.id.as_str()) != intent_of_pipeline(b, ctx.active_pipeline));
@@ -248,6 +261,7 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
                     push_fill(&mut u, slot_id, value, confidence, Provenance::Rules);
                     cov.mark((0, norm.len()));
                     answered = true;
+                    unsure_correction = ctx.awaiting_confirmation && confidence < cfg.confirm_below;
                     // "כן" before an answer is not a confirmation of anything.
                     if cfg.kind != SlotKind::Boolean {
                         u.affirm = None;
@@ -261,7 +275,7 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
 
     u.coverage = cov.ratio();
     let threshold = b.config.understanding.llm_below_coverage;
-    let needs_llm = !meta_exact && !answered && u.coverage < threshold;
+    let needs_llm = unsure_correction || (!meta_exact && !answered && u.coverage < threshold);
     (u, needs_llm)
 }
 

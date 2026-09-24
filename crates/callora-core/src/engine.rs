@@ -141,10 +141,21 @@ impl Engine {
         self.finish(out)
     }
 
+    /// Say the last reply again, e.g. after line noise cut it off.
+    pub fn replay_last(&mut self) -> Vec<Directive> {
+        let mut out = Out::default();
+        if self.state.phase == Phase::Active {
+            if let Some(last) = self.state.last_plan.clone() {
+                out.speak(last, true);
+            }
+        }
+        self.finish(out)
+    }
+
     /// A final transcript, understood.
     pub fn on_utterance(&mut self, u: Understanding) -> Vec<Directive> {
         let mut out = Out::default();
-        if self.state.phase != Phase::Active {
+        if self.state.phase != Phase::Active || u.noise {
             return Vec::new();
         }
         self.state.turns += 1;
@@ -195,6 +206,17 @@ impl Engine {
                         }
                         None => {}
                     }
+                }
+                // Another doubtful value instead of yes or no is usually the recognizer
+                // mishearing a correction. Reading that back too ("בנלחב, נכון?") loops, so
+                // ask the question again instead, on the fallback ladder.
+                let doubtful = u.slot(&slot).is_some_and(|f| {
+                    self.business.config.slots.get(&slot).is_some_and(|cfg| f.confidence < cfg.confirm_below)
+                });
+                if doubtful {
+                    run.clear(&slot);
+                    run.step = Step::Collecting { awaiting: Some(slot.clone()) };
+                    return self.fallback(out);
                 }
             }
         }

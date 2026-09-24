@@ -154,6 +154,8 @@ pub struct Session {
     silence_generation: u64,
     speech_ended_at: Option<Instant>,
     barge_in_started: Option<Instant>,
+    /// The agent was cut off and no real utterance has followed yet.
+    interrupted: bool,
 }
 
 impl Session {
@@ -199,6 +201,7 @@ impl Session {
             silence_generation: 0,
             speech_ended_at: None,
             barge_in_started: None,
+            interrupted: false,
         };
         s.services.store.record(CallRecord::Started { info: s.info.clone() });
 
@@ -325,6 +328,7 @@ impl Session {
 
     fn barge_in(&mut self) {
         self.barge_in_started = Some(Instant::now());
+        self.interrupted = true;
         self.playout.cancel();
         self.services.metrics.barge_ins_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tracing::debug!(call = %self.info.call_sid, rms = self.vad.last_rms, "barge-in: caller talked over the agent");
@@ -356,6 +360,13 @@ impl Session {
         if text.is_empty() {
             return;
         }
+        if self.pending_llm.is_none() {
+            let (u, _) = fast_path(&self.business, &self.engine.context(), &text);
+            if u.noise {
+                return self.on_noise(&text);
+            }
+        }
+        self.interrupted = false;
         self.silence_generation += 1;
         if self.speech_ended_at.is_none() {
             self.speech_ended_at = Some(Instant::now());
@@ -407,6 +418,22 @@ impl Session {
                 self.pending_llm = Some(PendingLlm { turn, transcript, fast, task });
             }
             _ => self.understood(fast),
+        }
+    }
+
+    /// A transcript of nothing but filler words, which recognizers invent on line noise
+    /// ("תודה."). It must not talk over the agent; if noise already cut the agent off,
+    /// the reply is said again.
+    fn on_noise(&mut self, text: &str) {
+        tracing::info!(call = %self.info.call_sid, caller = %text, "ignored as noise");
+        if self.agent_busy() {
+            return;
+        }
+        if std::mem::take(&mut self.interrupted) {
+            let directives = self.engine.replay_last();
+            self.execute(directives);
+        } else {
+            self.arm_silence();
         }
     }
 

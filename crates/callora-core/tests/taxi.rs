@@ -224,6 +224,57 @@ fn wait_says_nothing_and_changes_nothing() {
 }
 
 #[test]
+fn filler_only_transcripts_are_noise() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.say("צריך מונית");
+    let before = call.engine.state.clone();
+    for text in ["תודה.", "תודה", "אה", "הלו"] {
+        let (u, needs_llm) = fast_path(&call.engine.business().clone(), &call.engine.context(), text);
+        assert!(u.noise && !needs_llm, "{text}");
+        assert!(call.say(text).is_empty(), "{text}");
+    }
+    assert_eq!(call.engine.state, before, "noise changes nothing, not even the fallback ladder");
+    for text in ["לא, תודה", "תודה ביי", "כן תודה"] {
+        let (u, _) = fast_path(&call.engine.business().clone(), &call.engine.context(), text);
+        assert!(!u.noise, "{text}");
+    }
+}
+
+#[test]
+fn a_misheard_correction_asks_again_instead_of_reading_it_back() {
+    // From a real call: "תל אביב" heard as "תלאבי", then every correction misheard too.
+    let (mut call, _) = Call::new(business(&[]));
+    call.say("צריך מונית");
+    call.say("מרבי עקיבא 12");
+    let d = call.say("תלאבי");
+    assert_eq!(call.step(), Some(Step::ConfirmingSlot { slot: "destination".into() }));
+    assert!(spoken(&d).contains("תלאבי, נכון?"), "{}", spoken(&d));
+
+    let b = call.engine.business().clone();
+    let (_, needs_llm) = fast_path(&b, &call.engine.context(), "בנלחב");
+    assert!(needs_llm, "a doubtful correction goes to the LLM");
+    let d = call.say("בנלחב");
+    assert!(!spoken(&d).contains("בנלחב"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("לא בטוח שהבנתי") && spoken(&d).contains("לאן"), "{}", spoken(&d));
+    assert_eq!(call.slot("destination"), None);
+    assert_eq!(call.step(), Some(Step::Collecting { awaiting: Some("destination".into()) }));
+
+    call.say("תל אביב");
+    assert_eq!(place(call.slot("destination")), "תל אביב");
+    assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12", "other values survive");
+}
+
+#[test]
+fn a_clear_correction_while_reading_back_a_value_is_taken() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.say("צריך מונית");
+    call.say("מרבי עקיבא 12");
+    call.say("תלאבי");
+    call.say("לא, לעזריאלי");
+    assert_eq!(place(call.slot("destination")), "עזריאלי");
+}
+
+#[test]
 fn fallback_ladder_then_handoff_with_context() {
     let (mut call, _) = Call::new(with_desk());
     let d1 = call.say("בלה בלה בלה");
