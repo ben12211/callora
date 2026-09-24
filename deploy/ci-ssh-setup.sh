@@ -4,7 +4,11 @@
 # Host key: SSH_KNOWN_HOSTS (a pinned `ssh-keyscan` line, recommended) if set, otherwise
 # trust-on-first-use via ssh-keyscan, as the legacy pipeline did.
 set -Eeuo pipefail
-: "${SSH_DIR:?}" "${SERVER_HOST:?SERVER_HOST (GitHub secret IP) is required}" "${SERVER_USER:?SERVER_USER (GitHub secret USER) is required}"
+# The runner context is not available in job-level env, so SSH_DIR is derived here from
+# RUNNER_TEMP and handed to later steps through GITHUB_ENV.
+SSH_DIR="${SSH_DIR:-${RUNNER_TEMP:?RUNNER_TEMP or SSH_DIR is required}/callora-ssh}"
+[[ -n "${GITHUB_ENV:-}" ]] && printf 'SSH_DIR=%s\n' "$SSH_DIR" >> "$GITHUB_ENV"
+: "${SERVER_HOST:?SERVER_HOST (GitHub secret IP) is required}" "${SERVER_USER:?SERVER_USER (GitHub secret USER) is required}"
 : "${SERVER_SSH_KEY:?the GitHub secret KEY_PEM is required}"
 
 install -d -m 700 "$SSH_DIR"

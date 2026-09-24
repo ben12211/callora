@@ -130,7 +130,6 @@ jobs:
     env:
       SERVER_HOST: ${{ secrets.IP }}
       SERVER_USER: ${{ secrets.USER }}
-      SSH_DIR: ${{ runner.temp }}/callora-ssh
       PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
     steps:
       - name: Check out repository
@@ -185,7 +184,6 @@ jobs:
       DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
       DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
       CALLORA_IMAGE: ${{ vars.DOCKER_HUB_USERNAME }}/callora:${{ github.sha }}
-      SSH_DIR: ${{ runner.temp }}/callora-ssh
       TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
       TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
       STREAM_TOKEN_SECRET: ${{ secrets.STREAM_TOKEN_SECRET }}
