@@ -18,26 +18,22 @@ env:
 
 jobs:
   quality:
-    name: Lint, test, and build
+    name: Format, lint, test and validate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      # The same containerized toolchain developers use: rustfmt, clippy -D warnings and
+      # the whole test suite against a real PostgreSQL.
+      - name: fmt, clippy and tests (./dev check)
+        run: ./dev check
 
-      - name: Install Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Validate business configuration
+        run: ./dev callora config validate
 
       - name: Validate deployment configuration
         env:
@@ -46,50 +42,24 @@ jobs:
           POSTGRES_PASSWORD: validation-only
           POSTGRES_DB: callora
           DATABASE_URL: postgresql://callora:validation-only@db:5432/callora
+          PUBLIC_BASE_URL: https://callora.example.invalid
           TWILIO_ACCOUNT_SID: AC00000000000000000000000000000000
           TWILIO_AUTH_TOKEN: validation-only
-          PUBLIC_BASE_URL: https://callora.example.invalid
-          OPENAI_API_KEY: sk-validation-only-not-a-real-key
         run: |
-          pnpm validate:config
           bash -n deploy/deploy.sh deploy/bootstrap-oracle-linux.sh
           docker compose -f docker-compose.yml config -q
           docker compose -f docker-compose.prod.yml config -q
-          # The production stack must also resolve on the ElevenLabs provider, where no
-          # OpenAI key is set at all.
-          env -u OPENAI_API_KEY VOICE_PROVIDER=elevenlabs \
-            ELEVENLABS_API_KEY=validation-only ELEVENLABS_AGENT_ID=agent_validation \
-            docker compose -f docker-compose.prod.yml config -q
-          # ...and on Cartesia, which additionally needs the OpenAI key for its LLM turn.
-          env VOICE_PROVIDER=cartesia \
-            CARTESIA_API_KEY=validation-only CARTESIA_VOICE_ID=voice_validation \
-            docker compose -f docker-compose.prod.yml config -q
-          # ...and on Deepdub, which speaks Hebrew over Cartesia STT and the OpenAI LLM turn.
-          env VOICE_PROVIDER=deepdub \
-            DEEPDUB_API_KEY=validation-only DEEPDUB_VOICE_ID=voice_validation \
-            CARTESIA_API_KEY=validation-only \
-            docker compose -f docker-compose.prod.yml config -q
 
-      - name: Lint
-        run: pnpm lint
-
-      # Covers the test files too, which the build config excludes: a fixture that drifts
-      # from the interface it stands in for otherwise fails only at runtime, or not at all.
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Test
-        run: pnpm test
-
-      - name: Build
-        run: pnpm build
+      - name: Stop the development stack
+        if: always()
+        run: ./dev clean
 
   image:
     name: Publish ARM64 image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -101,24 +71,12 @@ jobs:
           DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
           DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
         run: |
-          python3 <<'PY'
-          import os
-          import re
-          import sys
+          [[ -n "$DOCKER_HUB_USERNAME" ]] || { echo 'Missing Repository Variable DOCKER_HUB_USERNAME' >&2; exit 1; }
+          [[ -n "$DOCKER_HUB_TOKEN" ]] || { echo 'Missing Repository Secret DOCKER_HUB_TOKEN' >&2; exit 1; }
+          [[ "$DOCKER_HUB_USERNAME" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] || { echo 'DOCKER_HUB_USERNAME is not a valid namespace' >&2; exit 1; }
 
-          username = os.environ.get('DOCKER_HUB_USERNAME', '')
-          token = os.environ.get('DOCKER_HUB_TOKEN', '')
-          if not username:
-              print('Missing required GitHub Repository Variable: DOCKER_HUB_USERNAME', file=sys.stderr)
-              sys.exit(1)
-          if not token:
-              print('Missing required GitHub Repository Secret: DOCKER_HUB_TOKEN', file=sys.stderr)
-              sys.exit(1)
-          if not re.fullmatch(r'[a-z0-9]+(?:[._-][a-z0-9]+)*', username):
-              print('DOCKER_HUB_USERNAME is not a valid Docker image namespace.', file=sys.stderr)
-              sys.exit(1)
-          PY
-
+      # The Dockerfile cross-compiles on the runner's own architecture, so QEMU is only
+      # needed for the (RUN-free) final stage metadata.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
 
@@ -153,207 +111,56 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
+    env:
+      # Names only here; values come from GitHub Secrets/Variables (see SECRETS.md).
+      SERVER_HOST: ${{ secrets.IP }}
+      SERVER_USER: ${{ secrets.USER }}
+      DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
+      DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+      CALLORA_IMAGE: ${{ vars.DOCKER_HUB_USERNAME }}/callora:${{ github.sha }}
+      SSH_DIR: ${{ runner.temp }}/callora-ssh
+      TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      STREAM_TOKEN_SECRET: ${{ secrets.STREAM_TOKEN_SECRET }}
+      ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+      ELEVENLABS_VOICE_ID: ${{ vars.ELEVENLABS_VOICE_ID || secrets.ELEVENLABS_VOICE_ID }}
+      ELEVENLABS_DYNAMIC_MODEL: ${{ vars.ELEVENLABS_DYNAMIC_MODEL }}
+      CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TEXT_LLM_MODEL: ${{ vars.TEXT_LLM_MODEL }}
+      TAXI_PHONE_NUMBERS: ${{ vars.TAXI_PHONE_NUMBERS || secrets.TAXI_PHONE_NUMBERS }}
+      TAXI_HANDOFF_NUMBER: ${{ vars.TAXI_HANDOFF_NUMBER || secrets.TAXI_HANDOFF_NUMBER }}
+      TAXI_DISPATCH_URL: ${{ secrets.TAXI_DISPATCH_URL }}
+      TAXI_DISPATCH_TOKEN: ${{ secrets.TAXI_DISPATCH_TOKEN }}
+      TAXI_CRM_URL: ${{ secrets.TAXI_CRM_URL }}
+      TAXI_CRM_TOKEN: ${{ secrets.TAXI_CRM_TOKEN }}
+      ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
+      ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - name: Validate deployment configuration and create bundle
-        env:
-          SERVER_HOST: ${{ secrets.IP }}
-          SERVER_USER: ${{ secrets.USER }}
-          SERVER_SSH_KEY: ${{ secrets.KEY_PEM }}
-          DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
-          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
-          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
-          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Accepted as either a Repository Variable or a Repository Secret, so the
-          # provider is honoured wherever it was configured. Unset in both means openai.
-          VOICE_PROVIDER: ${{ vars.VOICE_PROVIDER || secrets.VOICE_PROVIDER }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
-          CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
-          CARTESIA_VOICE_ID: ${{ vars.CARTESIA_VOICE_ID || secrets.CARTESIA_VOICE_ID }}
-          DEEPDUB_API_KEY: ${{ secrets.DEEPDUB_API_KEY }}
-          DEEPDUB_VOICE_ID: ${{ vars.DEEPDUB_VOICE_ID || secrets.DEEPDUB_VOICE_ID }}
-          # Optional Hebrew pronunciation sidecar; unset leaves it switched off.
-          RENIKUD_URL: ${{ vars.RENIKUD_URL }}
-          ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
-          # Encrypts credentials entered in the dashboard. Rotating it makes every stored
-          # credential unreadable, so it is set once and left alone.
-          SECRETS_KEY: ${{ secrets.SECRETS_KEY }}
-          # Control plane. Together these create (or reset) the dashboard administrator;
-          # ADMIN_API_KEY is the optional machine credential for the management API.
-          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || secrets.ADMIN_EMAIL }}
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-          RELEASE_SHA: ${{ github.sha }}
-          CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
+      - name: Validate deployment configuration
         run: |
-          python3 <<'PY'
-          import ipaddress
-          import os
-          import pathlib
-          import re
-          import sys
-
-          required = {
-              'SERVER_HOST': 'GitHub Repository Secret IP',
-              'SERVER_USER': 'GitHub Repository Secret USER',
-              'SERVER_SSH_KEY': 'GitHub Repository Secret KEY_PEM',
-              'DOCKER_HUB_TOKEN': 'GitHub Repository Secret DOCKER_HUB_TOKEN',
-              'TWILIO_ACCOUNT_SID': 'GitHub Repository Secret TWILIO_ACCOUNT_SID',
-              'TWILIO_AUTH_TOKEN': 'GitHub Repository Secret TWILIO_AUTH_TOKEN',
-              'DOCKER_HUB_USERNAME': 'GitHub Repository Variable DOCKER_HUB_USERNAME',
-          }
-          missing = [label for name, label in required.items() if not os.environ.get(name)]
-          if missing:
-              print(f"Missing required configuration: {', '.join(missing)}", file=sys.stderr)
-              sys.exit(1)
-
-          try:
-              host = ipaddress.ip_address(os.environ['SERVER_HOST'])
-          except ValueError:
-              print('IP must contain a valid IPv4 address.', file=sys.stderr)
-              sys.exit(1)
-          if host.version != 4:
-              print('IP must contain a valid IPv4 address.', file=sys.stderr)
-              sys.exit(1)
-
-          if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', os.environ['SERVER_USER']):
-              print('USER is not a valid Linux account name.', file=sys.stderr)
-              sys.exit(1)
-
-          username = os.environ['DOCKER_HUB_USERNAME']
-          if not re.fullmatch(r'[a-z0-9]+(?:[._-][a-z0-9]+)*', username):
-              print('DOCKER_HUB_USERNAME is not a valid Docker image namespace.', file=sys.stderr)
-              sys.exit(1)
-
-          if not re.fullmatch(r'AC[0-9a-fA-F]{32}', os.environ['TWILIO_ACCOUNT_SID']):
-              print('TWILIO_ACCOUNT_SID is not a valid Twilio Account SID.', file=sys.stderr)
-              sys.exit(1)
-          if not re.fullmatch(r'[0-9a-fA-F]{32}', os.environ['TWILIO_AUTH_TOKEN']):
-              print('TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.', file=sys.stderr)
-              sys.exit(1)
-          # Only the selected provider's credentials are required, matching what the
-          # application validates at startup. Unset means the default, openai.
-          voice_provider = (os.environ.get('VOICE_PROVIDER') or 'openai').strip()
-          if voice_provider not in ('openai', 'elevenlabs', 'cartesia', 'deepdub'):
-              print('VOICE_PROVIDER must be one of openai, elevenlabs, cartesia, or deepdub.', file=sys.stderr)
-              sys.exit(1)
-
-          # Reported with an underscored token rather than the raw value: when
-          # VOICE_PROVIDER is stored as a Secret, GitHub masks its literal value in the
-          # log, which would otherwise hide the very setting being confirmed here.
-          print('Voice provider selected: ' + {
-              'openai': 'OPEN_AI',
-              'elevenlabs': 'ELEVEN_LABS',
-              'cartesia': 'CARTESIA_SONIC',
-              'deepdub': 'DEEPDUB_PHANTOM',
-          }[voice_provider])
-
-          # A credential may be supplied here or entered in the dashboard, which stores it
-          # encrypted in the database. Only its shape is enforced: an absent one is
-          # reported, because the deployment is then relying on the dashboard for it.
-          missing = []
-          for name in {
-              'openai': ('OPENAI_API_KEY',),
-              'elevenlabs': ('ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID'),
-              'cartesia': ('CARTESIA_API_KEY', 'CARTESIA_VOICE_ID', 'OPENAI_API_KEY'),
-              'deepdub': ('DEEPDUB_API_KEY', 'DEEPDUB_VOICE_ID', 'CARTESIA_API_KEY', 'OPENAI_API_KEY'),
-          }[voice_provider]:
-              value = (os.environ.get(name) or '').strip()
-              if not value:
-                  missing.append(name)
-              elif any(character in value for character in ('\r', '\n', '\0')):
-                  print(f'{name} must be a single-line credential.', file=sys.stderr)
-                  sys.exit(1)
-
-          if missing:
-              print(
-                  'Not supplied here: ' + ', '.join(missing)
-                  + '. The deployment must have them stored in the dashboard under Providers,'
-                  + ' or calls will answer with the static greeting.'
-              )
-
-          # Credentials entered in the dashboard are encrypted with this key. Without one
-          # the dashboard can still manage every non-secret setting.
-          secrets_key = (os.environ.get('SECRETS_KEY') or '').strip()
-          if secrets_key and len(secrets_key) < 16:
-              print('SECRETS_KEY must be at least 16 characters.', file=sys.stderr)
-              sys.exit(1)
-          if not secrets_key:
-              print('SECRETS_KEY is not set: API keys cannot be entered in the dashboard.')
-
-          # Optional. Empty disables the caller allowlist and allows every caller.
-          # A bracketed or quoted list is accepted too, matching what the app parses.
-          def normalise_allow_list(raw):
-              text = raw.strip().strip('[').strip(']')
-              text = text.replace(';', ',').replace(chr(10), ',').replace(chr(13), ',')
-              entries = []
-              for entry in text.split(','):
-                  entry = entry.strip().strip('"').strip("'").strip()
-                  for junk in (' ', '-', '(', ')', '.'):
-                      entry = entry.replace(junk, '')
-                  if entry:
-                      entries.append(entry)
-              return entries
-
-          def is_e164(value):
-              digits = value[1:]
-              return (
-                  value.startswith('+')
-                  and digits.isdigit()
-                  and not digits.startswith('0')
-                  and 8 <= len(digits) <= 15
-              )
-
-          raw_allow_list = os.environ.get('ALLOW_LIST', '').strip()
-          if raw_allow_list:
-              allow_list_entries = normalise_allow_list(raw_allow_list)
-              if not allow_list_entries or not all(is_e164(e) for e in allow_list_entries):
-                  print('ALLOW_LIST must be E.164 numbers, e.g. +972501234567,+972509998888.', file=sys.stderr)
-                  sys.exit(1)
-
-          # The dashboard needs an administrator; both halves are supplied together or
-          # neither, and an existing account is left alone when they are absent.
-          admin_email = (os.environ.get('ADMIN_EMAIL') or '').strip()
-          admin_password = os.environ.get('ADMIN_PASSWORD') or ''
-          if bool(admin_email) != bool(admin_password):
-              print('ADMIN_EMAIL and ADMIN_PASSWORD must be set together.', file=sys.stderr)
-              sys.exit(1)
-          if admin_email and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', admin_email):
-              print('ADMIN_EMAIL must be a single email address.', file=sys.stderr)
-              sys.exit(1)
-          if admin_password and len(admin_password.strip()) < 12:
-              print('ADMIN_PASSWORD must be at least 12 characters.', file=sys.stderr)
-              sys.exit(1)
-          admin_api_key = (os.environ.get('ADMIN_API_KEY') or '').strip()
-          if admin_api_key and len(admin_api_key) < 16:
-              print('ADMIN_API_KEY must be at least 16 characters.', file=sys.stderr)
-              sys.exit(1)
-
-          release_sha = os.environ['RELEASE_SHA']
-          if not re.fullmatch(r'[0-9a-f]{40}', release_sha):
-              print('The release identifier must be a full commit SHA.', file=sys.stderr)
-              sys.exit(1)
-          if os.environ['CALLORA_IMAGE'] != f'{username}/callora:{release_sha}':
-              print('The release image does not match DOCKER_HUB_USERNAME and the commit SHA.', file=sys.stderr)
-              sys.exit(1)
-
-          bundle = pathlib.Path(os.environ['DEPLOY_BUNDLE_DIR'])
-          bundle.mkdir(mode=0o700, parents=True, exist_ok=True)
-          PY
-          cp docker-compose.prod.yml Caddyfile deploy/deploy.sh "$DEPLOY_BUNDLE_DIR/"
+          missing=()
+          for name in SERVER_HOST SERVER_USER DOCKER_HUB_USERNAME DOCKER_HUB_TOKEN TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "Missing required configuration: ${missing[*]} (SERVER_HOST is the IP secret, SERVER_USER the USER secret)" >&2
+            exit 1
+          fi
+          [[ "$TWILIO_ACCOUNT_SID" =~ ^AC[0-9a-fA-F]{32}$ ]] || { echo 'TWILIO_ACCOUNT_SID is not a valid Account SID' >&2; exit 1; }
+          [[ "$SERVER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo 'USER is not a valid Linux account name' >&2; exit 1; }
+          for name in CARTESIA_API_KEY ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID OPENAI_API_KEY TAXI_PHONE_NUMBERS; do
+            [[ -n "${!name}" ]] || echo "Note: $name is not set; the service runs degraded without it (see SECRETS.md)."
+          done
 
       - name: Configure SSH
         env:
-          SERVER_HOST: ${{ secrets.IP }}
           SERVER_SSH_KEY: ${{ secrets.KEY_PEM }}
-          SSH_DIR: ${{ runner.temp }}/callora-ssh
         run: |
           install -d -m 700 "$SSH_DIR"
           printf '%s\n' "$SERVER_SSH_KEY" > "$SSH_DIR/deploy_key"
@@ -363,178 +170,42 @@ jobs:
           chmod 600 "$SSH_DIR/known_hosts"
 
       - name: Upload and deploy
-        env:
-          SERVER_HOST: ${{ secrets.IP }}
-          SERVER_USER: ${{ secrets.USER }}
-          DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
-          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
-          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
-          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Accepted as either a Repository Variable or a Repository Secret, so the
-          # provider is honoured wherever it was configured. Unset in both means openai.
-          VOICE_PROVIDER: ${{ vars.VOICE_PROVIDER || secrets.VOICE_PROVIDER }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
-          CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
-          CARTESIA_VOICE_ID: ${{ vars.CARTESIA_VOICE_ID || secrets.CARTESIA_VOICE_ID }}
-          DEEPDUB_API_KEY: ${{ secrets.DEEPDUB_API_KEY }}
-          DEEPDUB_VOICE_ID: ${{ vars.DEEPDUB_VOICE_ID || secrets.DEEPDUB_VOICE_ID }}
-          RENIKUD_URL: ${{ vars.RENIKUD_URL }}
-          ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
-          SECRETS_KEY: ${{ secrets.SECRETS_KEY }}
-          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || secrets.ADMIN_EMAIL }}
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-          DEPLOY_BUNDLE_DIR: ${{ runner.temp }}/callora-deploy
-          SSH_DIR: ${{ runner.temp }}/callora-ssh
-          CALLORA_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
         run: |
           SSH=(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts" -i "$SSH_DIR/deploy_key")
           SCP=(scp -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts" -i "$SSH_DIR/deploy_key")
           REMOTE="$SERVER_USER@$SERVER_HOST"
-          REMOTE_DOCKER_CONFIG="/tmp/callora-docker-${CALLORA_IMAGE##*:}"
-
+          REMOTE_DOCKER_CONFIG="/tmp/callora-docker-${GITHUB_SHA}"
           cleanup() {
-            "${SSH[@]}" "$REMOTE" \
-              "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker logout >/dev/null 2>&1 || true; rm -rf -- '$REMOTE_DOCKER_CONFIG'" || true
+            "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker logout >/dev/null 2>&1 || true; rm -rf -- '$REMOTE_DOCKER_CONFIG'" || true
           }
           trap cleanup EXIT
 
-          OPENAI_API_KEY="$(python3 - <<'PY'
-          import os
-          import sys
-
-          sys.stdout.write(os.environ['OPENAI_API_KEY'].strip())
-          PY
-          )"
-          ELEVENLABS_API_KEY="$(python3 - <<'PY'
-          import os
-          import sys
-
-          sys.stdout.write((os.environ.get('ELEVENLABS_API_KEY') or '').strip())
-          PY
-          )"
-          ELEVENLABS_AGENT_ID="$(python3 - <<'PY'
-          import os
-          import sys
-
-          sys.stdout.write((os.environ.get('ELEVENLABS_AGENT_ID') or '').strip())
-          PY
-          )"
-          CARTESIA_API_KEY="$(python3 - <<'PY'
-          import os
-          import sys
-
-          sys.stdout.write((os.environ.get('CARTESIA_API_KEY') or '').strip())
-          PY
-          )"
-          CARTESIA_VOICE_ID="$(python3 - <<'PY'
-          import os
-          import sys
-
-          sys.stdout.write((os.environ.get('CARTESIA_VOICE_ID') or '').strip())
-          PY
-          )"
-          VOICE_PROVIDER="$(python3 - <<'PY'
-          import os
-          import sys
-
-          sys.stdout.write((os.environ.get('VOICE_PROVIDER') or 'openai').strip())
-          PY
-          )"
-          ALLOW_LIST="$(python3 - <<'PY'
-          import os
-          import sys
-
-          def normalise_allow_list(raw):
-              text = raw.strip().strip('[').strip(']')
-              text = text.replace(';', ',').replace(chr(10), ',').replace(chr(13), ',')
-              entries = []
-              for entry in text.split(','):
-                  entry = entry.strip().strip('"').strip("'").strip()
-                  for junk in (' ', '-', '(', ')', '.'):
-                      entry = entry.replace(junk, '')
-                  if entry:
-                      entries.append(entry)
-              return entries
-
-          def is_e164(value):
-              digits = value[1:]
-              return (
-                  value.startswith('+')
-                  and digits.isdigit()
-                  and not digits.startswith('0')
-                  and 8 <= len(digits) <= 15
-              )
-
-          sys.stdout.write(','.join(normalise_allow_list(os.environ.get('ALLOW_LIST', ''))))
-          PY
-          )"
-
           "${SSH[@]}" "$REMOTE" 'install -d -m 700 /opt/callora/incoming'
-          "${SCP[@]}" \
-            "$DEPLOY_BUNDLE_DIR/docker-compose.prod.yml" \
-            "$DEPLOY_BUNDLE_DIR/Caddyfile" \
-            "$DEPLOY_BUNDLE_DIR/deploy.sh" \
-            "$REMOTE:/opt/callora/incoming/"
+          "${SCP[@]}" docker-compose.prod.yml Caddyfile deploy/deploy.sh "$REMOTE:/opt/callora/incoming/"
           "${SSH[@]}" "$REMOTE" "install -d -m 700 '$REMOTE_DOCKER_CONFIG'"
-          printf '%s' "$DOCKER_HUB_TOKEN" | \
-            "${SSH[@]}" "$REMOTE" \
-              "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
+          printf '%s' "$DOCKER_HUB_TOKEN" | "${SSH[@]}" "$REMOTE" \
+            "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
           "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
-          # Before anything else writes to the VM. A host that filled up during an earlier
-          # release cannot complete even the small .env update below, so the deployment
-          # would fail before reaching the step that would have reclaimed the space.
           "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh reclaim' || true
-          ADMIN_EMAIL="$(python3 - <<'PY'
-          import os
-          import sys
 
-          sys.stdout.write((os.environ.get('ADMIN_EMAIL') or '').strip())
-          PY
-          )"
-          ADMIN_PASSWORD="$(python3 - <<'PY'
-          import os
-          import sys
+          # Runtime settings travel as NAME=VALUE lines on stdin: never on a command line,
+          # never printed. deploy.sh accepts only the names it knows.
+          for name in TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN STREAM_TOKEN_SECRET \
+                      ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID ELEVENLABS_DYNAMIC_MODEL \
+                      CARTESIA_API_KEY OPENAI_API_KEY TEXT_LLM_MODEL \
+                      TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN \
+                      TAXI_CRM_URL TAXI_CRM_TOKEN ALLOW_LIST ADMIN_API_KEY; do
+            value="${!name}"
+            value="${value//$'\n'/}"
+            printf '%s=%s\n' "$name" "$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          done | "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
-          sys.stdout.write((os.environ.get('ADMIN_PASSWORD') or '').strip())
-          PY
-          )"
-          ADMIN_API_KEY="$(python3 - <<'PY'
-          import os
-          import sys
-
-          sys.stdout.write((os.environ.get('ADMIN_API_KEY') or '').strip())
-          PY
-          )"
-          SECRETS_KEY="$(python3 - <<'PY'
-          import os
-          import sys
-
-          sys.stdout.write((os.environ.get('SECRETS_KEY') or '').strip())
-          PY
-          )"
-
-          # Appended last, so a server still running an older deploy.sh simply ignores it.
-          printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-            "$TWILIO_ACCOUNT_SID" "$TWILIO_AUTH_TOKEN" "$OPENAI_API_KEY" "$ALLOW_LIST" \
-            "$VOICE_PROVIDER" "$ELEVENLABS_API_KEY" "$ELEVENLABS_AGENT_ID" \
-            "$CARTESIA_API_KEY" "$CARTESIA_VOICE_ID" \
-            "$ADMIN_EMAIL" "$ADMIN_PASSWORD" "$ADMIN_API_KEY" "$SECRETS_KEY" \
-            "$DEEPDUB_API_KEY" "$DEEPDUB_VOICE_ID" "$RENIKUD_URL" | \
-            "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
-
-          if ! "${SSH[@]}" "$REMOTE" \
-            "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh deploy '$CALLORA_IMAGE'"; then
+          if ! "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh deploy '$CALLORA_IMAGE'"; then
             echo 'Production deployment failed; the server attempted an automatic rollback.' >&2
             exit 1
           fi
-
-          if ! "${SSH[@]}" "$REMOTE" \
-            "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh confirm"; then
+          if ! "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh confirm"; then
             echo 'Release confirmation failed; rolling back.' >&2
-            "${SSH[@]}" "$REMOTE" \
-              "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh rollback" || true
+            "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh rollback" || true
             exit 1
           fi

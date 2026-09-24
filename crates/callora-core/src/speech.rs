@@ -22,6 +22,7 @@ struct Patterns {
     phone: Regex,
     time: Regex,
     date: Regex,
+    identifier: Regex,
     number: Regex,
     spaces: Regex,
 }
@@ -40,6 +41,9 @@ fn patterns() -> &'static Patterns {
             phone: re(r"(?P<pre>^|[^\d+])(?P<num>(?:\+972[\s-]?|0)(?:5\d|7\d|[2-489])(?:[\s-]?\d){7}|1[\s-]?[78]00[\s-]?\d{2,3}[\s-]?\d{3,4})(?P<post>\D|$)"),
             time: re(r"(?P<pre>^|\D)([01]?\d|2[0-3]):([0-5]\d)(?P<post>\D|$)"),
             date: re(r"(?P<pre>^|\D)([0-3]?\d)[/.]([01]?\d)(?:[/.](\d{2,4}))?(?P<post>[^\d/.]|$)"),
+            // An identifier after a word that announces one ("מספר ההזמנה הוא AB-20491",
+            // "תיק השירות 2026-0919-44") is read character by character, never as a quantity.
+            identifier: re(r"(?P<lead>(?:ה?הזמנה|ה?מעקב|ה?תיק(?: ה?שירות)?|ה?אסמכתא|ה?אישור|ה?אימות|קוד|order|tracking)(?:\s+(?:שלך|שלכם|מספר|הוא|היא|הם|#|no\.?|number))*\s*[:#]?\s*)(?P<id>[A-Za-z]{0,4}-?[0-9][A-Za-z0-9-]{3,})"),
             number: re(r"\d+"),
             spaces: re(r"\s+"),
         }
@@ -52,6 +56,20 @@ fn digits_spelled(s: &str) -> String {
         .map(|c| number_words(i64::from(c.to_digit(10).unwrap_or(0)), Gender::Feminine))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Letters and digits one by one; separators become pauses.
+fn spell_identifier(id: &str) -> String {
+    id.chars()
+        .filter_map(|c| match c {
+            '0'..='9' => Some(number_words(i64::from(c.to_digit(10).unwrap_or(0)), Gender::Feminine)),
+            c if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase().to_string()),
+            '-' => Some(",".to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" ,", ",")
 }
 
 fn money(whole: &str, cents: Option<&str>) -> String {
@@ -105,6 +123,10 @@ pub fn normalize_hebrew(text: &str) -> String {
             let n: i64 = c[1].parse().unwrap_or(0);
             format!("{} אחוז", number_words(n, Gender::Masculine))
         })
+        .into_owned();
+    s = p
+        .identifier
+        .replace_all(&s, |c: &Captures<'_>| format!("{}{}", &c["lead"], spell_identifier(&c["id"])))
         .into_owned();
     s = p
         .phone
@@ -171,6 +193,33 @@ mod tests {
         assert_eq!(normalize_hebrew("03-1234567"), "אפס שלוש אחת שתיים שלוש ארבע חמש שש שבע");
         assert_eq!(normalize_hebrew("ב-08:30"), "ב-שמונה וחצי");
         assert_eq!(normalize_hebrew("ב15/10"), "בחמישה עשר באוקטובר");
+    }
+
+    #[test]
+    fn identifiers_are_spelled() {
+        assert_eq!(normalize_hebrew("מספר ההזמנה הוא AB-20491."), "מספר ההזמנה הוא A B, שתיים אפס ארבע תשע אחת.");
+        assert!(!normalize_hebrew("תיק השירות שלך הוא 2026-0919-44.").contains("אלפיים"));
+    }
+
+    /// The legacy evaluation corpus: no digit may reach the TTS engine.
+    #[test]
+    fn evaluation_corpus_leaves_no_digits() {
+        let corpus: std::collections::BTreeMap<String, Vec<String>> =
+            serde_json::from_str(include_str!("../../../evaluation/hebrew-utterances.json")).unwrap();
+        for (category, utterances) in corpus {
+            for u in utterances {
+                let out = normalize_hebrew(&u);
+                assert!(!out.chars().any(|c| c.is_ascii_digit()), "{category}: {u} -> {out}");
+            }
+        }
+        assert_eq!(
+            normalize_hebrew("הסכום לתשלום הוא ₪249.90."),
+            "הסכום לתשלום הוא מאתיים ארבעים ותשעה שקלים ותשעים אגורות."
+        );
+        assert_eq!(
+            normalize_hebrew("מספר הטלפון הוא 050-123-4567."),
+            "מספר הטלפון הוא אפס חמש אפס אחת שתיים שלוש ארבע חמש שש שבע."
+        );
     }
 
     #[test]

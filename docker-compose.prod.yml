@@ -36,61 +36,41 @@ services:
   backend:
     image: ${CALLORA_IMAGE:?CALLORA_IMAGE is required}
     environment:
-      NODE_ENV: production
+      RUST_LOG: ${RUST_LOG:-info}
       HOST: 0.0.0.0
       PORT: 3000
-      LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?TWILIO_ACCOUNT_SID is required}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
-      # Encrypts the provider credentials entered in the dashboard. It must stay the same
-      # across deployments: change it and every credential stored in Callora becomes
-      # unreadable and has to be entered again. Leave it empty to manage credentials
-      # through these variables only.
-      SECRETS_KEY: ${SECRETS_KEY:-}
-      # Default provider for newly created agents; each business then picks its own in
-      # the dashboard. Every value below is a floor the dashboard can override, and a
-      # provider becomes selectable once its own credentials are present in either place.
-      VOICE_PROVIDER: ${VOICE_PROVIDER:-openai}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
-      ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID:-}
-      # Optional; the application defaults to the public API origin when this is empty.
-      ELEVENLABS_API_BASE_URL: ${ELEVENLABS_API_BASE_URL:-https://api.elevenlabs.io}
+      STREAM_TOKEN_SECRET: ${STREAM_TOKEN_SECRET:-}
+      # Speech: Cartesia hears, ElevenLabs speaks (library + dynamic), the LLM only
+      # helps understanding. Each one missing degrades the service instead of stopping it.
       CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
-      CARTESIA_VOICE_ID: ${CARTESIA_VOICE_ID:-}
-      # Model ids and the API version are the values most likely to be retired upstream,
-      # so they are overridable without shipping code.
-      CARTESIA_TTS_MODEL: ${CARTESIA_TTS_MODEL:-}
       CARTESIA_STT_MODEL: ${CARTESIA_STT_MODEL:-}
       CARTESIA_VERSION: ${CARTESIA_VERSION:-}
-      # Cartesia covers speech only; the reasoning turn runs on an OpenAI text model.
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
+      ELEVENLABS_API_BASE_URL: ${ELEVENLABS_API_BASE_URL:-https://api.elevenlabs.io}
+      ELEVENLABS_DYNAMIC_MODEL: ${ELEVENLABS_DYNAMIC_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-}
       TEXT_LLM_BASE_URL: ${TEXT_LLM_BASE_URL:-}
-      DEEPDUB_API_KEY: ${DEEPDUB_API_KEY:-}
-      DEEPDUB_VOICE_ID: ${DEEPDUB_VOICE_ID:-}
-      DEEPDUB_MODEL: ${DEEPDUB_MODEL:-}
-      DEEPDUB_LOCALE: ${DEEPDUB_LOCALE:-}
-      DEEPDUB_WS_URL: ${DEEPDUB_WS_URL:-}
-      DEEPDUB_FIRST_AUDIO_TIMEOUT_MS: ${DEEPDUB_FIRST_AUDIO_TIMEOUT_MS:-50}
-      DEEPDUB_ENABLE_LOGGING: ${DEEPDUB_ENABLE_LOGGING:-false}
-      RENIKUD_URL: ${RENIKUD_URL:-}
-      RENIKUD_TIMEOUT_MS: ${RENIKUD_TIMEOUT_MS:-90}
-      # Control plane. ADMIN_EMAIL and ADMIN_PASSWORD create the dashboard administrator
-      # and reset its password whenever the value changes; leaving both empty keeps
-      # whatever account already exists. ADMIN_API_KEY is the optional machine credential
-      # for the management API.
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      ADMIN_NAME: ${ADMIN_NAME:-}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
-      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
-      # Optional caller allowlist; empty or unset allows every caller.
+      # The taxi business (businesses/taxi.json reads these by name).
+      TAXI_PHONE_NUMBERS: ${TAXI_PHONE_NUMBERS:-}
+      TAXI_HANDOFF_NUMBER: ${TAXI_HANDOFF_NUMBER:-}
+      TAXI_DISPATCH_URL: ${TAXI_DISPATCH_URL:-}
+      TAXI_DISPATCH_TOKEN: ${TAXI_DISPATCH_TOKEN:-}
+      TAXI_CRM_URL: ${TAXI_CRM_URL:-}
+      TAXI_CRM_TOKEN: ${TAXI_CRM_TOKEN:-}
       ALLOW_LIST: ${ALLOW_LIST:-}
-      DB_STARTUP_RETRIES: 30
-      DB_STARTUP_RETRY_DELAY_SECONDS: 2
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      TRANSCRIPT_RETENTION_DAYS: ${TRANSCRIPT_RETENTION_DAYS:-30}
+      AUDIO_LIBRARY_DIR: /data/voice-library
     logging: *logging
+    volumes:
+      # Generated once per voice with `callora voice-library build` (see DEPLOYMENT.md).
+      - voice_library:/data/voice-library
     expose:
       - "3000"
     networks:
@@ -101,47 +81,19 @@ services:
         condition: service_healthy
         restart: true
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "/usr/local/bin/callora", "healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 5
-      start_period: 20s
-    init: true
+      start_period: 10s
     read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1777
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     restart: unless-stopped
+    # Long enough for calls in progress to finish their current reply.
     stop_grace_period: 30s
-
-  renikud:
-    profiles: ["renikud"]
-    image: ${RENIKUD_IMAGE:-callora-renikud:local}
-    environment:
-      RENIKUD_MODEL_PATH: /models/model_int8.onnx
-      RENIKUD_WRAPPER_PATH: /models/renikud_onnx.py
-      RENIKUD_PORT: 8787
-    logging: *logging
-    volumes:
-      - ${RENIKUD_MODEL_DIR:-./.models/renikud}:/models:ro,Z
-    networks:
-      - database
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health')"]
-      interval: 10s
-      timeout: 2s
-      retries: 5
-    read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1777
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    restart: unless-stopped
 
   caddy:
     image: caddy:2-alpine
@@ -184,6 +136,8 @@ volumes:
     name: callora_caddy_data
   caddy_config:
     name: callora_caddy_config
+  voice_library:
+    name: callora_voice_library
 
 networks:
   database:

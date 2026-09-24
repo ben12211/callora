@@ -1,9 +1,9 @@
 # Callora production deployment
 
-Callora deploys as three containers on one Oracle Linux 9 ARM64 VM:
+Callora V2 deploys the same way the legacy stack did: three containers on one Oracle Linux 9 ARM64 VM:
 
 - Caddy terminates HTTPS on ports 80/443 and proxies to the backend.
-- The non-root Callora backend is available only inside the Docker network.
+- The non-root, distroless Callora backend (a single static Rust binary) is available only inside the Docker network. It keeps its pre-generated voice library in the `callora_voice_library` named volume.
 - PostgreSQL is available only inside its private Docker network and stores data in the fixed `callora_postgres_data` named volume.
 
 The production stack is defined in `docker-compose.prod.yml`. Normal deployments never run `docker compose down`, never use `--volumes`, and never recreate or delete the PostgreSQL volume.
@@ -52,116 +52,71 @@ The bootstrap script uses Docker's RPM repository, installs Docker Engine plus t
 
 If the repository is private and the raw download is unavailable, copy `deploy/bootstrap-oracle-linux.sh` to `/tmp/bootstrap-callora.sh` over SCP and run the same `chmod` and `sudo` commands.
 
-## Production application environment on the VM
+## Production environment on the VM
 
-The database credentials and public URL stay on the VM. Twilio and OpenAI credentials are synchronized from GitHub Repository Secrets during deployment. As the deployment user, create `/opt/callora/.env` with mode `0600`:
+The database credentials and the public URL stay on the VM. Everything else is synchronized from GitHub on each deployment (see below). Create `/opt/callora/.env` with mode `0600`:
 
 ```dotenv
-NODE_ENV=production
-HOST=0.0.0.0
-PORT=3000
-LOG_LEVEL=info
 POSTGRES_USER=callora
 POSTGRES_PASSWORD=replace-with-a-strong-password
 POSTGRES_DB=callora
 DATABASE_URL=postgresql://callora:URL_ENCODED_PASSWORD@db:5432/callora
-TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_AUTH_TOKEN=replace-with-your-auth-token
 PUBLIC_BASE_URL=https://calls.example.com
-VOICE_PROVIDER=openai
-OPENAI_API_KEY=replace-with-your-openai-api-key
-ELEVENLABS_API_KEY=
-ELEVENLABS_AGENT_ID=
-ALLOW_LIST=
-ADMIN_EMAIL=
-ADMIN_PASSWORD=
-ADMIN_API_KEY=
-SESSION_TTL_HOURS=12
-SECRETS_KEY=replace-with-a-long-random-string
 ```
 
-`SECRETS_KEY` encrypts the provider credentials entered on the dashboard's **Providers** page. Generate it once with `openssl rand -base64 32`, and treat it as permanent: rotating it leaves every credential stored in Callora unreadable, and each one has to be entered again. It is only replaced on the server when the deployment supplies a value, so a pipeline that does not send one leaves the existing key alone. Without it the dashboard still manages every non-secret setting, but API keys have to come from this file.
+If `POSTGRES_PASSWORD` contains URL-reserved characters, percent-encode it in `DATABASE_URL`. `DATABASE_URL` must use the Compose service hostname `db`. An existing legacy `.env` works as it is: V2 keeps these names, and legacy-only entries are ignored.
 
-`VOICE_PROVIDER` sets the default provider for newly created agents and accepts only `openai` (the default), `elevenlabs`, `cartesia`, or `deepdub`. Each business chooses its own provider in the dashboard, and any provider whose credentials are present — here or saved in the dashboard — becomes selectable there. Selecting `cartesia` additionally requires `OPENAI_API_KEY`, because Cartesia supplies speech but not reasoning. Selecting `deepdub` requires `CARTESIA_API_KEY` and `OPENAI_API_KEY` as well, because Deepdub speaks while Cartesia transcribes and OpenAI reasons. Only the selected provider's credentials matter: an OpenAI deployment can leave both `ELEVENLABS_*` values empty, and an ElevenLabs deployment can leave `OPENAI_API_KEY` empty. Credentials missing here are reported by the deployment and at startup, not treated as a failure, since they may already be stored in the dashboard; until they exist in one of the two places, calls answer with the business's static greeting.
+If the file does not exist, the first deployment creates it with the synchronized settings, then stops and names the host settings it cannot know.
 
-`ALLOW_LIST` is optional and is overwritten from the GitHub secret on every deployment, exactly like the Twilio and OpenAI credentials — but an allowlist saved in the dashboard takes precedence over it. Set the secret to a comma-separated list of E.164 numbers to restrict who can reach the agent; clear it to allow every caller again. A malformed value fails the deployment rather than silently blocking calls.
+Do not add `CALLORA_IMAGE` manually. `deploy.sh` injects the exact commit-SHA image into a copy of the environment for each release.
 
-`ADMIN_EMAIL` and `ADMIN_PASSWORD` create the dashboard administrator and reset its password whenever the value changes, so keeping a stale password here would undo a rotation done in the dashboard. Both are overwritten from the GitHub secrets on every deployment; leave the secrets unset once the account exists and its password is managed from **Settings**. `ADMIN_API_KEY` is optional and only needed when something other than a browser calls the management API. Both `/api` and `/dashboard` refuse unauthenticated requests.
+### How settings reach the VM
 
-Then secure it:
+The workflow sends `NAME=VALUE` lines to `deploy.sh update-secrets` over the SSH connection's standard input, never on a command line, and nothing is printed. `deploy.sh` accepts only the names it knows (see `SYNCED_SETTINGS` in the script). A name that is sent replaces the server's value, an empty value clears it, and a name that is not sent is left alone, so host-only settings can never be overwritten by the pipeline. Only names are logged.
 
-```bash
-chmod 0600 /opt/callora/.env
-```
-
-If `POSTGRES_PASSWORD` contains URL-reserved characters, percent-encode the password portion in `DATABASE_URL`. The unencoded value remains in `POSTGRES_PASSWORD`. `DATABASE_URL` must use the Compose service hostname `db`.
-
-If this file does not exist yet, the first deployment creates it and writes the credentials the pipeline holds, then stops and names the host-specific settings above that it cannot know: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL` and `PUBLIC_BASE_URL`. Add those on the VM and run the deployment again. Creating the file up front, as described here, avoids that first failed run.
-
-Do not add `CALLORA_IMAGE` manually. During deployment, `deploy.sh` copies the existing server environment to a mode-0600 release file and inserts only the exact commit-SHA image. Rollback restores the previous environment and image reference.
 
 ## Required GitHub repository settings
 
-Create these under **Settings → Secrets and variables → Actions** for the repository.
+The complete list, names only, is in [SECRETS.md](SECRETS.md). The minimum for a working deployment:
 
-Repository Secrets:
+- Secrets: `IP`, `USER`, `KEY_PEM`, `DOCKER_HUB_TOKEN`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, and `TAXI_PHONE_NUMBERS` (Secret or Variable).
+- Variables: `DOCKER_HUB_USERNAME`, `ELEVENLABS_VOICE_ID`.
+- Recommended: `OPENAI_API_KEY` (LLM understanding when the rules are unsure), `TAXI_HANDOFF_NUMBER` (the human desk), `STREAM_TOKEN_SECRET`.
 
-| Secret | Value |
-| --- | --- |
-| `DOCKER_HUB_TOKEN` | Docker Hub access token with read/write access to the private `callora` repository |
-| `IP` | Oracle VM public IPv4 address |
-| `KEY_PEM` | Private SSH key authorized for `USER` |
-| `USER` | SSH deployment account, normally `opc` |
-| `TWILIO_ACCOUNT_SID` | Twilio Account SID; authenticates the REST call that hangs up finished conversations |
-| `TWILIO_AUTH_TOKEN` | Twilio Auth Token used to validate signed webhook requests |
-| `OPENAI_API_KEY` | OpenAI API key with Realtime access. Required only when `VOICE_PROVIDER` is `openai` |
-| `ELEVENLABS_API_KEY` | ElevenLabs API key. Required only when `VOICE_PROVIDER` is `elevenlabs` |
-| `ELEVENLABS_AGENT_ID` | ElevenLabs agent id. Required only when `VOICE_PROVIDER` is `elevenlabs` |
-| `CARTESIA_API_KEY` | Cartesia API key. Required when `VOICE_PROVIDER` is `cartesia`, and also when it is `deepdub`, which uses Cartesia for streaming Hebrew speech-to-text |
-| `DEEPDUB_API_KEY` | Deepdub API key. Required only when `VOICE_PROVIDER` is `deepdub` |
-| `ALLOW_LIST` | Optional. Comma-separated E.164 numbers allowed to reach the agent; leave unset or empty to allow every caller |
-| `ADMIN_PASSWORD` | Bootstrap dashboard password, at least 12 characters. Set together with `ADMIN_EMAIL`; leave both unset to keep the existing account and its dashboard-managed password |
-| `ADMIN_EMAIL` | Bootstrap administrator address. A Repository Variable of the same name is also accepted and preferred, since it is not sensitive |
-| `ADMIN_API_KEY` | Optional machine credential for the management API, at least 16 characters. Unset means only the dashboard session is accepted |
-| `SECRETS_KEY` | Encrypts credentials entered on the dashboard's Providers page, at least 16 characters. Set it once and never rotate it: every stored credential is unreadable afterwards. Unset leaves the server's existing key untouched |
+The deploy job still targets the `production` environment, so its protection rules and required reviewers stay in force.
 
-Repository Variables:
+In the Twilio console, each taxi number's **A call comes in** webhook is `POST https://<PUBLIC_BASE_URL host>/webhooks/twilio/voice`, and its status callback is `/webhooks/twilio/call-status`. These are the legacy paths, so numbers that were already configured need no change.
 
-| Variable | Value |
-| --- | --- |
-| `DOCKER_HUB_USERNAME` | Docker Hub account or organization that owns the private `callora` repository |
-| `CARTESIA_VOICE_ID` | Sonic voice UUID. Required only when `VOICE_PROVIDER` is `cartesia`. Not sensitive, so a Variable is preferred; a Secret of the same name is also accepted |
-| `DEEPDUB_VOICE_ID` | Deepdub voice prompt id. Required only when `VOICE_PROVIDER` is `deepdub`. Not sensitive, so a Variable is preferred; a Secret of the same name is also accepted |
-| `RENIKUD_URL` | Optional. Base URL of the ReNikudPlus pronunciation sidecar, for example `http://renikud:8000`. Unset leaves it switched off, and Hebrew calls use Deepdub's own pronunciation |
-| `ADMIN_EMAIL` | Bootstrap administrator address. A Repository Secret of the same name is also accepted |
-| `VOICE_PROVIDER` | Optional. `openai` (default), `elevenlabs`, `cartesia`, or `deepdub`. A Repository Secret of the same name is also accepted, but a Variable is preferred: GitHub masks secret values in workflow logs, so storing it as a secret hides the selected provider from the deployment log |
-
-No GHCR credentials, `GITHUB_TOKEN` package permissions, GitHub environment secrets, or database secrets are used by the workflow. The deploy job continues to target the existing `production` environment so any protection rules or required reviewers remain in force; its credentials still come only from the Repository Secrets above. Twilio credentials are sent to the VM over the existing SSH connection through standard input and are never printed or included in a remote command line.
-
-The workflow obtains the VM's current SSH host key with `ssh-keyscan`, stores it only in the ephemeral runner, and then enables strict host-key checking for SSH and SCP. Because the requested GitHub configuration does not include a separately trusted host-key fingerprint, that initial scan is not independently authenticated. The VM address and private key remain masked GitHub Secrets, and credentials are never printed or passed as command-line passwords.
 
 ## CI/CD behavior
 
-Pull requests run dependency installation, deployment configuration validation, lint, tests, and the TypeScript build. They never log in to Docker Hub, publish an image, use deployment secrets, or deploy.
+Pull requests run `./dev check` (rustfmt, clippy with warnings denied, and the whole test suite against a real PostgreSQL, all in containers), business configuration validation, shell syntax checks, and Compose validation. They never use deployment secrets.
 
-A successful push to `main` then:
+A push to `main` then:
 
-1. Runs the same lint, tests, build, shell syntax, YAML, and Compose configuration checks.
-2. Builds a `linux/arm64` image with Buildx/QEMU.
-3. Logs in to Docker Hub without printing the token.
-4. Pushes `DOCKER_HUB_USERNAME/callora:<commit-sha>` and `DOCKER_HUB_USERNAME/callora:latest`.
-5. Connects to `USER@IP` over SSH on port 22.
-6. Logs in to Docker Hub on the VM with `DOCKER_HUB_USERNAME` and `DOCKER_HUB_TOKEN` over standard input.
-7. Copies only the production Compose file, Caddyfile, and deploy script to `/opt/callora`.
-8. Reclaims the disk space held by superseded releases, and refuses to start if the host still lacks room to unpack the new one.
-9. Injects the exact SHA image into a copy of the existing server environment and pulls that image.
-10. Starts or verifies PostgreSQL without replacing its fixed named volume.
-11. Validates Caddy and runs advisory-locked, transactional migrations plus the idempotent seed before replacing the backend.
-12. Deploys the existing backend/PostgreSQL/Caddy Compose stack.
-13. Waits for PostgreSQL, backend, Caddy, internal backend `/health`, and public HTTPS `/health` checks.
-14. Confirms the release only after every health gate passes, then logs out of Docker Hub on the VM.
+1. Builds the `linux/arm64` image. The Dockerfile cross-compiles a static binary on the runner's own architecture with cargo-zigbuild, with zig fetched from PyPI against a pinned checksum. The result is a distroless, non-root image of about 5 MB.
+2. Pushes `DOCKER_HUB_USERNAME/callora:<sha>` and `:latest`, and deploys the SHA tag over SSH.
+3. `deploy.sh` reclaims disk, syncs settings, pulls, starts PostgreSQL, validates Caddy, runs `callora migrate` (retried, before the backend is replaced), replaces the backend, starts Caddy, and waits for the container healthcheck (`callora healthcheck`), the internal health check and the public HTTPS health check. It rolls back automatically on failure.
 
-The image and deploy jobs run only for push events on `main`, depend on the successful quality job, and are serialized per branch. Production is always deployed by commit SHA, never by `latest`.
+Migrations create and evolve only the `callora_v2` schema, and they are forward-compatible with the previous image.
+
+## Voice library
+
+Most replies are pre-generated audio, and the library is built once per voice (and again, incrementally, after response texts change). It lives in the `callora_voice_library` volume. After the first V2 deployment, and whenever `businesses/*.json` responses or the voice change:
+
+```bash
+cd /opt/callora
+docker compose --env-file .env -f docker-compose.prod.yml run --rm backend voice-library build --business taxi
+docker compose --env-file .env -f docker-compose.prod.yml run --rm backend voice-library status
+docker compose --env-file .env -f docker-compose.prod.yml restart backend
+```
+
+Only missing or changed clips are synthesized. Until the library exists, every reply uses dynamic TTS: this is slower, but works.
+
+## Cutting over from the legacy stack
+
+The Postgres volume, Caddy volumes, ports, `.env` host settings and webhook paths are all unchanged, so a V2 deployment replaces the legacy backend in place. Legacy data in the `public` schema is left untouched. To return to the legacy system, deploy `OLD-MAIN`: its image tags are still on Docker Hub, and V2's schema does not interfere with it.
+
 
 ## Disk space
 
@@ -189,7 +144,7 @@ If that is not enough, the boot volume needs to grow; images are not what is fil
 
 `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, and `PUBLIC_BASE_URL` deliberately never leave the VM, so the pipeline cannot re-send them if `/opt/callora/.env` is lost. Before the atomic writes described below, a rollback on a full disk could truncate that file and take them with it.
 
-`update-secrets` now puts them back on its own, from two places that still have them: `/opt/callora/.rollback/.env`, the backup the failed deployment took, whose lines are copied back byte for byte; and failing that, the containers still running with the values, read with `docker inspect`. `SECRETS_KEY` is recovered the same way when the pipeline did not send one, since an empty one means "keep this server's key" and losing it makes every credential stored in the dashboard unreadable.
+`update-secrets` now puts them back on its own, from two places that still have them: `/opt/callora/.rollback/.env`, the backup the failed deployment took, whose lines are copied back byte for byte; and failing that, the containers still running with the values, read with `docker inspect`.
 
 Only settings that are actually missing are written, only names are ever logged, and a value read from a container is used only if it survives an env file unquoted — anything else is reported by name rather than written back as something subtly different from what the server is running on.
 

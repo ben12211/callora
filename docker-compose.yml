@@ -71,6 +71,10 @@ services:
       BUSINESS_CONFIG_DIR: /workspace/businesses
       AUDIO_LIBRARY_DIR: /workspace/target/voice-library
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
+      # Local only (the port is bound to 127.0.0.1). Set it to false in .env before
+      # exposing the server to Twilio through a tunnel.
+      TWILIO_SKIP_SIGNATURE_VALIDATION: ${TWILIO_SKIP_SIGNATURE_VALIDATION:-true}
+      LOG_FORMAT: text
     depends_on:
       db:
         condition: service_healthy

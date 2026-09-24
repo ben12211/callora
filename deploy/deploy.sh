@@ -611,7 +611,7 @@ deploy_release() {
 
   log 'Running database migrations under the application migration lock.'
   for attempt in {1..15}; do
-    if compose run --rm --no-deps backend node dist/db/migrate.js; then
+    if compose run --rm --no-deps backend migrate; then
       migrated=true
       break
     fi
@@ -619,7 +619,6 @@ deploy_release() {
     sleep 2
   done
   [[ "$migrated" == true ]]
-  compose run --rm --no-deps backend node dist/db/seed.js
 
   log 'Replacing the backend only after migrations succeed.'
   compose up -d --no-deps backend
@@ -639,8 +638,7 @@ deploy_release() {
     }
   fi
 
-  compose exec -T backend node -e \
-    "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+  compose exec -T backend /usr/local/bin/callora healthcheck
 
   log 'Checking the public HTTPS health endpoint.'
   wait_for_public_health 30
@@ -671,200 +669,85 @@ rollback_release() {
   perform_rollback
 }
 
+# Settings the pipeline owns. It sends them as NAME=VALUE lines on standard input (never
+# on a command line); a name that is sent replaces the server's value, an empty value
+# clears it, and a name that is not sent is left alone. Anything else is refused, so a
+# pipeline bug cannot overwrite host-only settings such as the database password.
+readonly SYNCED_SETTINGS=(
+  TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN STREAM_TOKEN_SECRET
+  ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID ELEVENLABS_DYNAMIC_MODEL
+  CARTESIA_API_KEY OPENAI_API_KEY TEXT_LLM_MODEL
+  TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER
+  TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN TAXI_CRM_URL TAXI_CRM_TOKEN
+  ALLOW_LIST ADMIN_API_KEY
+)
+readonly REQUIRED_SYNCED=(TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN)
+
 update_runtime_secrets() {
-  local twilio_account_sid twilio_auth_token openai_api_key allow_list temp_env
-  local voice_provider elevenlabs_api_key elevenlabs_agent_id
-  local cartesia_api_key cartesia_voice_id
-  local deepdub_api_key deepdub_voice_id renikud_url
-  local admin_email admin_password admin_api_key secrets_key
+  local line name value temp_env
+  local -A incoming=()
 
-  IFS= read -r twilio_account_sid
-  IFS= read -r twilio_auth_token
-  IFS= read -r openai_api_key
-  # Optional, and absent when an older workflow sends only three lines.
-  allow_list=''
-  IFS= read -r allow_list || true
-  # Optional too: an older workflow sends nothing for the provider, which means openai.
-  voice_provider=''
-  elevenlabs_api_key=''
-  elevenlabs_agent_id=''
-  cartesia_api_key=''
-  cartesia_voice_id=''
-  IFS= read -r voice_provider || true
-  IFS= read -r elevenlabs_api_key || true
-  IFS= read -r elevenlabs_agent_id || true
-  IFS= read -r cartesia_api_key || true
-  IFS= read -r cartesia_voice_id || true
-  # Control-plane credentials, optional so an older workflow that sends nothing here
-  # still deploys; the dashboard then keeps whatever administrator already exists.
-  admin_email=''
-  admin_password=''
-  admin_api_key=''
-  IFS= read -r admin_email || true
-  IFS= read -r admin_password || true
-  IFS= read -r admin_api_key || true
-  # Encrypts the credentials entered in the dashboard. Optional: an older workflow sends
-  # nothing, which must leave whatever key the server already has untouched, because
-  # replacing it would make every stored credential unreadable.
-  secrets_key=''
-  IFS= read -r secrets_key || true
-  # Deepdub, appended after everything above for the same reason every block before it was:
-  # a workflow that does not send these lines leaves them empty instead of shifting the
-  # meaning of the lines it does send. An empty RENIKUD_URL simply leaves the optional
-  # pronunciation sidecar switched off.
-  deepdub_api_key=''
-  deepdub_voice_id=''
-  renikud_url=''
-  IFS= read -r deepdub_api_key || true
-  IFS= read -r deepdub_voice_id || true
-  IFS= read -r renikud_url || true
-  [[ -n "$voice_provider" ]] || voice_provider=openai
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    name="${line%%=*}"
+    value="${line#*=}"
+    [[ "$line" == *=* ]] || { log 'update-secrets expects NAME=VALUE lines.'; return 1; }
+    case " ${SYNCED_SETTINGS[*]} " in
+      *" $name "*) ;;
+      *) log "update-secrets refused an unknown setting name: $name"; return 1 ;;
+    esac
+    [[ "$value" != *$'\r'* ]] || { log "$name must be a single line."; return 1; }
+    incoming["$name"]="$value"
+  done
 
-  [[ "$twilio_account_sid" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
+  for name in "${REQUIRED_SYNCED[@]}"; do
+    [[ -n "${incoming[$name]:-}" ]] || { log "The pipeline did not supply $name."; return 1; }
+  done
+  [[ "${incoming[TWILIO_ACCOUNT_SID]}" =~ ^AC[0-9a-fA-F]{32}$ ]] || {
     log 'TWILIO_ACCOUNT_SID is not a valid Twilio Account SID.'
     return 1
   }
-  [[ "$twilio_auth_token" =~ ^[0-9a-fA-F]{32}$ ]] || {
-    log 'TWILIO_AUTH_TOKEN is not a valid Twilio Auth Token.'
-    return 1
-  }
-  case "$voice_provider" in
-    openai|elevenlabs|cartesia|deepdub) ;;
-    *)
-      log 'VOICE_PROVIDER must be one of openai, elevenlabs, cartesia, or deepdub.'
-      return 1
-      ;;
-  esac
-
-  # A credential may arrive here or be stored in the dashboard, which keeps it encrypted
-  # in the database. A malformed one still aborts; a missing one is only reported, since
-  # the deployment may be relying on what an operator already entered in the browser.
-  check_secret() {
-    local name="$1" value="$2"
-    if [[ "$value" == *$'\r'* ]]; then
-      log "$name must be a single-line value."
-      return 1
-    fi
-    [[ -n "$value" ]] || missing_secrets+=("$name")
-  }
-
-  local -a missing_secrets=()
-  case "$voice_provider" in
-    openai)
-      check_secret OPENAI_API_KEY "$openai_api_key" || return 1
-      ;;
-    elevenlabs)
-      check_secret ELEVENLABS_API_KEY "$elevenlabs_api_key" || return 1
-      check_secret ELEVENLABS_AGENT_ID "$elevenlabs_agent_id" || return 1
-      ;;
-    cartesia)
-      check_secret CARTESIA_API_KEY "$cartesia_api_key" || return 1
-      check_secret CARTESIA_VOICE_ID "$cartesia_voice_id" || return 1
-      # Cartesia covers speech only; the reasoning turn runs on the OpenAI text model.
-      check_secret OPENAI_API_KEY "$openai_api_key" || return 1
-      ;;
-    deepdub)
-      check_secret DEEPDUB_API_KEY "$deepdub_api_key" || return 1
-      check_secret DEEPDUB_VOICE_ID "$deepdub_voice_id" || return 1
-      # Deepdub speaks; Cartesia supplies streaming Hebrew STT and OpenAI the reasoning turn.
-      check_secret CARTESIA_API_KEY "$cartesia_api_key" || return 1
-      check_secret OPENAI_API_KEY "$openai_api_key" || return 1
-      ;;
-  esac
-  if [[ ${#missing_secrets[@]} -gt 0 ]]; then
-    log "Not supplied by the pipeline: ${missing_secrets[*]}. They must be stored in the dashboard under Providers, or calls will answer with the static greeting."
-  fi
-  [[ -z "$secrets_key" || ${#secrets_key} -ge 16 ]] || {
-    log 'SECRETS_KEY must be at least 16 characters.'
-    return 1
-  }
-  # Both halves of the bootstrap administrator are needed, or neither.
-  if [[ -n "$admin_email" || -n "$admin_password" ]]; then
-    [[ "$admin_email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || {
-      log 'ADMIN_EMAIL must be a single email address when ADMIN_PASSWORD is set.'
-      return 1
-    }
-    [[ ${#admin_password} -ge 12 ]] || {
-      log 'ADMIN_PASSWORD must be at least 12 characters.'
-      return 1
-    }
-  fi
-  [[ -z "$admin_api_key" || ${#admin_api_key} -ge 16 ]] || {
+  [[ -z "${incoming[ADMIN_API_KEY]:-}" || ${#incoming[ADMIN_API_KEY]} -ge 16 ]] || {
     log 'ADMIN_API_KEY must be at least 16 characters when set.'
     return 1
   }
-  # Empty means "no allowlist"; anything else must be E.164 numbers separated by commas.
-  [[ -z "$allow_list" || "$allow_list" =~ ^[[:space:]]*\+[1-9][0-9]{7,14}([[:space:]]*,[[:space:]]*\+[1-9][0-9]{7,14})*[[:space:]]*$ ]] || {
-    log 'ALLOW_LIST must be empty or a comma-separated list of E.164 numbers.'
-    return 1
-  }
-  # The secrets handed to this function are enough to seed the file from nothing, so a
-  # first deployment onto a freshly bootstrapped VM is not a dead end. What it cannot
-  # invent are the host-specific settings that deliberately never leave the VM, so those
-  # are reported by name once the file is written instead of being refused up front.
+  local e164='\+[1-9][0-9]{7,14}'
+  for name in ALLOW_LIST TAXI_PHONE_NUMBERS; do
+    value="${incoming[$name]:-}"
+    [[ -z "$value" || "$value" =~ ^[[:space:]]*${e164}([[:space:]]*,[[:space:]]*${e164})*[[:space:]]*$ ]] || {
+      log "$name must be empty or comma-separated E.164 numbers."
+      return 1
+    }
+  done
+  value="${incoming[TAXI_HANDOFF_NUMBER]:-}"
+  [[ -z "$value" || "$value" =~ ^${e164}$ ]] || { log 'TAXI_HANDOFF_NUMBER must be one E.164 number.'; return 1; }
+
   local baseline="$ENV_FILE"
   if [[ ! -f "$ENV_FILE" ]]; then
-    log "$ENV_FILE does not exist yet; creating it from the credentials the pipeline supplied."
+    log "$ENV_FILE does not exist yet; creating it from the settings the pipeline supplied."
     baseline=/dev/null
   fi
 
   temp_env="$(mktemp "$APP_DIR/.env.XXXXXX")"
   trap 'rm -f -- "$temp_env"' RETURN
-  # SECRETS_KEY is dropped only when a new one was sent: an empty value means "keep the
-  # key this server already has", never "erase it".
-  awk -v replace_secrets_key="${secrets_key:+1}" '
-    (replace_secrets_key == "" || !/^[[:space:]]*SECRETS_KEY[[:space:]]*=/) &&
-    !/^[[:space:]]*TWILIO_ACCOUNT_SID[[:space:]]*=/ &&
-    !/^[[:space:]]*TWILIO_AUTH_TOKEN[[:space:]]*=/ &&
-    !/^[[:space:]]*OPENAI_API_KEY[[:space:]]*=/ &&
-    !/^[[:space:]]*ALLOW_LIST[[:space:]]*=/ &&
-    !/^[[:space:]]*VOICE_PROVIDER[[:space:]]*=/ &&
-    !/^[[:space:]]*ELEVENLABS_API_KEY[[:space:]]*=/ &&
-    !/^[[:space:]]*ELEVENLABS_AGENT_ID[[:space:]]*=/ &&
-    !/^[[:space:]]*CARTESIA_API_KEY[[:space:]]*=/ &&
-    !/^[[:space:]]*CARTESIA_VOICE_ID[[:space:]]*=/ &&
-    !/^[[:space:]]*DEEPDUB_API_KEY[[:space:]]*=/ &&
-    !/^[[:space:]]*DEEPDUB_VOICE_ID[[:space:]]*=/ &&
-    !/^[[:space:]]*RENIKUD_URL[[:space:]]*=/ &&
-    !/^[[:space:]]*ADMIN_EMAIL[[:space:]]*=/ &&
-    !/^[[:space:]]*ADMIN_PASSWORD[[:space:]]*=/ &&
-    !/^[[:space:]]*ADMIN_API_KEY[[:space:]]*=/
+  # Keep every line whose name is not being replaced.
+  local replaced
+  replaced="$(printf '%s\n' "${!incoming[@]}")"
+  awk -v names="$replaced" '
+    BEGIN { n = split(names, list, "\n"); for (i = 1; i <= n; i++) if (list[i] != "") drop[list[i]] = 1 }
+    { key = $0; sub(/^[[:space:]]*/, "", key); sub(/[[:space:]]*=.*/, "", key); if (!(key in drop)) print }
   ' "$baseline" > "$temp_env"
-  printf 'TWILIO_ACCOUNT_SID=%s\n' "$twilio_account_sid" >> "$temp_env"
-  printf 'TWILIO_AUTH_TOKEN=%s\n' "$twilio_auth_token" >> "$temp_env"
-  printf 'OPENAI_API_KEY=%s\n' "$openai_api_key" >> "$temp_env"
-  printf 'ALLOW_LIST=%s\n' "$allow_list" >> "$temp_env"
-  printf 'VOICE_PROVIDER=%s\n' "$voice_provider" >> "$temp_env"
-  printf 'ELEVENLABS_API_KEY=%s\n' "$elevenlabs_api_key" >> "$temp_env"
-  printf 'ELEVENLABS_AGENT_ID=%s\n' "$elevenlabs_agent_id" >> "$temp_env"
-  printf 'CARTESIA_API_KEY=%s\n' "$cartesia_api_key" >> "$temp_env"
-  printf 'CARTESIA_VOICE_ID=%s\n' "$cartesia_voice_id" >> "$temp_env"
-  printf 'DEEPDUB_API_KEY=%s\n' "$deepdub_api_key" >> "$temp_env"
-  printf 'DEEPDUB_VOICE_ID=%s\n' "$deepdub_voice_id" >> "$temp_env"
-  printf 'RENIKUD_URL=%s\n' "$renikud_url" >> "$temp_env"
-  printf 'ADMIN_EMAIL=%s\n' "$admin_email" >> "$temp_env"
-  printf 'ADMIN_PASSWORD=%s\n' "$admin_password" >> "$temp_env"
-  printf 'ADMIN_API_KEY=%s\n' "$admin_api_key" >> "$temp_env"
-  if [[ -n "$secrets_key" ]]; then
-    printf 'SECRETS_KEY=%s\n' "$secrets_key" >> "$temp_env"
-  fi
+  for name in "${!incoming[@]}"; do
+    printf '%s=%s\n' "$name" "${incoming[$name]}" >> "$temp_env"
+  done
   chmod 0600 "$temp_env"
   mv -f -- "$temp_env" "$ENV_FILE"
   trap - RETURN
 
   # A deployment that ran out of disk used to leave this file truncated, taking the
-  # host-only settings with it. They are put back from the server itself rather than
-  # asking somebody to retype a database password that PostgreSQL's volume still expects.
-  # An empty SECRETS_KEY from the pipeline means "keep this server's key", which after a
-  # truncation means recovering it too, or every stored credential becomes unreadable.
-  local -a recoverable=("${HOST_SETTINGS[@]}")
-  [[ -n "$secrets_key" ]] || recoverable+=(SECRETS_KEY)
-  recover_missing_settings "${recoverable[@]}"
+  # host-only settings with it; they are put back from the server itself.
+  recover_missing_settings "${HOST_SETTINGS[@]}"
 
-  # Compose treats these as mandatory, and none of them can come from the pipeline: the
-  # database credentials and the public URL are host-specific by design. Naming the ones
-  # that are absent here turns an opaque "variable is not set" from `docker compose` at
-  # deploy time into one actionable message, with the rest of the file already written.
   local -a missing_host_settings=()
   local setting
   for setting in "${HOST_SETTINGS[@]}"; do
@@ -872,15 +755,12 @@ update_runtime_secrets() {
   done
   if [[ ${#missing_host_settings[@]} -gt 0 ]]; then
     log "$ENV_FILE is missing the host-specific settings: ${missing_host_settings[*]}."
-    log "Add them on the VM (see 'Production application environment on the VM' in DEPLOYMENT.md), then re-run this deployment. The credentials from the pipeline have already been written."
+    log "Add them on the VM (see 'Production environment on the VM' in DEPLOYMENT.md), then re-run this deployment. The pipeline's settings have already been written."
     return 1
   fi
 
-  if [[ -n "$allow_list" ]]; then
-    log "Runtime credentials updated for the $voice_provider voice provider; caller allowlist is active."
-  else
-    log "Runtime credentials updated for the $voice_provider voice provider; no caller allowlist."
-  fi
+  # Names only, never values.
+  log "Runtime settings updated: ${!incoming[*]}."
 }
 
 main() {
