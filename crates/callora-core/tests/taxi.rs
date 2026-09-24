@@ -269,6 +269,43 @@ fn the_llm_decides_whether_an_ununderstood_utterance_was_meant_for_the_agent() {
     assert!(!parse_response(&b, &call.engine.context(), text, &with_value).noise, "a value is never noise");
 }
 
+// The next three come from one live call, turn by turn.
+
+#[test]
+fn small_talk_gets_a_friendly_answer_not_silence() {
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.say("מה המצב?");
+    let text = spoken(&d);
+    assert!(text.contains("אפשר לעזור"), "{text}");
+    assert!(call.engine.state.run.is_none(), "small talk starts no flow");
+}
+
+#[test]
+fn a_verb_after_a_preposition_is_checked_by_the_llm_not_read_back() {
+    let (call, _) = Call::new(business(&[]));
+    let b = call.engine.business().clone();
+    let text = "אני רוצה לשים מונית.";
+    let (fast, needs_llm) = fast_path(&b, &call.engine.context(), text);
+    assert!(needs_llm, "a doubtful value goes to the LLM: {fast:?}");
+    // The LLM sees the booking and no destination; the rules' guess is dropped.
+    let reply = serde_json::json!({ "speech": "clear", "meta_intent": null, "intent": "book_ride",
+        "intent_confidence": 0.9, "affirm": null, "frustrated": false, "slots": [] });
+    let u = merge(fast, parse_response(&b, &call.engine.context(), text, &reply));
+    assert!(u.slots.is_empty(), "{:?}", u.slots);
+    assert_eq!(u.intent.map(|i| i.id).as_deref(), Some("book_ride"));
+}
+
+#[test]
+fn asking_what_was_said_repeats_it_instead_of_becoming_a_value() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.say("צריך מונית");
+    call.say("מרבי עקיבא 12");
+    let asked = spoken(&call.say("תלאבי"));
+    let d = call.say("מה? מה שאמרת לי?");
+    assert_eq!(spoken(&d), asked, "repeats the question");
+    assert_eq!(call.step(), Some(Step::ConfirmingSlot { slot: "destination".into() }));
+}
+
 #[test]
 fn a_misheard_correction_asks_again_instead_of_reading_it_back() {
     // From a real call: "תל אביב" heard as "תלאבי", then every correction misheard too.

@@ -93,7 +93,10 @@ pub fn build_request(b: &Business, ctx: &Context<'_>, state: &CallState, transcr
          - frustrated is true only if the caller sounds clearly annoyed or upset.\n\
          - speech is \"not_for_agent\" when the utterance is not a reply to the agent: background talk, line noise, \
          or recognition garbage such as a lone \"תודה רבה\" or repeated syllables. It is \"unclear\" when the caller \
-         clearly tried to say something that cannot be understood, and \"clear\" otherwise.\n",
+         clearly tried to say something that cannot be understood, and \"clear\" otherwise. Greetings and small talk \
+         (\"מה המצב?\", \"היי\") are addressed to the agent: \"clear\", with the small-talk intent if there is one.\n\
+         - A word after a preposition is a place only if it really names a place: in \"אני רוצה לשים מונית\" there is \
+         no destination.\n",
     );
 
     let mut user = String::new();

@@ -276,8 +276,13 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
     u.coverage = cov.ratio();
     let threshold = b.config.understanding.llm_below_coverage;
     // Nothing understood at all: the LLM decides between "unclear" and "not meant for the
-    // agent", instead of a reflexive "didn't catch that".
-    let needs_llm = unsure_correction || u.is_empty() || (!meta_exact && !answered && u.coverage < threshold);
+    // agent", instead of a reflexive "didn't catch that". A doubtful value the rules pulled
+    // out of a sentence ("לשים" read as a destination) is checked by it too.
+    let doubtful_value = u.slots.iter().any(|s| {
+        s.provenance == Provenance::Rules && b.config.slots.get(&s.slot).is_some_and(|c| s.confidence < c.confirm_below)
+    });
+    let needs_llm =
+        unsure_correction || doubtful_value || u.is_empty() || (!meta_exact && !answered && u.coverage < threshold);
     (u, needs_llm)
 }
 
@@ -455,6 +460,9 @@ fn parse_place(
     (SlotValue::Place { spoken: candidate, address: None, customer_place: None }, confidence)
 }
 
+/// Below this, a rules value is only a guess (a lone word after a preposition).
+const DOUBTFUL: f32 = 0.6;
+
 /// Combine the fast path with an LLM result. Deterministic high-confidence findings are
 /// kept; the LLM fills gaps and wins on low-confidence ones.
 pub fn merge(fast: Understanding, llm: Understanding) -> Understanding {
@@ -472,6 +480,10 @@ pub fn merge(fast: Understanding, llm: Understanding) -> Understanding {
         out.affirm = llm.affirm;
     }
     out.frustrated = llm.frustrated;
+    // A doubtful rules value the LLM did not see in the sentence was a misreading.
+    out.slots.retain(|s| {
+        s.provenance != Provenance::Rules || s.confidence >= DOUBTFUL || llm.slots.iter().any(|l| l.slot == s.slot)
+    });
     for l in llm.slots {
         match out.slots.iter_mut().find(|s| s.slot == l.slot) {
             None => out.slots.push(l),
