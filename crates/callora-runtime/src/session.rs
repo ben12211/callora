@@ -156,6 +156,9 @@ pub struct Session {
     barge_in_started: Option<Instant>,
     /// The agent was cut off and no real utterance has followed yet.
     interrupted: bool,
+    /// The caller turn (engine turn count) the thinking filler last played on. A filler
+    /// on every turn sounds scripted, so it never plays on two turns in a row.
+    filler_turn: Option<u32>,
 }
 
 impl Session {
@@ -202,6 +205,7 @@ impl Session {
             speech_ended_at: None,
             barge_in_started: None,
             interrupted: false,
+            filler_turn: None,
         };
         s.services.store.record(CallRecord::Started { info: s.info.clone() });
 
@@ -482,9 +486,12 @@ impl Session {
                 self.understood(u);
             }
             Ev::FillerDue { turn } => {
-                if self.pending_llm.as_ref().map(|p| p.turn) == Some(turn) && !self.agent_busy() {
+                let caller_turn = self.engine.state.turns;
+                let filler_last_turn = self.filler_turn.is_some_and(|t| t + 1 == caller_turn);
+                if self.pending_llm.as_ref().map(|p| p.turn) == Some(turn) && !self.agent_busy() && !filler_last_turn {
                     if let Some(id) = self.business.config.understanding.thinking_filler.clone() {
                         if let Some(plan) = self.engine.render_response(&id) {
+                            self.filler_turn = Some(caller_turn);
                             self.speak(plan);
                         }
                     }

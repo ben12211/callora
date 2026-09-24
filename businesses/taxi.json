@@ -378,7 +378,7 @@
     },
     "filler_searching": { "variants": ["שנייה, אני בודק מי קרוב.", "רגע, בודק מי קרוב.", "אוקיי, בודק מי קרוב."] },
     "filler_checking": { "variants": ["שנייה, אני בודק.", "רגע, בודק."] },
-    "filler_thinking": { "variants": ["אממ, שנייה."] },
+    "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק לך.", "אממ, רגע."] },
     "ride_booked": {
       "variants": ["מצאתי. יש נהג בערך {eta_minutes} ממך.", "סגור, יש נהג. הוא יגיע בעוד {eta_minutes}."],
       "params": { "eta_minutes": { "kind": "count", "gender": "feminine", "singular": "דקה", "plural": "דקות", "range": [1, 30] } },
@@ -441,5 +441,5 @@
     "after_action_failures": 2
   },
   "silence": { "reprompt_after_ms": 7000, "max_reprompts": 2, "response": "still_there" },
-  "understanding": { "llm_below_coverage": 0.55, "llm_timeout_ms": 2500, "thinking_filler": "filler_thinking", "filler_after_ms": 450 }
+  "understanding": { "llm_below_coverage": 0.55, "llm_timeout_ms": 2500, "thinking_filler": "filler_thinking", "filler_after_ms": 600 }
 }
