@@ -65,6 +65,7 @@ services:
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_BACKUP_MODEL: ${AGENT_BACKUP_MODEL:-}
       AGENT_HEDGE_MS: ${AGENT_HEDGE_MS:-}
+      AGENT_SPECULATE: ${AGENT_SPECULATE:-}
       # Turn-taking tuning; unset uses the built-in defaults.
       VAD_ENDPOINT_MS: ${VAD_ENDPOINT_MS:-}
       VAD_TRIGGER_MS: ${VAD_TRIGGER_MS:-}

@@ -359,6 +359,35 @@ fn a_question_before_the_read_back_is_dropped() {
 }
 
 #[test]
+fn an_impossible_value_is_rejected_and_the_agent_hears_about_it() {
+    // From a live call: "42 נוסעים" went into the booking although the most is 20.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "42 נוסעים",
+        decide(AgentAction::None, "הבנתי.", Some("book_ride"), &[("passengers", "42")]),
+        "",
+    );
+    assert_eq!(call.slot("passengers"), None, "not in the booking");
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "ארבעה");
+    assert!(next.user.contains("passengers \"42\" was not accepted (allowed 1-20)"), "{}", next.user);
+    call.engine.on_agent_turn("ארבעה", decide(AgentAction::None, "כמה נוסעים?", None, &[("passengers", "ארבעה")]), "");
+    assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 4 }));
+    assert!(call.engine.state.agent_notes.is_empty(), "the note was delivered once");
+}
+
+#[test]
+fn drawn_out_hesitations_are_noise() {
+    let (call, _) = Call::new(business(&[]));
+    let b = call.engine.business().clone();
+    for text in ["אההה...", "אממממ", "המממ", "אהה אממ"] {
+        let (u, needs_llm) = fast_path(&b, &call.engine.context(), text);
+        assert!(u.noise && !needs_llm, "{text}");
+    }
+    let (u, _) = fast_path(&b, &call.engine.context(), "אה, לתל אביב");
+    assert!(!u.noise);
+}
+
+#[test]
 fn the_agent_cannot_hang_up_on_garbled_speech() {
     let (mut call, _) = Call::new(business(&[]));
     let d = call.engine.on_agent_turn("אהה, מה חטאת?", decide(AgentAction::EndCall, "יאללה ביי!", None, &[]), "");

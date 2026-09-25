@@ -168,6 +168,8 @@ impl Engine {
         self.state.fallback_level = 0;
         self.offered_more = false;
         self.state.remember(Speaker::Caller, transcript);
+        // Notes were for the decision just made; new ones are for the next.
+        self.state.agent_notes.clear();
 
         // The task.
         if let Some(intent) = turn.task.as_deref().and_then(|t| self.business.intent(t)).cloned() {
@@ -268,11 +270,22 @@ impl Engine {
     /// any value of the current task changed.
     fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> bool {
         let customer = self.state.customer.clone();
+        let mut notes = Vec::new();
         let fills: Vec<SlotFill> = fields
             .iter()
-            .filter_map(|(slot, value)| {
+            .filter_map(|(slot, raw)| {
                 let cfg = self.business.config.slots.get(slot)?;
-                let (value, confidence) = parse_slot_value(&self.business, slot, cfg, value, true, customer.as_ref())?;
+                let parsed = parse_slot_value(&self.business, slot, cfg, raw, true, customer.as_ref());
+                // The parser marks impossible values (42 passengers when the most is 20)
+                // below `reject_below`; the agent's certainty does not make them possible.
+                let Some((value, confidence)) = parsed.filter(|(_, c)| *c >= cfg.reject_below) else {
+                    let range = match (cfg.min, cfg.max) {
+                        (Some(lo), Some(hi)) => format!(" (allowed {lo}-{hi})"),
+                        _ => String::new(),
+                    };
+                    notes.push(format!("{slot} \"{raw}\" was not accepted{range}"));
+                    return None;
+                };
                 Some(SlotFill {
                     slot: slot.clone(),
                     value,
@@ -281,6 +294,7 @@ impl Engine {
                 })
             })
             .collect();
+        self.state.agent_notes.extend(notes);
         if fills.is_empty() {
             return false;
         }

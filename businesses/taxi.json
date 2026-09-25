@@ -397,8 +397,8 @@
     "handoff": { "variants": ["אני מעביר אותך למוקדן."] },
     "handoff_unavailable": { "variants": ["כרגע אין מוקדן פנוי. אפשר לנסות שוב בעוד כמה דקות."], "delivery": "calm" },
 
-    "ask_pickup": { "variants": ["מאיפה לאסוף אותך?", "מאיפה אוספים?"] },
-    "ask_destination": { "variants": ["לאן נוסעים?", "ולאן?"] },
+    "ask_pickup": { "variants": ["מאיפה לאסוף אותך?", "מאיפה אוספים?", "מאיפה אוספים אותך?"] },
+    "ask_destination": { "variants": ["לאן נוסעים?", "ולאן?", "לאן אתה צריך להגיע?"] },
     "ask_destination_price": { "variants": ["לאן הנסיעה?"] },
     "ask_passengers": { "variants": ["כמה נוסעים?", "כמה אתם?"] },
     "confirm_ride": {

@@ -142,16 +142,19 @@ pub fn system_prompt(b: &Business) -> String {
 
     s.push_str(
         "\nREPLY with JSON, every turn:\n\
-         - say: what you say now. One short, natural sentence in the caller's language, like a real dispatcher \
-         (two at most). Never repeat the greeting, never list options unless the caller is lost.\n\
+         - say: what you say now: exactly ONE short, natural sentence in the caller's language, like a real \
+         dispatcher. Never repeat the greeting, never list options unless the caller is lost, never say you did \
+         not understand and then ask something else in the same turn.\n\
          - action: \"none\"; \"read_back\" when every required detail of the task is known and the caller has \
          nothing to add: the system then reads the details back and asks to confirm, so your say is only \"סגור.\" \
          or \"אוקיי.\" (never a question); \"submit\" only when the caller just confirmed that read-back: the \
          system then sends it and tells the caller the result, so your say is only \"סגור.\"; \"transfer\" for a \
          human; \"end_call\" only when the caller clearly says goodbye or that they need nothing more.\n\
          - task: the task the caller is on now, or null.\n\
-         - fields: details the caller gave in THIS utterance, copied in their words, without a leading \
-         preposition (מ/ל/ב). Never invent or complete a value. A word after a preposition is a place only if it \
+         - fields: details of the current task that the caller has given and that CURRENT TASK does not show \
+         yet (from this utterance or an earlier one), copied in their words, without a leading preposition \
+         (מ/ל/ב). A detail you mention or confirm must be in CURRENT TASK or in your fields; otherwise the \
+         system does not have it. Never invent or complete a value. A word after a preposition is a place only if it \
          names a place (\"לשים מונית\" has no destination).\n\
          \nRULES:\n\
          - Speech recognition makes mistakes. If the words make no sense, say you did not catch it and ask again \
@@ -218,6 +221,12 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
             u.push_str(&format!("Status: {status}\n"));
         }
         None => u.push_str("\nCURRENT TASK: none\n"),
+    }
+    if !state.agent_notes.is_empty() {
+        u.push_str(&format!(
+            "\nSYSTEM: from your last decision, {}. Tell the caller and ask again.\n",
+            state.agent_notes.join("; ")
+        ));
     }
     u.push_str(&format!("\nCALLER NOW: \"{transcript}\""));
     u

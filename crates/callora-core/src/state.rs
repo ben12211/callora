@@ -163,6 +163,10 @@ pub struct CallState {
     pub turns: u32,
     /// Bounded transcript, for handoff context and LLM hints. Never drives state.
     pub history: Vec<Turn>,
+    /// What the system could not accept from the agent's last decision, told to it on the
+    /// next turn ("passengers \"42\": out of range").
+    #[serde(default)]
+    pub agent_notes: Vec<String>,
     pub next_action_run: u64,
 }
 
@@ -187,6 +191,7 @@ impl CallState {
             last_variant: BTreeMap::new(),
             turns: 0,
             history: Vec::new(),
+            agent_notes: Vec::new(),
             next_action_run: 1,
         }
     }

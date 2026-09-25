@@ -447,6 +447,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     if let Some(ms) = env("VAD_ENDPOINT_MS").and_then(|v| v.parse().ok()) {
         session.vad.endpoint_ms = ms;
     }
+    session.agent_speculate = env("AGENT_SPECULATE").is_some_and(|v| v == "true" || v == "1");
     if let Some(ms) = env("VAD_TRIGGER_MS").and_then(|v| v.parse().ok()) {
         session.vad.trigger_ms = ms;
     }

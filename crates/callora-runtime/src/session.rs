@@ -41,6 +41,9 @@ use crate::ports::{
 /// Up to this many words that nothing understood are treated as noise when the LLM cannot
 /// be asked.
 const SHORT_GARBAGE_WORDS: usize = 3;
+/// How long an unfinished sentence waits for the caller to go on.
+const UNFINISHED_WAIT: Duration = Duration::from_millis(1200);
+
 /// Consecutive speech recognition reconnects (with no transcript in between) before the
 /// call is handed off.
 const MAX_STT_RECONNECTS: u32 = 4;
@@ -57,6 +60,10 @@ pub struct SessionConfig {
     pub dynamic_model: Option<String>,
     /// Inbound audio kept while the STT connects.
     pub stt_buffer_frames: usize,
+    /// Start the agent on the recognizer's partial text at the end of speech. Off by default:
+    /// on live calls the partial rarely matched the final transcript (1 turn in ~15), and
+    /// every miss spends a full request against the account's tokens-per-minute limit.
+    pub agent_speculate: bool,
 }
 
 impl Default for SessionConfig {
@@ -68,6 +75,7 @@ impl Default for SessionConfig {
             max_call: Duration::from_secs(15 * 60),
             dynamic_model: None,
             stt_buffer_frames: 150,
+            agent_speculate: false,
         }
     }
 }
@@ -138,6 +146,10 @@ enum Ev {
     TtsFirstChunk {
         elapsed: Duration,
     },
+    /// An unfinished sentence ("ואני רוצה להגיע ל...") waited long enough for its rest.
+    UnfinishedDue {
+        generation: u64,
+    },
     /// A hangup or handoff with nothing left to say.
     TerminateNow,
 }
@@ -167,6 +179,9 @@ struct PendingAgent {
     spoken: Vec<String>,
     /// Sentences held back while speculative.
     held: Vec<String>,
+    /// The start of what may be a recorded phrase ("הכל טוב, תודה!" of "הכל טוב, תודה!
+    /// איך אפשר לעזור?"), waiting for its next sentence so the whole clip plays.
+    partial_phrase: Option<String>,
     /// The decision, when it finished while still speculative.
     done: Option<(anyhow::Result<Value>, Option<String>)>,
 }
@@ -215,6 +230,11 @@ pub struct Session {
     clock: Option<TurnClock>,
     /// The caller turn the live-TTS cover last played on (never two turns in a row).
     cover_turn: Option<u32>,
+    /// The agent's recorded phrases, as words (see [`Session::agent_sentence`]).
+    phrase_words: Vec<Vec<String>>,
+    /// A transcript that ended mid-sentence, waiting for the caller to go on.
+    unfinished: Option<String>,
+    unfinished_generation: u64,
     /// The caller turn (engine turn count) the thinking filler last played on. A filler
     /// on every turn sounds scripted, so it never plays on two turns in a row.
     filler_turn: Option<u32>,
@@ -270,8 +290,12 @@ impl Session {
             last_partial: String::new(),
             clock: None,
             cover_turn: None,
+            phrase_words: Vec::new(),
+            unfinished: None,
+            unfinished_generation: 0,
             filler_turn: None,
         };
+        s.phrase_words = agent::phrases(&s.business).iter().map(|p| words(p)).collect();
         s.services.store.record(CallRecord::Started { info: s.info.clone() });
 
         // Open the agent's and the voice's connections while the greeting plays, so the
@@ -496,6 +520,25 @@ impl Session {
         if let Some(c) = &mut self.clock {
             c.final_at.get_or_insert_with(Instant::now);
         }
+        // The recognizer marks a sentence the caller broke off ("ואני רוצה להגיע ל...",
+        // "מתל-ב-ב-"): answering it talks over them. Wait for the rest; a short pause
+        // later, answer what there is.
+        let text = match self.unfinished.take() {
+            Some(start) => format!("{start} {text}"),
+            None => text,
+        };
+        if is_unfinished(&text) {
+            tracing::info!(call = %self.info.call_sid, caller = %text, "unfinished sentence; waiting for the rest");
+            self.unfinished = Some(text);
+            self.unfinished_generation += 1;
+            let generation = self.unfinished_generation;
+            let tx = self.events.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(UNFINISHED_WAIT).await;
+                let _ = tx.send(Ev::UnfinishedDue { generation });
+            });
+            return;
+        }
         if self.agent_mode() {
             return self.on_final_agent(text);
         }
@@ -599,7 +642,8 @@ impl Session {
     /// waiting ~230 ms for the final transcript. Its speech is held until the final
     /// transcript confirms the words; a different final starts over.
     fn speculate(&mut self) {
-        if !self.agent_mode() || self.pending_agent.is_some() || self.pending_llm.is_some() {
+        if !self.cfg.agent_speculate || !self.agent_mode() || self.pending_agent.is_some() || self.pending_llm.is_some()
+        {
             return;
         }
         let text = self.last_partial.trim().to_string();
@@ -647,9 +691,8 @@ impl Session {
         p.speculative = false;
         let held = std::mem::take(&mut p.held);
         let done = p.done.take();
-        p.spoken.extend(held.iter().cloned());
         for sentence in held {
-            self.say_now(&sentence);
+            self.agent_sentence(sentence);
         }
         if let Some((result, rest)) = done {
             self.finish_agent(result, rest);
@@ -713,8 +756,27 @@ impl Session {
             speculative,
             spoken: Vec::new(),
             held: Vec::new(),
+            partial_phrase: None,
             done: None,
         });
+    }
+
+    /// One sentence of the agent's reply, as it streams in. A sentence that begins one of
+    /// the recorded phrases waits for the next one, so the phrase plays as its clip instead
+    /// of half of it going through live TTS.
+    fn agent_sentence(&mut self, sentence: String) {
+        let Some(p) = self.pending_agent.as_mut() else { return };
+        let text = match p.partial_phrase.take() {
+            Some(start) => format!("{start} {sentence}"),
+            None => sentence,
+        };
+        let w = words(&text);
+        if self.phrase_words.iter().any(|ph| ph.len() > w.len() && ph.starts_with(&w)) {
+            p.partial_phrase = Some(text);
+            return;
+        }
+        p.spoken.push(text.clone());
+        self.say_now(&text);
     }
 
     /// Play one sentence of the agent's reply now.
@@ -742,9 +804,11 @@ impl Session {
         self.services.metrics.llm_latency.observe(p.started.elapsed().as_millis() as u64);
         match result {
             Ok(reply) => {
-                if let Some(rest) = rest {
-                    p.spoken.push(rest.clone());
-                    self.say_now(&rest);
+                // Whatever is left, with the start of a phrase that was waiting for it.
+                let tail = [p.partial_phrase.take(), rest].into_iter().flatten().collect::<Vec<_>>().join(" ");
+                if !tail.is_empty() {
+                    p.spoken.push(tail.clone());
+                    self.say_now(&tail);
                 }
                 let decision = agent::parse(&self.business, &reply);
                 tracing::info!(call = %self.info.call_sid, action = ?decision.action, task = ?decision.task, fields = ?decision.fields, "agent decision");
@@ -869,14 +933,24 @@ impl Session {
                 }
             }
             Ev::TtsFirstChunk { elapsed } => self.services.metrics.tts_first_chunk.observe(elapsed.as_millis() as u64),
+            Ev::UnfinishedDue { generation } => {
+                if generation == self.unfinished_generation && !self.vad.is_speaking() {
+                    if let Some(text) = self.unfinished.take() {
+                        // Answer what there is; strip the trailing marks so it is not held again.
+                        let text = text.trim_end_matches(['.', '…', '-', ' ']).to_string();
+                        if !text.is_empty() {
+                            self.on_final(text);
+                        }
+                    }
+                }
+            }
             Ev::AgentSay { turn, sentence } => {
                 let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) else { return };
                 if p.speculative {
                     p.held.push(sentence);
                     return;
                 }
-                p.spoken.push(sentence.clone());
-                self.say_now(&sentence);
+                self.agent_sentence(sentence);
             }
             Ev::AgentDone { turn, result, rest } => {
                 let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) else { return };
@@ -1100,14 +1174,22 @@ impl Session {
 
 /// The same words, ignoring punctuation, spacing and case: a partial transcript that
 /// already says what the final one says.
+/// The recognizer's marks for a sentence the caller broke off: a trailing "..." or "-".
+fn is_unfinished(text: &str) -> bool {
+    let t = text.trim_end();
+    t.ends_with("...") || t.ends_with('…') || t.ends_with('-')
+}
+
 fn same_words(a: &str, b: &str) -> bool {
-    let words = |s: &str| -> Vec<String> {
-        s.split_whitespace()
-            .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
-            .filter(|w| !w.is_empty())
-            .collect()
-    };
     words(a) == words(b)
+}
+
+/// The words of a sentence, without punctuation or case.
+fn words(s: &str) -> Vec<String> {
+    s.split_whitespace()
+        .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 fn spawn_tts(
@@ -1155,4 +1237,19 @@ fn spawn_tts(
             cache.put(key, Bytes::from(all));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_unfinished;
+
+    #[test]
+    fn broken_off_sentences_are_recognised() {
+        for t in ["ואני רוצה להגיע ל...", "יעני, מתל-ב-ב-ב-ב-", "אני נוסע ל… "] {
+            assert!(is_unfinished(t), "{t}");
+        }
+        for t in ["לתל אביב.", "מה המצב?", "3-4 נוסעים"] {
+            assert!(!is_unfinished(t), "{t}");
+        }
+    }
 }

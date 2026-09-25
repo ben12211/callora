@@ -150,7 +150,7 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
     if u.meta.is_some() && u.affirm == Some(false) && meta_exact {
         u.affirm = None;
     }
-    if u.meta.is_none() && u.affirm.is_none() && b.fillers.strip(&norm).is_empty() {
+    if u.meta.is_none() && u.affirm.is_none() && tokens(&b.fillers.strip(&norm)).iter().all(|t| is_hesitation(t)) {
         u.noise = true;
         u.coverage = 1.0;
         return (u, false);
@@ -284,6 +284,11 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
     let needs_llm =
         unsure_correction || doubtful_value || u.is_empty() || (!meta_exact && !answered && u.coverage < threshold);
     (u, needs_llm)
+}
+
+/// A drawn-out "אההה" / "אממממ" / "המממ": a hesitation, however many letters it has.
+fn is_hesitation(token: &str) -> bool {
+    token.chars().count() >= 2 && token.chars().all(|c| matches!(c, 'א' | 'ה' | 'מ'))
 }
 
 fn intent_of_pipeline<'a>(b: &'a Business, pipeline: Option<&str>) -> Option<&'a str> {
