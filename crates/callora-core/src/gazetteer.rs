@@ -149,10 +149,12 @@ pub fn unheard_words(value: &str, heard: &str) -> Vec<String> {
         if heard_words.iter().any(|h| distance(w, h) <= limit) {
             return true;
         }
+        // Across word boundaries almost anything is two letters from something: one here.
+        let glued = if len >= 9 { 2 } else { 1 };
         for size in len.saturating_sub(1).max(1)..=len + 1 {
             for start in 0..compact.len().saturating_sub(size - 1) {
                 let piece: String = compact[start..start + size].iter().collect();
-                if distance(w, &piece) <= limit {
+                if distance(w, &piece) <= glued {
                     return true;
                 }
             }
@@ -278,6 +280,18 @@ impl Gazetteer {
                 return found(Some(city.streets[si].clone()));
             }
         }
+        // "בן זכאי 45, עדי": עדי has no such street, but אלעד, which recognition turns into
+        // "עדי" or "עדו", has. A real street and number pin the city better than the garbled
+        // name; the read-back confirms it with the caller.
+        if let Some((ci2, si)) = self.sound_alike_with_street(ci, &alias, &candidates) {
+            let other = &self.cities[ci2];
+            return Lookup::Found(Address {
+                city_said: other.name.clone(),
+                city: other.name.clone(),
+                street: Some(other.streets[si].clone()),
+                number,
+            });
+        }
         let mut near: Vec<(usize, &String)> =
             city.street_keys.iter().map(|(k, &si)| (distance(&candidates[0], k), &city.streets[si])).collect();
         near.sort();
@@ -339,6 +353,37 @@ impl Gazetteer {
             }
         }
         Vec::new()
+    }
+
+    /// The one other locality that sounds like `city_said` (one consonant more or less) and
+    /// has this street. `None` when none or several do.
+    fn sound_alike_with_street(&self, not: usize, city_said: &str, streets: &[String]) -> Option<(usize, usize)> {
+        let said = sound(&norm(city_said));
+        if said.is_empty() {
+            return None;
+        }
+        let mut hits: Vec<(usize, usize, usize)> = Vec::new();
+        for (key, (ci, _)) in &self.city_keys {
+            if *ci == not || hits.iter().any(|h| h.1 == *ci) {
+                continue;
+            }
+            // A consonant dropped or added ("עדו" for "אלעד"), never another one in its place
+            // ("יפו", an alias of תל אביב, is not "עדי").
+            let other = sound(key);
+            let d = distance(&said, &other);
+            if d > 1 || (d == 1 && said.chars().count() == other.chars().count()) {
+                continue;
+            }
+            if let Some(&si) = streets.iter().find_map(|s| self.cities[*ci].street_keys.get(s.as_str())) {
+                hits.push((d, *ci, si));
+            }
+        }
+        hits.sort();
+        match hits.as_slice() {
+            [(_, ci, si)] => Some((*ci, *si)),
+            [(d0, ci, si), (d1, ..), ..] if d0 < d1 => Some((*ci, *si)),
+            _ => None,
+        }
     }
 
     fn closest_cities(&self, words: &[String]) -> Vec<String> {
@@ -408,6 +453,30 @@ mod tests {
             Lookup::Found(a) => a,
             other => panic!("expected an address, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_street_of_a_sound_alike_city_names_that_city() {
+        // From a live call: "לאלעד" was heard "לעדו", the agent wrote "עדי" (a moshav).
+        let g = Gazetteer::from_tsv(
+            "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+             1309\tאלעד\t111\tרבי עקיבא\tofficial\n199\tעדי\t9000\tעדי\tofficial\n\
+             2066\tבן זכאי\t9000\tבן זכאי\tofficial\n",
+        );
+        assert_eq!(found(g.resolve("בן זכאי 45, עדי")).official(), "רבן יוחנן בן זכאי 45, אלעד");
+        // A street no sound-alike city has stays unknown.
+        assert!(matches!(g.resolve("הרצל 3, עדי"), Lookup::NoStreet { .. }));
+    }
+
+    #[test]
+    fn a_landmark_from_the_prompt_is_not_heard_in_another_street() {
+        // A live test: the caller said "סוכות"; the agent wrote the prompt's "בנייני האומה".
+        let heard = "אני רוצה להזמין מונית. לעדו. בן זכאי 45. אני נמצאת בבן זכאי 45. ירושלים. סוכות.";
+        assert!(
+            unheard_words("בנייני האומה, ירושלים", heard).contains(&"בנייני".to_string()),
+            "one unheard word rejects it"
+        );
+        assert!(unheard_words("בנייני האומה, ירושלים", "זה בני ינאי אומה בירושלים").is_empty());
     }
 
     #[test]

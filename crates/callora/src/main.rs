@@ -687,6 +687,11 @@ mod streets {
         assert_eq!(spoken("מאלעד"), "אלעד");
         assert_eq!(spoken("דיזנגוף 50 תל אביב"), "דיזנגוף 50, תל אביב");
         assert_eq!(spoken("לבאר שבע"), "באר שבע");
+        // "לאלעד" heard as "לעדו", written "עדי" (a moshav): the street names the city.
+        assert_eq!(spoken("בן זכאי 45, עדי"), "רבן יוחנן בן זכאי 45, אלעד");
+        // Real streets of the city said stay there.
+        assert_eq!(spoken("אחוזה 12 רעננה"), "אחוזה 12, רעננה");
+        assert_eq!(spoken("הרצל 10 רחובות"), "הרצל 10, רחובות");
         match g.resolve("מיל״ד") {
             Lookup::NoCity { closest } => assert!(closest.iter().any(|c| c == "אלעד"), "{closest:?}"),
             other => panic!("{other:?}"),
