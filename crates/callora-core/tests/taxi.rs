@@ -114,11 +114,12 @@ fn md_example_29_full_booking_in_one_sentence() {
 
     let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "eta_minutes": 4 })));
     let text = spoken(&d);
-    assert!(text.contains("ארבע דקות"), "{text}");
+    // No arrival time is promised: the driver calls the customer.
+    assert!(text.contains("נהג מתאים") && !text.contains("דקות ממך"), "{text}");
     assert!(call.engine.state.run.is_none());
-    // The ETA sentence is a pre-generated template, not dynamic TTS.
+    // The confirmation is pre-recorded, not dynamic TTS.
     let Directive::Speak { plan, .. } = &d[0] else { panic!() };
-    assert_eq!(plan.segments[0].origin, SegmentOrigin::Template);
+    assert_ne!(plan.segments[0].origin, SegmentOrigin::Dynamic);
 }
 
 #[test]
@@ -786,7 +787,9 @@ fn faq_mid_flow_answers_then_resumes() {
 fn voice_library_is_mostly_pregenerated() {
     let b = with_desk();
     let entries = library_entries(&b);
-    assert!(entries.iter().any(|e| e.text == "מצאתי. יש נהג בערך ארבע דקות ממך."));
+    assert!(entries
+        .iter()
+        .any(|e| e.text == "סבבה, קיבלנו את הפרטים. נחפש לך נהג מתאים, והוא יתקשר אליך בדקות הקרובות."));
     assert!(entries.iter().any(|e| e.text == "זה יוצא בערך שמונים ושניים שקלים."));
     assert!(entries.iter().any(|e| e.text == "מאיפה לאסוף אותך?" && e.delivery == "slow"));
     assert!(!entries.iter().any(|e| e.text.contains('{')));

@@ -419,7 +419,7 @@
         "pickup_time": { "kind": "time" }
       }
     },
-    "filler_searching": { "variants": ["שנייה, אני בודק מי קרוב.", "רגע, בודק מי קרוב.", "אוקיי, בודק מי קרוב."] },
+    "filler_searching": { "variants": ["סגור, רושם את ההזמנה.", "מעולה, רושם."] },
     "filler_checking": { "variants": ["שנייה, אני בודק.", "רגע, בודק."] },
     "small_talk_answer": { "variants": ["הכל טוב, תודה! איך אפשר לעזור?", "סבבה לגמרי. במה אפשר לעזור?"] },
     "filler_hmm": { "variants": ["אממ...", "אהה..."] },
@@ -432,8 +432,10 @@
     "ask_notes": { "variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?"] },
     "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק לך.", "אממ, רגע."] },
     "ride_booked": {
-      "variants": ["מצאתי. יש נהג בערך {eta_minutes} ממך.", "סגור, יש נהג. הוא יגיע בעוד {eta_minutes}."],
-      "params": { "eta_minutes": { "kind": "count", "gender": "feminine", "singular": "דקה", "plural": "דקות", "range": [1, 30] } },
+      "variants": [
+        "סבבה, קיבלנו את הפרטים. נחפש לך נהג מתאים, והוא יתקשר אליך בדקות הקרובות.",
+        "מעולה, הפרטים אצלנו. נמצא לך נהג מתאים, והוא יחזור אליך בהקדם."
+      ],
       "delivery": "important"
     },
     "ride_failed": { "variants": ["אוי, כרגע אין נהג פנוי באזור."], "delivery": "calm" },
