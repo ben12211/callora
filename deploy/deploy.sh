@@ -715,8 +715,8 @@ update_runtime_secrets() {
     log 'TWILIO_ACCOUNT_SID is not a valid Twilio Account SID.'
     return 1
   }
-  [[ -z "${incoming[ADMIN_API_KEY]:-}" || ${#incoming[ADMIN_API_KEY]} -ge 16 ]] || {
-    log 'ADMIN_API_KEY must be at least 16 characters when set.'
+  [[ -z "${incoming[ADMIN_API_KEY]:-}" || ${#incoming[ADMIN_API_KEY]} -ge 8 ]] || {
+    log 'ADMIN_API_KEY must be at least 8 characters when set.'
     return 1
   }
   local e164='\+[1-9][0-9]{7,14}'

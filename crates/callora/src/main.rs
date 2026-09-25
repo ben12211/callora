@@ -492,7 +492,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         twilio_auth_token: twilio_token.unwrap_or_default(),
         stream_secrets,
         allow_list: env("ALLOW_LIST").map(|l| parse_allow_list(&l)).unwrap_or_default(),
-        admin_api_key: env("ADMIN_API_KEY").filter(|k| k.len() >= 16),
+        admin_api_key: env("ADMIN_API_KEY").filter(|k| k.len() >= 8),
         skip_signature_validation,
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
