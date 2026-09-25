@@ -300,8 +300,15 @@ impl Session {
 
         // Open the agent's and the voice's connections while the greeting plays, so the
         // first reply does not pay for TLS handshakes.
-        if let Some(a) = s.services.agent.clone() {
-            tokio::spawn(async move { a.warm().await });
+        if let (Some(a), true) = (s.services.agent.clone(), s.business.config.agent.is_some()) {
+            // A throwaway decision loads the agent's instructions into the provider's prompt
+            // cache while the greeting plays: after a few idle minutes the cache is cold,
+            // and the first real turn of a call was the slowest (over a second).
+            let request = agent::build_request(&s.business, &s.engine.state, "…");
+            tokio::spawn(async move {
+                a.warm().await;
+                let _ = a.extract(&request).await;
+            });
         }
         if let Some(t) = s.services.tts.clone() {
             tokio::spawn(async move { t.warm().await });
@@ -739,7 +746,7 @@ impl Session {
             };
             let _ = tx.send(Ev::AgentDone { turn, result, rest });
         });
-        if self.business.config.understanding.thinking_filler.is_some() {
+        if cfg.thinking_filler.is_some() {
             let tx = self.events.clone();
             let after = Duration::from_millis(cfg.filler_after_ms);
             tokio::spawn(async move {
@@ -887,13 +894,18 @@ impl Session {
             Ev::FillerDue { turn } => {
                 let caller_turn = self.engine.state.turns;
                 let filler_last_turn = self.filler_turn.is_some_and(|t| t + 1 == caller_turn);
-                let waiting = self.pending_llm.as_ref().map(|p| p.turn) == Some(turn)
-                    || self
-                        .pending_agent
-                        .as_ref()
-                        .is_some_and(|p| p.turn == turn && !p.speculative && p.spoken.is_empty());
-                if waiting && !self.agent_busy() && !filler_last_turn {
-                    if let Some(id) = self.business.config.understanding.thinking_filler.clone() {
+                let rules_waiting = self.pending_llm.as_ref().map(|p| p.turn) == Some(turn);
+                let agent_waiting = self
+                    .pending_agent
+                    .as_ref()
+                    .is_some_and(|p| p.turn == turn && !p.speculative && p.spoken.is_empty());
+                let filler = if agent_waiting {
+                    self.business.config.agent.as_ref().and_then(|a| a.thinking_filler.clone())
+                } else {
+                    self.business.config.understanding.thinking_filler.clone()
+                };
+                if (rules_waiting || agent_waiting) && !self.agent_busy() && !filler_last_turn {
+                    if let Some(id) = filler {
                         if let Some(plan) = self.engine.render_response(&id) {
                             self.filler_turn = Some(caller_turn);
                             self.speak(plan);

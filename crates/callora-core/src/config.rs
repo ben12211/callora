@@ -635,6 +635,10 @@ pub struct AgentConfig {
     /// pre-recorded, so a reply that uses one verbatim plays at once.
     #[serde(default)]
     pub phrases: Vec<ResponseId>,
+    /// Said while the agent is still deciding. Unlike the rules' filler ("רגע, בודק"), it
+    /// must fit any turn, small talk included: a plain "אממ...".
+    #[serde(default)]
+    pub thinking_filler: Option<ResponseId>,
     /// Filler delay on agent turns. The agent's first words take ~0.7 s, so a filler much
     /// earlier than that would talk over its answer.
     #[serde(default = "default_agent_filler_after")]

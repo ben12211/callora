@@ -323,6 +323,9 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
     };
     need_response("greeting", &c.greeting, &mut v);
     if let Some(agent) = &c.agent {
+        if let Some(r) = &agent.thinking_filler {
+            need_response("agent.thinking_filler", r, &mut v);
+        }
         for (n, id) in agent.phrases.iter().enumerate() {
             need_response(&format!("agent.phrases[{n}]"), id, &mut v);
             if c.responses.get(id).is_some_and(|r| r.variants.iter().any(|t| !placeholders(t).is_empty())) {

@@ -217,11 +217,27 @@ impl Engine {
                     && self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
                 // The read-back asks the question; a question of the agent's own before it
                 // would make two ("anything else? ... send it?").
-                let say = if turn.action == AgentAction::ReadBack && turn.say.trim_end().ends_with('?') {
-                    ""
-                } else {
-                    turn.say.as_str()
-                };
+                // Nor a lead-in of its own when the read-back opens with an acknowledgement
+                // ("סגור. סגור. ...").
+                let read_back_acks = self.state.run.as_ref().is_some_and(|r| {
+                    let pipeline = self.pipeline_of(r);
+                    let complete = pipeline
+                        .slots
+                        .iter()
+                        .all(|ps| !ps.required || ps.default.is_some() || r.slots.contains_key(&ps.slot));
+                    complete
+                        && pipeline
+                            .confirm
+                            .as_ref()
+                            .and_then(|c| self.business.response(&c.response))
+                            .is_some_and(|resp| resp.prefix.is_some())
+                });
+                let say =
+                    if turn.action == AgentAction::ReadBack && (turn.say.trim_end().ends_with('?') || read_back_acks) {
+                        ""
+                    } else {
+                        turn.say.as_str()
+                    };
                 self.agent_say(&mut out, say, spoken);
                 if confirmed_now {
                     if let Some(run) = &mut self.state.run {

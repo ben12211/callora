@@ -345,6 +345,18 @@ fn a_read_back_with_a_detail_missing_asks_for_it() {
 }
 
 #[test]
+fn the_read_back_is_not_acknowledged_twice() {
+    // A live call said "סגור. סגור. שבעה נוסעים...": the agent's lead-in plus the read-back's own.
+    let (mut call, _) = Call::new(business(&[]));
+    let fields = [("pickup", "אלעד"), ("destination", "תל אביב"), ("passengers", "שבע")];
+    let d = call.engine.on_agent_turn("שבע", decide(AgentAction::ReadBack, "סגור.", Some("book_ride"), &fields), "");
+    let text = spoken(&d);
+    assert!(text.contains("לשלוח?"), "{text}");
+    let acks = ["סגור.", "אוקיי.", "מעולה.", "הבנתי.", "סבבה."].iter().map(|a| text.matches(a).count()).sum::<usize>();
+    assert_eq!(acks, 1, "one acknowledgement: {text}");
+}
+
+#[test]
 fn a_question_before_the_read_back_is_dropped() {
     let (mut call, _) = Call::new(business(&[]));
     let fields = [("pickup", "רבי עקיבא 12"), ("destination", "תל אביב"), ("passengers", "שניים")];

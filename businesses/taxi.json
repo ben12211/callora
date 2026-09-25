@@ -234,6 +234,7 @@
       "When the caller gives several details at once, take them all and ask only for what is still missing.",
       "A ride booked earlier in this call can be checked or cancelled with the matching task."
     ],
+    "thinking_filler": "filler_hmm",
     "phrases": [
       "ack", "anything_else", "goodbye", "ask_change", "go_back", "fallback_1", "fallback_restart", "still_there",
       "ask_pickup", "ask_destination", "ask_passengers", "ask_item", "ask_ride_time", "small_talk_answer",
@@ -412,6 +413,7 @@
     "filler_searching": { "variants": ["שנייה, אני בודק מי קרוב.", "רגע, בודק מי קרוב.", "אוקיי, בודק מי קרוב."] },
     "filler_checking": { "variants": ["שנייה, אני בודק.", "רגע, בודק."] },
     "small_talk_answer": { "variants": ["הכל טוב, תודה! איך אפשר לעזור?", "סבבה לגמרי. במה אפשר לעזור?"] },
+    "filler_hmm": { "variants": ["אממ...", "אהה..."] },
     "tts_cover": { "variants": ["אוקיי, רגע.", "אהה, אוקיי."], "delivery": "quick" },
     "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק לך.", "אממ, רגע."] },
     "ride_booked": {
