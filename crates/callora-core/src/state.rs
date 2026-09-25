@@ -178,6 +178,9 @@ pub struct CallState {
     /// insists, it is taken (a check that loops is worse than a doubtful place).
     #[serde(default)]
     pub unheard_rejections: BTreeMap<String, u8>,
+    /// Optional slots already asked before a read-back.
+    #[serde(default)]
+    pub asked_before_confirm: BTreeSet<String>,
     /// Masculine or feminine once the caller's words show it ("אני צריכה"); neutral until then.
     #[serde(default)]
     pub address_form: AddressForm,
@@ -212,6 +215,7 @@ impl CallState {
             place_cities: BTreeMap::new(),
             doubted_streets: BTreeSet::new(),
             unheard_rejections: BTreeMap::new(),
+            asked_before_confirm: BTreeSet::new(),
             address_form: AddressForm::Unknown,
             caller_phone: None,
             next_action_run: 1,

@@ -209,6 +209,18 @@ impl Engine {
         } else {
             turn.action
         };
+        // Before the first read-back, the optional question the business always wants asked
+        // ("יש משהו שהנהג צריך לדעת?"), when the agent skipped it.
+        if matches!(action, AgentAction::ReadBack | AgentAction::Submit) && !was_confirming && rejected.is_empty() {
+            if let Some(slot) = self.unasked_before_confirm() {
+                self.agent_say(&mut out, "", spoken);
+                self.state.asked_before_confirm.insert(slot.clone());
+                if !spoken.trim_end().ends_with('?') {
+                    self.ask(&mut out, &slot, false);
+                }
+                return self.finish(out);
+            }
+        }
         // A detail just rejected: ask for it, never read back or send what was there before.
         if matches!(action, AgentAction::ReadBack | AgentAction::Submit) {
             if let Some(slot) = rejected.first().cloned() {
@@ -553,6 +565,32 @@ impl Engine {
                 }
             }
         })
+    }
+
+    /// An `ask_before_confirm` slot of the current task with no value, not asked by the engine
+    /// or by the agent (its question is in the conversation), once every required one is in.
+    fn unasked_before_confirm(&self) -> Option<String> {
+        let run = self.state.run.as_ref()?;
+        let pipeline = self.pipeline_of(run);
+        if pipeline.slots.iter().any(|ps| ps.required && ps.default.is_none() && !run.slots.contains_key(&ps.slot)) {
+            return None;
+        }
+        pipeline
+            .slots
+            .iter()
+            .filter(|ps| ps.ask_before_confirm && !run.slots.contains_key(&ps.slot))
+            .filter(|ps| !self.state.asked_before_confirm.contains(&ps.slot))
+            .find(|ps| {
+                let variants = ps.ask.as_ref().and_then(|a| self.business.response(a)).map(|r| r.variants.clone());
+                !variants.unwrap_or_default().iter().any(|v| {
+                    let v = crate::text::normalize(v);
+                    self.state
+                        .history
+                        .iter()
+                        .any(|t| t.speaker == Speaker::Agent && crate::text::normalize(&t.text).contains(&v))
+                })
+            })
+            .map(|ps| ps.slot.clone())
     }
 
     /// Read the task back for a yes/no, or ask for what is still missing.

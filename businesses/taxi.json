@@ -294,7 +294,7 @@
         { "slot": "wheelchair" },
         { "slot": "child_seat" },
         { "slot": "vehicle" },
-        { "slot": "notes" }
+        { "slot": "notes", "ask": "ask_notes", "ask_before_confirm": true }
       ],
       "confirm": { "response": "confirm_ride", "ask_change": "ask_change" },
       "action": "create_ride",

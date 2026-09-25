@@ -410,6 +410,10 @@ pub struct PipelineSlot {
     /// Take the value from the customer record when known (e.g. `home` for pickup).
     #[serde(default)]
     pub from_customer: Option<String>,
+    /// Optional, but asked once before the read-back when never asked or given (the note
+    /// for the driver).
+    #[serde(default)]
+    pub ask_before_confirm: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

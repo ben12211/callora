@@ -304,7 +304,8 @@ fn agent_turns_fill_the_booking_through_the_parsers() {
 #[test]
 fn nothing_is_sent_without_a_read_back_and_a_yes() {
     let (mut call, _) = Call::new(business(&[]));
-    let fields = [("pickup", "רבי עקיבא 12"), ("destination", "תל אביב"), ("passengers", "אחד")];
+    let fields =
+        [("pickup", "רבי עקיבא 12"), ("destination", "תל אביב"), ("passengers", "אחד"), ("notes", "יש מזוודה")];
     // A submit straight away becomes the read-back.
     let d = call.engine.on_agent_turn(
         "מרבי עקיבא 12 לתל אביב, תשלח",
@@ -349,7 +350,7 @@ fn a_read_back_with_a_detail_missing_asks_for_it() {
 fn the_read_back_is_not_acknowledged_twice() {
     // A live call said "סגור. סגור. שבעה נוסעים...": the agent's lead-in plus the read-back's own.
     let (mut call, _) = Call::new(business(&[]));
-    let fields = [("pickup", "אלעד"), ("destination", "תל אביב"), ("passengers", "שבע")];
+    let fields = [("pickup", "אלעד"), ("destination", "תל אביב"), ("passengers", "שבע"), ("notes", "יש מזוודה")];
     let d = call.engine.on_agent_turn(
         "מאלעד לתל אביב, שבע",
         decide(AgentAction::ReadBack, "סגור.", Some("book_ride"), &fields),
@@ -992,7 +993,12 @@ fn read_back_ride() -> Call {
             AgentAction::ReadBack,
             "סגור.",
             Some("book_ride"),
-            &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות, ירושלים"), ("passengers", "שלושה")],
+            &[
+                ("pickup", "בן זכאי 40, אלעד"),
+                ("destination", "סוכות, ירושלים"),
+                ("passengers", "שלושה"),
+                ("notes", "יש מזוודה"),
+            ],
         ),
         "",
     );
@@ -1090,6 +1096,36 @@ fn a_known_place_is_taken_and_an_unknown_one_is_asked_about_once() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn the_note_for_the_driver_is_asked_before_the_read_back_when_the_agent_skips_it() {
+    let (mut call, _) = Call::new(business(&[]));
+    let fields =
+        [("pickup", "רבי עקיבא 12"), ("destination", "נתב״ג"), ("passengers", "שניים"), ("customer_name", "שלומית")];
+    let d = call.engine.on_agent_turn(
+        "מרבי עקיבא 12 לנתב״ג, שניים, על שם שלומית",
+        decide(AgentAction::ReadBack, "סגור.", Some("book_ride"), &fields),
+        "",
+    );
+    assert!(spoken(&d).contains("הנהג") || spoken(&d).contains("הערה"), "the note first: {}", spoken(&d));
+    assert!(!spoken(&d).contains("לשלוח"), "{}", spoken(&d));
+    // Answered (or "אין"): the read-back follows, and the question is not asked again.
+    let d = call.engine.on_agent_turn("אין", decide(AgentAction::ReadBack, "סגור.", None, &[]), "");
+    assert!(spoken(&d).contains("לשלוח"), "{}", spoken(&d));
+}
+
+#[test]
+fn a_note_question_the_agent_asked_itself_is_not_asked_again() {
+    let (mut call, _) = Call::new(business(&[]));
+    let fields = [("pickup", "רבי עקיבא 12"), ("destination", "נתב״ג"), ("passengers", "שניים")];
+    call.engine.on_agent_turn(
+        "מרבי עקיבא 12 לנתב״ג, שניים",
+        decide(AgentAction::None, "יש משהו שהנהג צריך לדעת?", Some("book_ride"), &fields),
+        "",
+    );
+    let d = call.engine.on_agent_turn("לא", decide(AgentAction::ReadBack, "סגור.", None, &[]), "");
+    assert!(spoken(&d).contains("לשלוח"), "{}", spoken(&d));
 }
 
 #[test]
