@@ -42,9 +42,11 @@ COPY --from=build /out/callora /usr/local/bin/callora
 COPY --from=build --chown=65532:65532 /out/data /data
 COPY businesses /app/businesses
 COPY data/israel-streets.tsv.gz /app/data/israel-streets.tsv.gz
+COPY data/israel-places.tsv.gz /app/data/israel-places.tsv.gz
 WORKDIR /app
 ENV BUSINESS_CONFIG_DIR=/app/businesses \
     STREETS_FILE=/app/data/israel-streets.tsv.gz \
+    PLACES_FILE=/app/data/israel-places.tsv.gz \
     AUDIO_LIBRARY_DIR=/data/voice-library \
     HOST=0.0.0.0 \
     PORT=3000

@@ -158,8 +158,21 @@ fn load_gazetteer() -> Option<Arc<callora_core::gazetteer::Gazetteer>> {
         tracing::warn!(path, error = %e, "no list of Israeli streets: places will not be checked");
         return None;
     }
-    let g = callora_core::gazetteer::Gazetteer::from_tsv(&text);
+    let mut g = callora_core::gazetteer::Gazetteer::from_tsv(&text);
     tracing::info!(localities = g.localities(), "list of Israeli streets loaded");
+    // Places that are not streets (OpenStreetMap), when shipped.
+    let places = env("PLACES_FILE").unwrap_or_else(|| "data/israel-places.tsv.gz".into());
+    let mut text = String::new();
+    match std::fs::File::open(&places)
+        .and_then(|f| flate2::read::GzDecoder::new(f).read_to_string(&mut text).map(|_| ()))
+    {
+        Ok(()) => {
+            // Outside the macro: its fields are not evaluated when the level is off.
+            let added = g.add_places(&text);
+            tracing::info!(places = added, "list of places loaded");
+        }
+        Err(e) => tracing::warn!(path = places, error = %e, "no list of places: only streets are known"),
+    }
     (!g.is_empty()).then(|| Arc::new(g))
 }
 
@@ -677,6 +690,7 @@ mod streets {
     #[test]
     fn the_shipped_list_resolves_real_places() {
         std::env::set_var("STREETS_FILE", concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/israel-streets.tsv.gz"));
+        std::env::set_var("PLACES_FILE", concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/israel-places.tsv.gz"));
         let g = super::load_gazetteer().expect("the list loads");
         assert!(g.localities() > 1200, "{}", g.localities());
         let spoken = |t: &str| match g.resolve(t) {
@@ -692,6 +706,14 @@ mod streets {
         // Real streets of the city said stay there.
         assert_eq!(spoken("אחוזה 12 רעננה"), "אחוזה 12, רעננה");
         assert_eq!(spoken("הרצל 10 רחובות"), "הרצל 10, רחובות");
+        // Places that are not streets, from the OpenStreetMap list.
+        match g.resolve("בנייני האומה, ירושלים") {
+            Lookup::Found(a) => {
+                assert_eq!(a.spoken(), "בנייני האומה, ירושלים");
+                assert!(a.place.is_some_and(|p| p.point.starts_with("31.78")), "with its point");
+            }
+            other => panic!("{other:?}"),
+        }
         match g.resolve("מיל״ד") {
             Lookup::NoCity { closest } => assert!(closest.iter().any(|c| c == "אלעד"), "{closest:?}"),
             other => panic!("{other:?}"),

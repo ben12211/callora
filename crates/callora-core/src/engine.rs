@@ -472,7 +472,8 @@ impl Engine {
                     && self.state.place_cities.get(slot) != Some(&a.city_said) =>
             {
                 notes.push(format!(
-                    "{slot} city {} is noted; now ask for the street there, once (\"לאיזה רחוב?\"); if the caller does                      not know, pass the city again",
+"{slot} city {} is noted; now ask for the street there, once (\"לאיזה רחוב?\"); if the caller does \
+                     not know, pass the city again",
                     a.city_said
                 ));
                 self.state.place_cities.insert(slot.to_string(), a.city_said);
@@ -521,17 +522,35 @@ impl Engine {
                 rejected.push(slot.to_string());
                 return None;
             }
-            Lookup::NoStreet { city, heard, closest } => {
+            // "קניון הזהב, אלעד": neither a street nor a place on the list. Ask for its
+            // address once; if the caller has none, it is taken as said, marked for the driver.
+            Lookup::NoStreet { city, heard, closest } if self.state.doubted_streets.insert(slot.to_string()) => {
                 let hint = if closest.is_empty() {
-                    "fine if it is a landmark or a business; otherwise ask the caller to repeat the street".to_string()
+                    String::new()
                 } else {
-                    format!(
-                        "fine if it is a landmark or a business; otherwise the closest streets there are {}",
-                        closest.join(", ")
-                    )
+                    format!(" (close names there: {}; if one sounds like it, ask \"ל-X התכוונת?\")", closest.join(", "))
                 };
-                notes.push(format!("{slot}: {city} has no street \"{heard}\" ({hint})"));
-                value
+                notes.push(format!(
+                    "{slot}: \"{heard}\" is not a street or a known place in {city}{hint}. Ask for its address \
+                     (\"יש כתובת של המקום?\"); if the caller does not know it, pass the place again as they said it"
+                ));
+                self.state.place_cities.insert(slot.to_string(), city);
+                rejected.push(slot.to_string());
+                return None;
+            }
+            Lookup::NoStreet { city, .. } => {
+                self.state.place_cities.remove(slot);
+                // As the caller said it: "קניון הזהב, ירושלים".
+                let name = spoken.trim().strip_suffix(city.as_str()).map(|p| p.trim().trim_end_matches(',').trim());
+                let said = match name {
+                    Some(name) if !name.is_empty() => format!("{name}, {city}"),
+                    _ => spoken.clone(),
+                };
+                SlotValue::Place {
+                    address: Some(format!("{said} (מקום לא מאומת: לתאם עם הנוסע)")),
+                    spoken: said,
+                    customer_place: None,
+                }
             }
         })
     }

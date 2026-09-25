@@ -1046,6 +1046,53 @@ fn a_detail_rejected_in_a_read_back_turn_is_asked_for_not_read_back() {
 }
 
 #[test]
+fn a_known_place_is_taken_and_an_unknown_one_is_asked_about_once() {
+    let mut gazetteer = callora_core::gazetteer::Gazetteer::from_tsv("3000\tירושלים\t120\tשדרות שזר\tofficial\n");
+    gazetteer.add_places("ירושלים\tבנייני האומה\tבנייני אומה\tשדרות שזר\t1\t31.78570\t35.20160\n");
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "לירושלים",
+        decide(AgentAction::None, "לאיזה רחוב?", Some("book_ride"), &[("destination", "ירושלים")]),
+        "",
+    );
+    call.engine.on_agent_turn(
+        "לבנייני האומה",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "בנייני האומה, ירושלים")]),
+        "",
+    );
+    match call.slot("destination") {
+        Some(SlotValue::Place { spoken, address, .. }) => {
+            assert_eq!(spoken, "בנייני האומה, ירושלים");
+            assert_eq!(address.as_deref(), Some("בנייני האומה, שדרות שזר 1, ירושלים (31.78570,35.20160)"));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // Not on the list: "יש כתובת של המקום?" once, then taken as said, marked for the driver.
+    call.engine.on_agent_turn(
+        "לא, לקניון הזהב",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "קניון הזהב, ירושלים")]),
+        "",
+    );
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "לא יודע");
+    assert!(next.user.contains("is not a street or a known place in ירושלים"), "{}", next.user);
+    assert!(next.user.contains("יש כתובת של המקום?"), "{}", next.user);
+    call.engine.on_agent_turn(
+        "לא יודע",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "קניון הזהב, ירושלים")]),
+        "",
+    );
+    match call.slot("destination") {
+        Some(SlotValue::Place { spoken, address, .. }) => {
+            assert_eq!(spoken, "קניון הזהב, ירושלים");
+            assert!(address.as_deref().is_some_and(|a| a.contains("מקום לא מאומת")), "{address:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn a_place_rejected_as_unheard_twice_is_taken_the_third_time() {
     // A live call looped: the check kept rejecting the agent's (right) landmark, the caller
     // said "אמרתי כבר" three times and hung up.

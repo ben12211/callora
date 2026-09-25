@@ -8,7 +8,11 @@
 //! street is stored in its official spelling, a near miss is corrected, and anything not found
 //! comes back to the agent with the closest names, so it asks instead of guessing.
 //!
-//! Pure data and string matching: loading the file is the binary's job ([`Gazetteer::from_tsv`]).
+//! Places that are not streets ("בנייני האומה", a mall, a hospital) come from OpenStreetMap
+//! (© OpenStreetMap contributors, ODbL): up to 200 per locality, with an address when mapped
+//! and a point, so dispatch gets somewhere to drive to ([`Gazetteer::add_places`]).
+//!
+//! Pure data and string matching: loading the files is the binary's job ([`Gazetteer::from_tsv`]).
 
 use std::collections::HashMap;
 
@@ -22,6 +26,15 @@ pub struct Address {
     /// The street's official name, when a street was given.
     pub street: Option<String>,
     pub number: Option<String>,
+    /// For a place that is not a street (`street` holds its name): its street address when
+    /// mapped, and where it is ("31.78570,35.20160").
+    pub place: Option<PlaceInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaceInfo {
+    pub address: Option<String>,
+    pub point: String,
 }
 
 impl Address {
@@ -30,9 +43,16 @@ impl Address {
         self.format(&self.city_said)
     }
 
-    /// "ז'בוטינסקי 5, רמת גן" with the official locality name — what dispatch receives.
+    /// "ז'בוטינסקי 5, רמת גן" with the official locality name — what dispatch receives. For
+    /// a place: "בנייני האומה, שדרות שזר 1, ירושלים (31.78570,35.20160)".
     pub fn official(&self) -> String {
-        self.format(&self.city)
+        match (&self.place, &self.street) {
+            (Some(p), Some(name)) => {
+                let at = p.address.as_ref().map(|a| format!(", {a}")).unwrap_or_default();
+                format!("{name}{at}, {} ({})", self.city, p.point)
+            }
+            _ => self.format(&self.city),
+        }
     }
 
     fn format(&self, city: &str) -> String {
@@ -65,6 +85,16 @@ struct City {
     streets: Vec<String>,
     /// Normalized street name (official or alternative) → index in `streets`.
     street_keys: HashMap<String, usize>,
+    places: Vec<Place>,
+    /// Normalized place name (or alias) → index in `places`.
+    place_keys: HashMap<String, usize>,
+}
+
+#[derive(Debug)]
+struct Place {
+    name: String,
+    address: Option<String>,
+    point: String,
 }
 
 #[derive(Debug, Default)]
@@ -254,6 +284,34 @@ fn close_enough(heard: &str, key: &str) -> bool {
 }
 
 impl Gazetteer {
+    /// Places that are not streets, rows of `locality, name, aliases (|-separated), street,
+    /// house number, lat, lon`, tab separated; `#` lines are comments. Rows of a locality the
+    /// streets list does not have are skipped. Returns how many were added.
+    pub fn add_places(&mut self, text: &str) -> usize {
+        let mut added = 0;
+        for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let [city, name, aliases, street, number, lat, lon] = cols[..] else { continue };
+            let Some(&(ci, _)) = self.city_keys.get(&norm(city)) else { continue };
+            let address = match (street.trim(), number.trim()) {
+                ("", _) => None,
+                (s, "") => Some(s.to_string()),
+                (s, n) => Some(format!("{s} {n}")),
+            };
+            let c = &mut self.cities[ci];
+            let pi = c.places.len();
+            c.places.push(Place { name: name.to_string(), address, point: format!("{lat},{lon}") });
+            for key in std::iter::once(name).chain(aliases.split('|')).map(norm).filter(|k| !k.is_empty()) {
+                // A street of the same name wins: "הרצל" is the street, not a school on it.
+                if !c.street_keys.contains_key(&key) {
+                    c.place_keys.entry(key).or_insert(pi);
+                }
+            }
+            added += 1;
+        }
+        added
+    }
+
     /// Rows of `city_code, city_name, street_code, street_name, official|synonym`, tab
     /// separated; `#` lines are comments.
     pub fn from_tsv(text: &str) -> Self {
@@ -264,7 +322,13 @@ impl Gazetteer {
             let cols: Vec<&str> = line.split('\t').collect();
             let [city_code, city_name, street_code, street_name, kind] = cols[..] else { continue };
             let ci = *by_code.entry(city_code).or_insert_with(|| {
-                g.cities.push(City { name: city_name.to_string(), streets: Vec::new(), street_keys: HashMap::new() });
+                g.cities.push(City {
+                    name: city_name.to_string(),
+                    streets: Vec::new(),
+                    street_keys: HashMap::new(),
+                    places: Vec::new(),
+                    place_keys: HashMap::new(),
+                });
                 street_ids.push(HashMap::new());
                 g.cities.len() - 1
             });
@@ -336,7 +400,13 @@ impl Gazetteer {
         // "מושב בן זכאי", "העיר אלעד": words that say what the locality is, not a street.
         street_words.retain(|w| !matches!(*w, "מושב" | "קיבוצ" | "קבוצ" | "העיר" | "עיר" | "יישוב" | "ישוב"));
         let found = |street: Option<String>| {
-            Lookup::Found(Address { city_said: alias.clone(), city: city.name.clone(), street, number: number.clone() })
+            Lookup::Found(Address {
+                city_said: alias.clone(),
+                city: city.name.clone(),
+                street,
+                number: number.clone(),
+                place: None,
+            })
         };
         if street_words.is_empty() {
             return found(None);
@@ -352,9 +422,34 @@ impl Gazetteer {
                 return found(Some(city.streets[si].clone()));
             }
         }
+        let place = |pi: usize| {
+            let p = &city.places[pi];
+            Lookup::Found(Address {
+                city_said: alias.clone(),
+                city: city.name.clone(),
+                street: Some(p.name.clone()),
+                number: None,
+                place: Some(PlaceInfo { address: p.address.clone(), point: p.point.clone() }),
+            })
+        };
+        // "בנייני האומה": a place of the locality. A house number means a street.
+        if number.is_none() {
+            for c in &candidates {
+                if let Some(&pi) = city.place_keys.get(c.as_str()) {
+                    return place(pi);
+                }
+            }
+        }
         for c in &candidates {
             if let Some((&_, &si)) = city.street_keys.iter().find(|(k, _)| close_enough(c, k)) {
                 return found(Some(city.streets[si].clone()));
+            }
+        }
+        if number.is_none() {
+            for c in &candidates {
+                if let Some((&_, &pi)) = city.place_keys.iter().find(|(k, _)| close_enough(c, k)) {
+                    return place(pi);
+                }
             }
         }
         // "בן זכאי 45, עדי": עדי has no such street, but אלעד, which recognition turns into
@@ -367,10 +462,15 @@ impl Gazetteer {
                 city: other.name.clone(),
                 street: Some(other.streets[si].clone()),
                 number,
+                place: None,
             });
         }
-        let mut near: Vec<(usize, &String)> =
-            city.street_keys.iter().map(|(k, &si)| (distance(&candidates[0], k), &city.streets[si])).collect();
+        let mut near: Vec<(usize, &String)> = city
+            .street_keys
+            .iter()
+            .map(|(k, &si)| (distance(&candidates[0], k), &city.streets[si]))
+            .chain(city.place_keys.iter().map(|(k, &pi)| (distance(&candidates[0], k), &city.places[pi].name)))
+            .collect();
         near.sort();
         let mut closest: Vec<String> = Vec::new();
         for (d, s) in near {
@@ -530,6 +630,24 @@ mod tests {
             Lookup::Found(a) => a,
             other => panic!("expected an address, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_place_of_the_city_is_found_with_its_address_and_point() {
+        let mut g = g();
+        g.add_places(
+            "# test\n\
+             אלעד\tבנייני העירייה\tעירייה|העירייה\tרבי עקיבא\t1\t32.05\t34.95\n\
+             אלעד\tרבי עקיבא\t\t\t\t32.06\t34.96\n\
+             עיר שאינה ברשימה\tמקום\t\t\t\t31\t35\n",
+        );
+        let a = found(g.resolve("מבנייני העירייה באלעד"));
+        assert_eq!(a.spoken(), "בנייני העירייה, אלעד");
+        assert_eq!(a.official(), "בנייני העירייה, רבי עקיבא 1, אלעד (32.05,34.95)");
+        assert_eq!(found(g.resolve("העירייה, אלעד")).spoken(), "בנייני העירייה, אלעד", "an alias");
+        // A street of the same name stays the street.
+        assert_eq!(found(g.resolve("רבי עקיבא, אלעד")).place, None);
+        assert!(matches!(g.resolve("קניון הזהב, אלעד"), Lookup::NoStreet { .. }));
     }
 
     #[test]

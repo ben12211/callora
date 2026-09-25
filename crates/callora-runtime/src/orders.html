@@ -71,7 +71,16 @@ function render(orders) {
     }
     for (const d of o.card.details || []) {
       dl.append(el("dt", d.label));
-      dl.append(el("dd", d.address && d.address !== d.value ? d.value + " (" + d.address + ")" : d.value));
+      const dd = el("dd", d.address && d.address !== d.value ? d.value + " (" + d.address + ")" : d.value);
+      // A place from the map list carries its point: "…, ירושלים (31.78570,35.20160)".
+      const point = /\((-?\d+\.\d+),(-?\d+\.\d+)\)/.exec(d.address || "");
+      if (point) {
+        const a = el("a", " מפה");
+        a.href = "https://www.google.com/maps/search/?api=1&query=" + point[1] + "," + point[2];
+        a.target = "_blank"; a.rel = "noopener";
+        dd.append(a);
+      }
+      dl.append(dd);
     }
     card.append(dl);
     list.append(card);
