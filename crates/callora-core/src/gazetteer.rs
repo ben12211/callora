@@ -140,7 +140,8 @@ fn sound(s: &str) -> String {
 /// said, or to a stretch of their speech with the spaces removed (recognition splits names:
 /// "בני ינאי אומה" is "בנייני האומה").
 pub fn unheard_words(value: &str, heard: &str) -> Vec<String> {
-    let heard = norm(heard);
+    // Recognition writes some Hebrew in Latin letters ("בניין ה-Human" for "בנייני האומה").
+    let heard = norm(&format!("{heard} {}", hebrew_letters(heard)));
     let heard_words: Vec<&str> = heard.split(' ').filter(|w| !w.is_empty()).collect();
     let compact: Vec<char> = heard.chars().filter(|c| *c != ' ').collect();
     let near = |w: &str| {
@@ -168,6 +169,39 @@ pub fn unheard_words(value: &str, heard: &str) -> Vec<String> {
         .filter(|w| !near(w) && !strip_prefix(w).is_some_and(near))
         .map(str::to_string)
         .collect()
+}
+
+/// The Latin words of a text in rough Hebrew letters, vowels a/e dropped: "Human" → "הומנ".
+fn hebrew_letters(text: &str) -> String {
+    text.split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| w.len() >= 2)
+        .map(|w| {
+            w.to_ascii_lowercase()
+                .chars()
+                .filter_map(|c| {
+                    Some(match c {
+                        'b' => 'ב',
+                        'g' | 'j' => 'ג',
+                        'd' => 'ד',
+                        'h' => 'ה',
+                        'u' | 'o' | 'v' | 'w' => 'ו',
+                        'z' => 'ז',
+                        't' => 'ט',
+                        'i' | 'y' => 'י',
+                        'k' | 'c' | 'q' => 'ק',
+                        'l' => 'ל',
+                        'm' => 'מ',
+                        'n' => 'נ',
+                        's' | 'x' => 'ס',
+                        'p' | 'f' => 'פ',
+                        'r' => 'ר',
+                        _ => return None,
+                    })
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A misspelling small enough to correct without asking.
@@ -477,6 +511,8 @@ mod tests {
             "one unheard word rejects it"
         );
         assert!(unheard_words("בנייני האומה, ירושלים", "זה בני ינאי אומה בירושלים").is_empty());
+        // Written in Latin letters by the recognizer: still heard.
+        assert!(unheard_words("בנייני האומה, ירושלים", "ירושלים. זה בניין ה-Human, אני לא זוכר את הרחוב").is_empty());
     }
 
     #[test]

@@ -215,14 +215,7 @@ impl Engine {
                 // The agent's "סגור." was for a read-back that is not coming.
                 self.agent_say(&mut out, "", spoken);
                 if !spoken.trim_end().ends_with('?') {
-                    // The city is known: only the street is missing ("איזה רחוב ומספר?").
-                    let street = format!("ask_{slot}_street");
-                    if self.state.place_cities.contains_key(&slot) && self.business.response(&street).is_some() {
-                        let ctx = self.render_ctx(None);
-                        self.say(&mut out, &street, ctx, true);
-                    } else {
-                        self.ask(&mut out, &slot, false);
-                    }
+                    self.ask(&mut out, &slot, false);
                 }
                 return self.finish(out);
             }
@@ -1258,7 +1251,12 @@ impl Engine {
     fn ask(&mut self, out: &mut Out, slot: &str, acknowledge: bool) {
         let Some(run) = &self.state.run else { return };
         let pipeline = self.pipeline_of(run);
-        let Some(ask) = pipeline.slots.iter().find(|p| p.slot == slot).and_then(|p| p.ask.clone()) else { return };
+        let Some(mut ask) = pipeline.slots.iter().find(|p| p.slot == slot).and_then(|p| p.ask.clone()) else { return };
+        // The city is known: only the street is missing ("לאיזה רחוב?", not "לאן?").
+        let street = format!("{ask}_street");
+        if self.state.place_cities.contains_key(slot) && self.business.response(&street).is_some() {
+            ask = street;
+        }
         let has_prefix = self.business.response(&ask).is_some_and(|r| r.prefix.is_some());
         if acknowledge && !has_prefix {
             if let Some(ack) = self.business.config.acknowledgement.clone() {
