@@ -200,9 +200,35 @@ impl Engine {
                 }
             }
         }
-        let changed = self.apply_agent_fields(&turn.fields);
+        let was_confirming = self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
+        let (changed, rejected) = self.apply_agent_fields(&turn.fields);
+        // A detail changed after the read-back ("לא 40, 45"): read it back again, so the next
+        // "יאללה" sends the corrected task instead of meeting another read-back.
+        let action = if turn.action == AgentAction::None && changed && was_confirming {
+            AgentAction::ReadBack
+        } else {
+            turn.action
+        };
+        // A detail just rejected: ask for it, never read back or send what was there before.
+        if matches!(action, AgentAction::ReadBack | AgentAction::Submit) {
+            if let Some(slot) = rejected.first().cloned() {
+                // The agent's "סגור." was for a read-back that is not coming.
+                self.agent_say(&mut out, "", spoken);
+                if !spoken.trim_end().ends_with('?') {
+                    // The city is known: only the street is missing ("איזה רחוב ומספר?").
+                    let street = format!("ask_{slot}_street");
+                    if self.state.place_cities.contains_key(&slot) && self.business.response(&street).is_some() {
+                        let ctx = self.render_ctx(None);
+                        self.say(&mut out, &street, ctx, true);
+                    } else {
+                        self.ask(&mut out, &slot, false);
+                    }
+                }
+                return self.finish(out);
+            }
+        }
 
-        match turn.action {
+        match action {
             AgentAction::None => self.agent_say(&mut out, &turn.say, spoken),
             AgentAction::Transfer => {
                 self.agent_say(&mut out, &turn.say, spoken);
@@ -223,7 +249,7 @@ impl Engine {
                 }
             }
             AgentAction::ReadBack | AgentAction::Submit => {
-                let confirmed_now = turn.action == AgentAction::Submit
+                let confirmed_now = action == AgentAction::Submit
                     && !changed
                     && self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
                 // The read-back asks the question; a question of the agent's own before it
@@ -246,9 +272,8 @@ impl Engine {
                 // And on a submit whose action says its own filler ("רגע, בודק"), the agent's
                 // "שנייה, אני בודק" would be said twice.
                 let action_fills = self.state.run.as_ref().is_some_and(|r| self.pipeline_of(r).filler.is_some());
-                let say = if (turn.action == AgentAction::ReadBack
-                    && (turn.say.trim_end().ends_with('?') || read_back_acks))
-                    || (turn.action == AgentAction::Submit && action_fills)
+                let say = if (action == AgentAction::ReadBack && (turn.say.trim_end().ends_with('?') || read_back_acks))
+                    || (action == AgentAction::Submit && action_fills)
                 {
                     ""
                 } else {
@@ -300,9 +325,10 @@ impl Engine {
 
     /// Values the agent heard, through the same parsers as the fast path. Returns whether
     /// any value of the current task changed.
-    fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> bool {
+    fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> (bool, Vec<String>) {
         let customer = self.state.customer.clone();
         let mut notes = Vec::new();
+        let mut rejected = Vec::new();
         // Everything the caller has said in this call, to check places against.
         let heard: String = self
             .state
@@ -323,6 +349,7 @@ impl Engine {
                             "{slot}: the caller never said \"{}\"; do not guess, ask for the street name",
                             invented.join(" ")
                         ));
+                        rejected.push(slot.clone());
                         return None;
                     }
                 }
@@ -332,9 +359,10 @@ impl Engine {
                 let Some((value, confidence)) = parsed.filter(|(_, c)| *c >= cfg.reject_below) else {
                     // Not the limits: given the range, the agent lectured about it every turn.
                     notes.push(format!("{slot} \"{raw}\" was not accepted; ask for it again with the short question"));
+                    rejected.push(slot.clone());
                     return None;
                 };
-                let value = self.check_place(slot, value, &mut notes)?;
+                let value = self.check_place(slot, value, &mut notes, &mut rejected)?;
                 Some(SlotFill {
                     slot: slot.clone(),
                     value,
@@ -345,14 +373,14 @@ impl Engine {
             .collect();
         self.state.agent_notes.extend(notes);
         if fills.is_empty() {
-            return false;
+            return (false, rejected);
         }
         if self.state.run.is_none() {
             if let Some((pipeline, intent)) = self.infer_pipeline(&fills) {
                 self.state.run = Some(self.new_run(&pipeline, &intent));
             }
         }
-        let Some(run) = &self.state.run else { return false };
+        let Some(run) = &self.state.run else { return (false, rejected) };
         let before = run.slots.clone();
         self.apply_fills(&fills);
         let changed = self.state.run.as_ref().is_some_and(|r| r.slots != before);
@@ -363,7 +391,7 @@ impl Engine {
                 }
             }
         }
-        changed
+        (changed, rejected)
     }
 
     /// Defaults and customer-known values for anything still missing.
@@ -406,8 +434,15 @@ impl Engine {
     /// A place the business does not know itself, checked against Israel's localities and
     /// streets: stored in its official spelling when found, and reported to the agent (with
     /// the closest names) when not, so it asks the caller rather than guessing.
-    /// `None` when the place cannot be used as it is (a city alone for a precise slot).
-    fn check_place(&mut self, slot: &str, value: SlotValue, notes: &mut Vec<String>) -> Option<SlotValue> {
+    /// `None` when the place cannot be used as it is: a city alone for a precise slot (progress,
+    /// the street comes next) or a street the city does not have (`rejected`).
+    fn check_place(
+        &mut self,
+        slot: &str,
+        value: SlotValue,
+        notes: &mut Vec<String>,
+        rejected: &mut Vec<String>,
+    ) -> Option<SlotValue> {
         let (Some(g), SlotValue::Place { spoken, address: None, customer_place: None }) = (&self.gazetteer, &value)
         else {
             return Some(value);
@@ -415,9 +450,13 @@ impl Engine {
         let precise = self.business.config.slots.get(slot).is_some_and(|c| c.precise);
         // A street given after its city ("מאיזו עיר?" "אלעד" ... "איזה רחוב?" "בן זכאי 45"):
         // look it up in the city given before, for this slot.
+        // Or of the value it corrects ("לא 40, 45" after "רבן יוחנן בן זכאי 40, אלעד").
         let city_before = self.state.place_cities.get(slot).cloned().or_else(|| {
             self.state.run.as_ref().and_then(|r| r.slots.get(slot)).and_then(|s| match &s.value {
-                SlotValue::Place { spoken, .. } => Some(spoken.clone()),
+                SlotValue::Place { spoken, .. } => match g.resolve(spoken) {
+                    Lookup::Found(a) => Some(a.city_said),
+                    _ => None,
+                },
                 _ => None,
             })
         });
@@ -469,6 +508,7 @@ impl Engine {
                     "{slot}: {city} has no street \"{heard}\"; it was not accepted, probably misheard. Ask for the street again{hint}"
                 ));
                 self.state.place_cities.insert(slot.to_string(), city);
+                rejected.push(slot.to_string());
                 return None;
             }
             Lookup::NoStreet { city, heard, closest } => {

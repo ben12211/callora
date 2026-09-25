@@ -965,3 +965,73 @@ fn live_speech_is_pronounced_in_the_callers_form() {
     assert!(say(AddressForm::Masculine).contains("לְךָ"));
     assert!(say(AddressForm::Unknown).contains("לְךָ"), "masculine when one slips into neutral speech");
 }
+
+fn elad() -> Arc<callora_core::gazetteer::Gazetteer> {
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         2066\tבן זכאי\t9000\tבן זכאי\tofficial\n3000\tירושלים\t120\tסוכות\tofficial\n",
+    ))
+}
+
+/// A ride read back and waiting for the caller's yes.
+fn read_back_ride() -> Call {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "בן זכאי 40 אלעד לסוכות ירושלים, שלושה",
+        decide(
+            AgentAction::ReadBack,
+            "סגור.",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות, ירושלים"), ("passengers", "שלושה")],
+        ),
+        "",
+    );
+    assert_eq!(call.step(), Some(Step::AwaitingConfirmation));
+    call
+}
+
+#[test]
+fn a_house_number_corrected_after_the_read_back_is_taken_in_the_same_city() {
+    // From a live call: "לא 40, 45" was looked up in "רבן יוחנן בן זכאי 40, אלעד" as a city,
+    // rejected, and the old 40 was read back again.
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn(
+        "אהה, לא 40, 45",
+        decide(AgentAction::ReadBack, "סגור.", None, &[("pickup", "בן זכאי 45")]),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "רבן יוחנן בן זכאי 45, אלעד");
+    assert!(spoken(&d).contains("45") && !spoken(&d).contains("40"), "{}", spoken(&d));
+    let d = call.engine.on_agent_turn("יאללה", decide(AgentAction::Submit, "", None, &[]), "");
+    assert!(action(&d).is_some(), "the corrected ride is sent: {}", spoken(&d));
+}
+
+#[test]
+fn a_correction_without_a_read_back_is_read_back_so_the_next_yes_sends() {
+    // From a live call: the agent asked "אוקיי, בן זכאי 45, אלעד. לשלוח?" itself; "יאללה" then
+    // met a second read-back ("מה יש לך? אמרתי יאללה").
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn(
+        "בן זכאי 45, לא בן זכאי 40",
+        decide(AgentAction::None, "אוקיי, בן זכאי 45, אלעד. לשלוח?", None, &[("pickup", "בן זכאי 45, אלעד")]),
+        "",
+    );
+    assert_eq!(call.step(), Some(Step::AwaitingConfirmation), "{}", spoken(&d));
+    let d = call.engine.on_agent_turn("יאללה", decide(AgentAction::Submit, "", None, &[]), "");
+    assert!(action(&d).is_some(), "sent on the first yes: {}", spoken(&d));
+}
+
+#[test]
+fn a_detail_rejected_in_a_read_back_turn_is_asked_for_not_read_back() {
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn(
+        "לא, מבית דחה 45",
+        decide(AgentAction::ReadBack, "סגור.", None, &[("pickup", "בית דחה 45, אלעד")]),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(!said.contains("לשלוח"), "no read-back of the old pickup: {said}");
+    assert!(said.contains("איזה רחוב ומספר"), "asks for the street: {said}");
+    assert!(!said.contains("סגור"), "{said}");
+}

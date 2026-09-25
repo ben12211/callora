@@ -247,6 +247,7 @@
       "Anything the driver should know (a big trunk, a lot of luggage, a child seat, a wheelchair, \"call when you arrive\") is the note: pass it in notes (and luggage when a number of suitcases is said). One answer to the note question is enough: when nothing else is missing, read_back right away (never \"עוד משהו?\"). Never ask again for a detail that already has a value under CURRENT TASK.",
       "The answer to \"על שם מי ההזמנה?\" is the name: pass it in customer_name and go on (never ask for it twice). Speech recognition splits Hebrew names; write the real name it obviously is (\"בן-האיי או מנשה\" is \"בניהו מנשה\", \"יה או נתן כהן\" is \"יהונתן כהן\"), otherwise the name as heard.",
       "Only when the caller complains that they already told you (\"אמרתי לך כבר\"), say \"סליחה, צודק.\" and take the detail from the conversation; never blame the line or ask them to repeat it.",
+      "A correction after the read-back (\"לא 40, 45\") → pass the corrected detail with its city (\"בן זכאי 45, אלעד\") and action read_back; the system reads the whole ride again.",
       "Never repeat back what the caller just said as a question (\"בן זכאי 45 ברעננה, נכון?\"): go on to the next question; the read-back confirms everything.",
       "When the caller gives several details at once, take them all and ask only for what is still missing.",
       "A ride booked earlier in this call can be checked or cancelled with the matching task."
@@ -265,8 +266,8 @@
     "תל אביב", "רמת גן", "בני ברק", "גבעתיים", "חולון", "בת ים", "פתח תקווה", "ראשון לציון", "הרצליה", "רעננה",
     "כפר סבא", "הוד השרון", "נתניה", "ירושלים", "חיפה", "באר שבע", "אשדוד", "אשקלון", "רחובות", "נס ציונה",
     "מודיעין", "ראש העין", "אור יהודה", "יהוד", "קריית אונו", "גבעת שמואל", "לוד", "רמלה", "רמת השרון",
-    "ז'בוטינסקי", "רוטשילד", "דיזנגוף", "אבן גבירול", "אלנבי", "הרצל", "ויצמן", "ביאליק", "סוקולוב",
-    "ארלוזורוב", "קפלן", "רבי עקיבא", "דרך מנחם בגין", "תא מטען"
+    "ז'בוטינסקי", "רוטשילד", "דיזנגוף", "אבן גבירול", "אלנבי", "הרצל", "ויצמן", "ביאליק",
+    "ארלוזורוב", "קפלן", "רבי עקיבא", "דרך מנחם בגין", "תא מטען", "אלעד"
   ],
 
   "places": [

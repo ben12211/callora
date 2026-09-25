@@ -554,11 +554,22 @@ async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
         to: String::new(),
     };
     let mut engine = Engine::new(b.clone(), 42);
+    engine.set_gazetteer(load_gazetteer());
+    engine.set_caller_phone(info.from.clone());
+    // The same agent as a live call, when the business has one.
+    let agent = if b.config.agent.is_some() { agent_model(http()) } else { None };
     println!(
         "Simulating `{}` ({}). Type what the caller says; empty line = silence; Ctrl-D to quit.",
         b.config.id, b.config.name
     );
-    println!("LLM: {}\n", if llm.is_some() { "on" } else { "off (fast path only)" });
+    println!(
+        "{}\n",
+        match (&agent, &llm) {
+            (Some(_), _) => "Agent: on",
+            (None, Some(_)) => "LLM: on",
+            (None, None) => "LLM: off (fast path only)",
+        }
+    );
     let mut pending = engine.start();
     let stdin = std::io::stdin();
     loop {
@@ -587,6 +598,9 @@ async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
                     Directive::Handoff { summary } => println!("  · HANDOFF ({}) — {}", summary.reason, summary.text),
                     Directive::Hangup => {
                         println!("  · HANGUP");
+                        for card in callora_core::orders::order_cards(&b, &engine.state) {
+                            println!("  · ORDER {}", card["summary"].as_str().unwrap_or(""));
+                        }
                         return Ok(());
                     }
                 }
@@ -602,6 +616,32 @@ async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
         let text = line.trim();
         if text.is_empty() {
             pending = engine.on_silence();
+            continue;
+        }
+        if let Some(model) = &agent {
+            let request = callora_core::agent::build_request(&b, &engine.state, text);
+            let started = std::time::Instant::now();
+            match model.extract(&request).await {
+                Ok(reply) => {
+                    println!("  · agent ({} ms) {reply}", started.elapsed().as_millis());
+                    let turn = callora_core::agent::parse(&b, &reply);
+                    pending = engine.on_agent_turn(text, turn, "");
+                }
+                Err(e) => {
+                    println!("  · agent failed: {e:#}");
+                    pending = engine.on_silence();
+                }
+            }
+            let slots = engine.state.run.as_ref().map(|r| {
+                r.slots.iter().map(|(k, v)| format!("{k}={}", v.value.spoken())).collect::<Vec<_>>().join(", ")
+            });
+            println!(
+                "  · form={:?} step={:?} slots=[{}] notes={:?}",
+                engine.state.address_form,
+                engine.state.run.as_ref().map(|r| &r.step),
+                slots.unwrap_or_default(),
+                engine.state.agent_notes
+            );
             continue;
         }
         let (fast, needs_llm) = fast_path(&b, &engine.context(), text);
