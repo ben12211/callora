@@ -231,8 +231,14 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                     match run.slots.get(&ps.slot) {
                         Some(v) => u.push_str(&format!("- {}: {}\n", ps.slot, v.value.spoken())),
                         None if state.place_cities.contains_key(&ps.slot) => u.push_str(&format!(
-                            "- {}: city {}, street MISSING (required)\n",
-                            ps.slot, state.place_cities[&ps.slot]
+                            "- {}: city {}, street MISSING ({})\n",
+                            ps.slot,
+                            state.place_cities[&ps.slot],
+                            if b.config.slots.get(&ps.slot).is_some_and(|c| c.precise) {
+                                "required"
+                            } else {
+                                "ask once; the city is enough if the caller does not know"
+                            }
                         )),
                         None if ps.default.is_some() => {
                             let d = ps.default.as_ref().map(|d| d.as_str().map_or(d.to_string(), str::to_string));

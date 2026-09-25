@@ -442,9 +442,10 @@ fn a_city_alone_is_not_a_pickup() {
         "",
     );
     assert_eq!(call.slot("pickup"), None, "a city alone does not fill the pickup");
-    assert_eq!(place(call.slot("destination")), "באר שבע", "a destination may be a city");
+    assert_eq!(call.slot("destination"), None, "the destination's street is asked for once");
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "שבע");
     assert!(next.user.contains("pickup city אלעד is noted; now ask for the street"), "{}", next.user);
+    assert!(next.user.contains("- destination: city באר שבע, street MISSING (ask once"), "{}", next.user);
 
     call.engine.on_agent_turn(
         "רבי עקיבא 12",
@@ -452,6 +453,14 @@ fn a_city_alone_is_not_a_pickup() {
         "",
     );
     assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12, אלעד");
+
+    // "לאיזה רחוב?" "לא יודע": the city is enough.
+    call.engine.on_agent_turn(
+        "לא יודע",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "באר שבע")]),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), "באר שבע", "a destination may be a city, once asked");
 }
 
 #[test]

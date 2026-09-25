@@ -200,6 +200,7 @@
     "destination": {
       "type": "place",
       "description": "יעד",
+      "street_once": true,
       "priority": 41,
       "patterns": [
         "(?:^| )(?:ל|אל |עד )(?P<value>[^ _]{2,}(?: [^ _]+)*?)(?: מ[^ _]| _|$)"
@@ -241,7 +242,7 @@
       "Examples of the order: caller \"לבאר שבע\" (destination city, no street) → say \"לאיזה רחוב?\", not the passengers yet. Caller \"מרחוב הרצל 10 ברעננה לתל אביב\" → pickup is complete, the destination is only a city → say \"לאיזה רחוב?\". Caller \"לא יודע\" to that → the city is enough → say \"כמה נוסעים?\".",
       "Small talk together with a request gets one short answer that goes straight to the request: caller \"מה המצב? אני יכול להזמין מונית?\" → say \"סבבה, מאיזו עיר לאסוף?\" (never only \"הכל טוב\" when they asked for something).",
       "When the system did not accept a detail, ask for it again with the short question (\"כמה נוסעים?\"); do not explain the system's limits.",
-      "Speech recognition splits and garbles words. Use your knowledge of real Israeli places and of Hebrew to fix obvious errors: in ירושלים, \"בני ינאי אומה\" or \"בניין ה-Human\" is \"בנייני האומה\"; \"ת\\\"מ איתן\", \"תמיטן\" or \"בתא מתן\" is \"תא מטען\" (the trunk); right after \"כמה נוסעים?\", \"שלום\" is \"שלוש\". If you are not sure, ask.",
+      "Speech recognition splits and garbles words. Use your knowledge of real Israeli places and of Hebrew to fix obvious errors: in ירושלים, \"בני ינאי אומה\" or \"בניין ה-Human\" is \"בנייני האומה\"; \"ת\\\"מ איתן\", \"תמיטן\" or \"בתא מתן\" is \"תא מטען\" (the trunk); right after \"כמה נוסעים?\", the word \"שלום\" is \"שלוש\" (only that word; any other answer that is not a number, ask again). If you are not sure, ask.",
       "Pass a place's city as soon as it is said (\"אלעד\"), and its street with the city (\"בן זכאי 45, אלעד\").",
       "Every detail goes into fields in the turn it is said, never later. A landmark, building or business answers the street question: caller \"זה ליד התחנה המרכזית, לא זוכר את הרחוב\" → fields destination \"התחנה המרכזית, ירושלים\", then the next question. Only places the caller said.",
       "Anything the driver should know (a big trunk, a lot of luggage, a child seat, a wheelchair, \"call when you arrive\") is the note: pass it in notes (and luggage when a number of suitcases is said). One answer to the note question is enough: when nothing else is missing, read_back right away (never \"עוד משהו?\"). Never ask again for a detail that already has a value under CURRENT TASK.",

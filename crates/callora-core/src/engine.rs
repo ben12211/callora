@@ -448,6 +448,7 @@ impl Engine {
             return Some(value);
         };
         let precise = self.business.config.slots.get(slot).is_some_and(|c| c.precise);
+        let street_once = self.business.config.slots.get(slot).is_some_and(|c| c.street_once);
         // A street given after its city ("מאיזו עיר?" "אלעד" ... "איזה רחוב?" "בן זכאי 45"):
         // look it up in the city given before, for this slot.
         // Or of the value it corrects ("לא 40, 45" after "רבן יוחנן בן זכאי 40, אלעד").
@@ -468,6 +469,20 @@ impl Engine {
             .filter(|l| matches!(l, Lookup::Found(a) if a.street.is_some()));
         let lookup = in_city_before.unwrap_or_else(|| g.resolve(spoken));
         Some(match lookup {
+            // Asked once already, and the caller has no street: the locality is enough.
+            Lookup::Found(a)
+                if street_once
+                    && !precise
+                    && a.street.is_none()
+                    && self.state.place_cities.get(slot) != Some(&a.city_said) =>
+            {
+                notes.push(format!(
+                    "{slot} city {} is noted; now ask for the street there, once (\"לאיזה רחוב?\"); if the caller does                      not know, pass the city again",
+                    a.city_said
+                ));
+                self.state.place_cities.insert(slot.to_string(), a.city_said);
+                return None;
+            }
             Lookup::Found(a) if precise && a.street.is_none() => {
                 notes.push(format!(
                     "{slot} city {} is noted; now ask for the street and house number (or a landmark) there",

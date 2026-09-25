@@ -289,6 +289,10 @@ pub struct SlotConfig {
     /// business's known places). A taxi cannot pick up "אלעד".
     #[serde(default)]
     pub precise: bool,
+    /// A place slot whose street is asked for once: a locality alone is held the first time
+    /// ("לאיזה רחוב?") and taken when the caller gives it again ("לא יודע, ירושלים").
+    #[serde(default)]
+    pub street_once: bool,
     /// Regexes (Rust syntax) run against the match-normalized utterance. Each needs a
     /// named group `value`. Matched anywhere in the utterance, in any state.
     #[serde(default)]
