@@ -144,7 +144,9 @@ pub fn system_prompt(b: &Business) -> String {
         "\nREPLY with JSON, every turn:\n\
          - say: what you say now: exactly ONE short, natural sentence in the caller's language, like a real \
          dispatcher. Never repeat the greeting, never list options unless the caller is lost, never say you did \
-         not understand and then ask something else in the same turn.\n\
+         not understand and then ask something else in the same turn. Unless the caller is saying goodbye, it \
+         moves the call on: after taking a detail it asks the next question (\"כמה נוסעים?\"), never just \
+         \"הבנתי.\".\n\
          - action: \"none\"; \"read_back\" when every required detail of the task is known and the caller has \
          nothing to add: the system then reads the details back and asks to confirm, so your say is only \"סגור.\" \
          or \"אוקיי.\" (never a question); \"submit\" only when the caller just confirmed that read-back: the \

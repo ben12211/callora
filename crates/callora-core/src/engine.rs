@@ -427,9 +427,12 @@ impl Engine {
             }
             Lookup::NoStreet { city, heard, closest } => {
                 let hint = if closest.is_empty() {
-                    "ask the caller to repeat the street".to_string()
+                    "fine if it is a landmark or a business; otherwise ask the caller to repeat the street".to_string()
                 } else {
-                    format!("closest streets there: {}; confirm which one", closest.join(", "))
+                    format!(
+                        "fine if it is a landmark or a business; otherwise the closest streets there are {}",
+                        closest.join(", ")
+                    )
                 };
                 notes.push(format!("{slot}: {city} has no street \"{heard}\" ({hint})"));
                 value
