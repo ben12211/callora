@@ -168,7 +168,7 @@ async fn voice_library_builds_incrementally_and_loads() {
     assert_eq!(lib.len(), expected);
     let clip = lib.get("normal", "אהלן, איך אפשר לעזור?").expect("greeting clip");
     assert_eq!(clip.len(), 160);
-    assert!(lib.get("slow", "מאיפה לאסוף אותך?").is_some());
+    assert!(lib.get("slow", "מאיפה לאסוף?").is_some());
 
     // A library generated for another voice is not used.
     let other = Arc::new(

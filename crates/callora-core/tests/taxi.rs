@@ -864,11 +864,9 @@ fn faq_mid_flow_answers_then_resumes() {
 fn voice_library_is_mostly_pregenerated() {
     let b = with_desk();
     let entries = library_entries(&b);
-    assert!(entries
-        .iter()
-        .any(|e| e.text == "סבבה, קיבלנו את הפרטים. נחפש לך נהג מתאים, והוא יתקשר אליך בדקות הקרובות."));
+    assert!(entries.iter().any(|e| e.text == "סבבה, קיבלנו את הפרטים. נחפש נהג מתאים, והוא יתקשר בדקות הקרובות."));
     assert!(entries.iter().any(|e| e.text == "זה יוצא בערך שמונים ושניים שקלים."));
-    assert!(entries.iter().any(|e| e.text == "מאיפה לאסוף אותך?" && e.delivery == "slow"));
+    assert!(entries.iter().any(|e| e.text == "מאיפה לאסוף?" && e.delivery == "slow"));
     assert!(!entries.iter().any(|e| e.text.contains('{')));
 }
 
@@ -883,4 +881,87 @@ fn validation_reports_broken_references() {
     assert!(paths.contains(&"greeting"), "{paths:?}");
     assert!(paths.contains(&"pipelines.book_ride.action"), "{paths:?}");
     assert!(paths.iter().any(|p| p.starts_with("intents[0]")), "{paths:?}");
+}
+
+#[test]
+fn the_address_form_follows_what_the_caller_says_about_themselves() {
+    use callora_core::address_form::AddressForm;
+    let (mut call, _) = Call::new(business(&[]));
+    let b = call.engine.business().clone();
+    assert_eq!(call.engine.state.address_form, AddressForm::Unknown);
+    assert_eq!(serde_json::to_value(&call.engine.state).unwrap()["address_form"], "unknown");
+    let neutral = callora_core::agent::build_request(&b, &call.engine.state, "צריך מונית");
+    assert!(neutral.user.contains("ADDRESS FORM: unknown. Speak gender-neutral Hebrew"), "{}", neutral.user);
+
+    // Impersonal "צריך" says nothing; "אני צריכה" does, and it stays for the rest of the call.
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "מאיזו עיר לאסוף?", Some("book_ride"), &[]), "");
+    assert_eq!(call.engine.state.address_form, AddressForm::Unknown);
+    call.engine.on_agent_turn("מרעננה, אני צריכה מונית", decide(AgentAction::None, "איזה רחוב ומספר?", None, &[]), "");
+    assert_eq!(call.engine.state.address_form, AddressForm::Feminine);
+    call.engine.on_agent_turn("אחוזה 12", decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[]), "");
+    assert_eq!(call.engine.state.address_form, AddressForm::Feminine, "kept when nothing new is said");
+    let feminine = callora_core::agent::build_request(&b, &call.engine.state, "לתל אביב");
+    assert!(feminine.user.contains("ADDRESS FORM: feminine"), "{}", feminine.user);
+
+    // A correction wins.
+    call.engine.on_agent_turn("סליחה, אני מתכוון לתל אביב", decide(AgentAction::None, "לאיזה רחוב?", None, &[]), "");
+    assert_eq!(call.engine.state.address_form, AddressForm::Masculine);
+    // The rules path listens too.
+    call.say("אני אישה, דברו אליי בלשון נקבה");
+    assert_eq!(call.engine.state.address_form, AddressForm::Feminine);
+}
+
+#[test]
+fn fixed_phrases_are_neutral_until_the_form_is_known() {
+    // Every recorded sentence is said to callers of either form.
+    const GENDERED: &[&str] = &[
+        "אתה",
+        "לך",
+        "אליך",
+        "אותך",
+        "שלך",
+        "איתך",
+        "בשבילך",
+        "ממך",
+        "עליך",
+        "תרצה",
+        "תרצי",
+        "תגיד",
+        "תגידי",
+        "תוכל",
+        "תוכלי",
+        "שכחת",
+        "הזמנת",
+        "רצית",
+        "אמרת",
+        "ביקשת",
+    ];
+    let b = business(&[]);
+    for (id, r) in &b.config.responses {
+        let mut texts: Vec<String> = r.variants.clone();
+        for p in r.params.values() {
+            if let Some(values) = serde_json::to_value(p).ok().and_then(|v| v.get("values").cloned()) {
+                texts.extend(
+                    values.as_object().into_iter().flatten().filter_map(|(_, v)| v.as_str().map(str::to_string)),
+                );
+            }
+        }
+        for text in texts {
+            let norm = callora_core::text::normalize(&text);
+            for word in norm.split(' ') {
+                assert!(!GENDERED.contains(&word), "{id}: \"{text}\" says \"{word}\"");
+            }
+        }
+    }
+}
+
+#[test]
+fn live_speech_is_pronounced_in_the_callers_form() {
+    use callora_core::address_form::AddressForm;
+    let b = business(&[]);
+    let say =
+        |form| callora_core::speech::prepare_for_tts("נחפש לך נהג, והוא יתקשר אליך", "he", b.pronouncer_for(form));
+    assert!(say(AddressForm::Feminine).contains("לָךְ") && say(AddressForm::Feminine).contains("אֵלַיִךְ"));
+    assert!(say(AddressForm::Masculine).contains("לְךָ"));
+    assert!(say(AddressForm::Unknown).contains("לְךָ"), "masculine when one slips into neutral speech");
 }

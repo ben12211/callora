@@ -16,6 +16,7 @@
 
 use serde_json::{json, Value};
 
+use crate::address_form::AddressForm;
 use crate::business::Business;
 use crate::config::SlotKind;
 use crate::llm::LlmRequest;
@@ -200,6 +201,21 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
     if let Some(name) = state.customer.as_ref().and_then(|c| c.name.as_deref()) {
         u.push_str(&format!("\nThe caller is a known customer: {name}.\n"));
     }
+    u.push_str(match state.address_form {
+        AddressForm::Unknown => {
+            "\nADDRESS FORM: unknown. Speak gender-neutral Hebrew: impersonal questions (\"לאן נוסעים?\", \"מאיפה \
+             לאסוף?\", \"כמה נוסעים?\", \"לשלוח עכשיו?\", \"אפשר להמשיך?\"); no אתה/את, no second-person verbs \
+             (תרצה, תגיד) and no לך/אליך/אותך/שלך. Never ask whether the caller is a man or a woman.\n"
+        }
+        AddressForm::Masculine => {
+            "\nADDRESS FORM: masculine (the caller speaks of himself in masculine). When a sentence needs it, \
+             address him in masculine (\"אתה רוצה שאשלח עכשיו?\", \"מאיפה תרצה שאאסוף אותך?\").\n"
+        }
+        AddressForm::Feminine => {
+            "\nADDRESS FORM: feminine (the caller speaks of herself in feminine). When a sentence needs it, \
+             address her in feminine (\"את רוצה שאשלח עכשיו?\", \"מאיפה תרצי שאאסוף אותך?\").\n"
+        }
+    });
     for done in &state.completed {
         u.push_str(&format!("\nEarlier in this call: {} ({})", done.pipeline, done.outcome));
         if let Some(r) = &done.result {

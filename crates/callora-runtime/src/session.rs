@@ -1104,7 +1104,7 @@ impl Session {
     fn tts_request(&self, seg: &SpeechSegment) -> Option<TtsRequest> {
         let c = &self.business.config;
         Some(TtsRequest {
-            text: prepare_for_tts(&seg.text, &c.language, &self.business.pronouncer),
+            text: prepare_for_tts(&seg.text, &c.language, self.business.pronouncer_for(self.engine.state.address_form)),
             voice_id: self.business.voice_id.clone()?,
             model: self.cfg.dynamic_model.clone().unwrap_or_else(|| c.voice.dynamic_model.clone()),
             settings: c.voice.settings_for(&seg.delivery),

@@ -57,6 +57,9 @@ pub struct BusinessConfig {
     pub rules: Vec<RuleConfig>,
     #[serde(default)]
     pub pronunciations: BTreeMap<String, String>,
+    /// Overrides for a caller addressed in feminine ("לך" → "לָךְ" instead of "לְךָ").
+    #[serde(default)]
+    pub pronunciations_feminine: BTreeMap<String, String>,
     pub fallback: FallbackConfig,
     pub handoff: HandoffConfig,
     #[serde(default)]

@@ -385,11 +385,11 @@ async fn a_recorded_phrase_split_into_sentences_still_plays_as_its_clip() {
 
 #[tokio::test]
 async fn two_recorded_phrases_in_one_reply_play_as_two_clips() {
-    // "הכל טוב, תודה!" waits (it begins a longer phrase), but "מאיפה אוספים אותך?" does not
+    // "הכל טוב, תודה!" waits (it begins a longer phrase), but "מאיפה יוצאים?" does not
     // continue it: each plays as its own recording, not the pair as one live TTS.
     let agent = Arc::new(ScriptedAgent::default());
     agent.replies.lock().push_back(
-        json!({ "action": "none", "say": "הכל טוב, תודה! מאיפה אוספים אותך?", "task": "book_ride", "fields": [] }),
+        json!({ "action": "none", "say": "הכל טוב, תודה! מאיפה יוצאים?", "task": "book_ride", "fields": [] }),
     );
     let h = start_server_with(Some(agent)).await;
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();

@@ -233,7 +233,7 @@
   },
 
   "agent": {
-    "persona": "אתה המוקדן של מוניות קלורה: צעיר, ישראלי, חברי, מהיר, ישיר ורגוע. מדבר בגובה העיניים, בעברית מדוברת וקצרה, בלי שפה רשמית ובלי חזרות מיותרות. פונים למתקשר בלשון זכר. עוברים ללשון נקבה רק אם המתקשרת מדברת על עצמה בלשון נקבה (\"אני צריכה\", \"אני נמצאת\").",
+    "persona": "אתה המוקדן של מוניות קלורה: צעיר, ישראלי, חברי, מהיר, ישיר ורגוע. מדבר בגובה העיניים, בעברית מדוברת וקצרה, בלי שפה רשמית ובלי חזרות מיותרות. כל עוד לא ידוע אם המתקשר גבר או אישה, מדברים בניסוח ניטרלי (\"לאן נוסעים?\", \"לשלוח עכשיו?\"); צורת הפנייה מופיעה בכל תור (ADDRESS FORM). אף פעם לא שואלים אם המתקשר גבר או אישה.",
     "rules": [
       "Service area: all of Israel. Any Israeli city, street or landmark is a valid place.",
       "For a ride you need pickup, destination and the number of passengers; pickup time is now unless the caller says otherwise.",
@@ -409,16 +409,16 @@
     "ask_change": { "variants": ["אוקיי, מה לתקן?", "מה לשנות?"] },
     "go_back": { "variants": ["אין בעיה."] },
     "flow_cancelled": { "variants": ["אוקיי, ביטלתי. משהו אחר?"] },
-    "still_there": { "variants": ["הלו, אתה איתי?"] },
+    "still_there": { "variants": ["הלו, שומעים אותי?"] },
 
-    "fallback_1": { "variants": ["לא בטוח שהבנתי, אתה יכול להגיד שוב?"] },
-    "fallback_2": { "variants": ["אתה רוצה להזמין מונית, לבדוק נסיעה קיימת או משהו אחר?"] },
+    "fallback_1": { "variants": ["לא בטוח שהבנתי, אפשר להגיד שוב?"] },
+    "fallback_2": { "variants": ["להזמין מונית, לבדוק נסיעה קיימת, או משהו אחר?"] },
     "fallback_restart": { "variants": ["סליחה, הקו קצת לא ברור. אפשר להגיד שוב, לאט?"], "delivery": "calm" },
-    "handoff": { "variants": ["אני מעביר אותך למוקדן."] },
+    "handoff": { "variants": ["מעביר את השיחה למוקדן."] },
     "handoff_unavailable": { "variants": ["כרגע אין מוקדן פנוי. אפשר לנסות שוב בעוד כמה דקות."], "delivery": "calm" },
 
-    "ask_pickup": { "variants": ["מאיפה לאסוף אותך?", "מאיפה אוספים?", "מאיפה אוספים אותך?"] },
-    "ask_destination": { "variants": ["לאן נוסעים?", "ולאן?", "לאן אתה צריך להגיע?"] },
+    "ask_pickup": { "variants": ["מאיפה לאסוף?", "מאיפה אוספים?", "מאיפה יוצאים?"] },
+    "ask_destination": { "variants": ["לאן נוסעים?", "ולאן?", "לאן צריך להגיע?"] },
     "ask_destination_price": { "variants": ["לאן הנסיעה?"] },
     "ask_passengers": { "variants": ["כמה נוסעים?", "כמה אתם?"] },
     "confirm_ride": {
@@ -441,11 +441,11 @@
     "ask_destination_street": { "variants": ["לאיזה רחוב?", "ולאיזה רחוב?"] },
     "ask_name": { "variants": ["על שם מי ההזמנה?", "מה השם להזמנה?"] },
     "ask_notes": { "variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?"] },
-    "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק לך.", "אממ, רגע."] },
+    "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק.", "אממ, רגע."] },
     "ride_booked": {
       "variants": [
-        "סבבה, קיבלנו את הפרטים. נחפש לך נהג מתאים, והוא יתקשר אליך בדקות הקרובות.",
-        "מעולה, הפרטים אצלנו. נמצא לך נהג מתאים, והוא יחזור אליך בהקדם."
+        "סבבה, קיבלנו את הפרטים. נחפש נהג מתאים, והוא יתקשר בדקות הקרובות.",
+        "מעולה, הפרטים אצלנו. נמצא נהג מתאים, והוא יתקשר בהקדם."
       ],
       "delivery": "important"
     },
@@ -456,16 +456,16 @@
         "status": {
           "kind": "enum",
           "values": {
-            "assigned": "שובץ לך נהג, הוא יוצא אליך עכשיו",
-            "on_the_way": "הנהג בדרך אליך",
-            "arrived": "הנהג כבר הגיע, הוא מחכה לך",
+            "assigned": "שובץ נהג, הוא יוצא לדרך עכשיו",
+            "on_the_way": "הנהג כבר בדרך",
+            "arrived": "הנהג כבר הגיע ומחכה",
             "none": "לא מצאתי נסיעה פעילה על המספר הזה"
           }
         }
       }
     },
     "status_failed": { "variants": ["לא הצלחתי לבדוק את הנסיעה כרגע."], "delivery": "calm" },
-    "confirm_cancel": { "variants": ["לבטל את הנסיעה שהזמנת?"] },
+    "confirm_cancel": { "variants": ["לבטל את הנסיעה?"] },
     "cancel_declined": { "variants": ["אוקיי, לא מבטל."] },
     "ride_cancelled": { "variants": ["ביטלתי את הנסיעה."] },
     "cancel_failed": { "variants": ["לא הצלחתי לבטל את הנסיעה."], "delivery": "calm" },
@@ -475,13 +475,13 @@
       "delivery": "important"
     },
     "price_failed": { "variants": ["אין לי כרגע הערכת מחיר לנסיעה הזאת."], "delivery": "calm" },
-    "ask_item": { "variants": ["מה שכחת?"] },
+    "ask_item": { "variants": ["מה נשכח?"] },
     "ask_ride_time": { "variants": ["מתי בערך הייתה הנסיעה?"] },
-    "lost_item_recorded": { "variants": ["רשמתי. נחזור אליך ברגע שנמצא משהו."] },
+    "lost_item_recorded": { "variants": ["רשמתי. נחזור עם תשובה ברגע שנמצא משהו."] },
     "lost_item_failed": { "variants": ["לא הצלחתי לרשום את זה כרגע."], "delivery": "calm" },
     "invoice_answer": { "variants": ["חשבונית נשלחת אוטומטית במייל בסוף כל נסיעה."] },
     "hours_answer": { "variants": ["אנחנו עובדים עשרים וארבע שעות, כל השבוע."] },
-    "large_group": { "variants": ["לקבוצה גדולה כזאת עדיף שמוקדן יסדר לך את זה."], "delivery": "calm" }
+    "large_group": { "variants": ["לקבוצה גדולה כזאת עדיף שמוקדן יסדר את זה."], "delivery": "calm" }
   },
 
   "rules": [
@@ -489,6 +489,15 @@
     { "id": "very_large_group", "pipeline": "book_ride", "when": { "slot": "passengers", "gt": 8 }, "then": { "do": "handoff", "response": "large_group", "reason": "large_group" } }
   ],
 
+  "pronunciations_feminine": {
+    "אותך": "אוֹתָךְ",
+    "לך": "לָךְ",
+    "ממך": "מִמֵּךְ",
+    "אליך": "אֵלַיִךְ",
+    "שלך": "שֶׁלָּךְ",
+    "איתך": "אִתָּךְ",
+    "בשבילך": "בִּשְׁבִילֵךְ"
+  },
   "pronunciations": {
     "Waze": "וֵייז",
     "Gett": "גֶט",

@@ -90,9 +90,20 @@ pub struct Business {
     pub voice_id: Option<String>,
     pub handoff_number: Option<String>,
     pub pronouncer: crate::speech::Pronouncer,
+    /// The same, with the feminine second person ("לָךְ").
+    pub pronouncer_feminine: crate::speech::Pronouncer,
 }
 
 impl Business {
+    /// How to say words for a caller addressed in this form. Neutral speech avoids the
+    /// gendered words; when one slips in, masculine is the default.
+    pub fn pronouncer_for(&self, form: crate::address_form::AddressForm) -> &crate::speech::Pronouncer {
+        match form {
+            crate::address_form::AddressForm::Feminine => &self.pronouncer_feminine,
+            _ => &self.pronouncer,
+        }
+    }
+
     /// Words the speech recognizer should expect, most useful first (recognizers cap the
     /// list): the configured ones, then known place names, then their aliases.
     pub fn stt_keyterms(&self) -> Vec<String> {
@@ -250,6 +261,12 @@ impl Business {
             issues.push(Issue { path: "pronunciations".into(), message: format!("cannot compile: {e}") });
             crate::speech::Pronouncer::default()
         });
+        let mut feminine = config.pronunciations.clone();
+        feminine.extend(config.pronunciations_feminine.clone());
+        let pronouncer_feminine = crate::speech::Pronouncer::new(&feminine).unwrap_or_else(|e| {
+            issues.push(Issue { path: "pronunciations_feminine".into(), message: format!("cannot compile: {e}") });
+            crate::speech::Pronouncer::default()
+        });
         issues.extend(phrase_issues.into_inner());
         if !issues.is_empty() {
             return Err(LoadError::Invalid { path: source.to_string(), issues });
@@ -268,6 +285,7 @@ impl Business {
             voice_id,
             handoff_number,
             pronouncer,
+            pronouncer_feminine,
         })
     }
 }
@@ -594,9 +612,13 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
         }
     }
 
-    for (word, spoken) in &c.pronunciations {
-        if normalize(word).is_empty() || spoken.trim().is_empty() {
-            v.push(Issue { path: format!("pronunciations.{word}"), message: "empty entry".into() });
+    for (field, dictionary) in
+        [("pronunciations", &c.pronunciations), ("pronunciations_feminine", &c.pronunciations_feminine)]
+    {
+        for (word, spoken) in dictionary {
+            if normalize(word).is_empty() || spoken.trim().is_empty() {
+                v.push(Issue { path: format!("{field}.{word}"), message: "empty entry".into() });
+            }
         }
     }
     v

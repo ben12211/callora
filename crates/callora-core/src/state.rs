@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::address_form::AddressForm;
 use crate::customer::Customer;
 use crate::render::SpeechPlan;
 use crate::values::{Provenance, SlotValue};
@@ -173,6 +174,9 @@ pub struct CallState {
     /// Place slots whose street was not found once already: the second time it is kept.
     #[serde(default)]
     pub doubted_streets: BTreeSet<String>,
+    /// Masculine or feminine once the caller's words show it ("אני צריכה"); neutral until then.
+    #[serde(default)]
+    pub address_form: AddressForm,
     /// The number the caller is calling from, when the network gives it.
     #[serde(default)]
     pub caller_phone: Option<String>,
@@ -203,6 +207,7 @@ impl CallState {
             agent_notes: Vec::new(),
             place_cities: BTreeMap::new(),
             doubted_streets: BTreeSet::new(),
+            address_form: AddressForm::Unknown,
             caller_phone: None,
             next_action_run: 1,
         }
@@ -211,6 +216,13 @@ impl CallState {
     pub fn remember(&mut self, speaker: Speaker, text: &str) {
         if text.trim().is_empty() {
             return;
+        }
+        if speaker == Speaker::Caller {
+            // A later clear cue wins: the caller may correct it ("אני צריכה", "בלשון נקבה").
+            if let Some(form) = crate::address_form::detect(text).filter(|f| *f != self.address_form) {
+                tracing::info!(?form, "address form");
+                self.address_form = form;
+            }
         }
         self.history.push(Turn { speaker, text: text.to_string() });
         if self.history.len() > HISTORY_LIMIT {

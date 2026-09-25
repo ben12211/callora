@@ -5,6 +5,7 @@
 //! deterministic given its inputs, which is what makes the conversation behaviour
 //! testable without a phone line.
 
+pub mod address_form;
 pub mod agent;
 pub mod business;
 pub mod config;
