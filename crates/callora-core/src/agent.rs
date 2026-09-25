@@ -210,6 +210,10 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                 for ps in &p.slots {
                     match run.slots.get(&ps.slot) {
                         Some(v) => u.push_str(&format!("- {}: {}\n", ps.slot, v.value.spoken())),
+                        None if state.place_cities.contains_key(&ps.slot) => u.push_str(&format!(
+                            "- {}: city {}, street MISSING (required)\n",
+                            ps.slot, state.place_cities[&ps.slot]
+                        )),
                         None if ps.required => u.push_str(&format!("- {}: MISSING (required)\n", ps.slot)),
                         None => u.push_str(&format!("- {}: not given (optional)\n", ps.slot)),
                     }

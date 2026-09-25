@@ -194,9 +194,23 @@ impl Gazetteer {
     /// Find the locality, street and house number in a place as the caller gave it.
     pub fn resolve(&self, text: &str) -> Lookup {
         let words: Vec<String> = norm(text).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect();
-        let Some((ci, alias, start, len)) = self.find_city(&words) else {
+        let candidates = self.find_cities(&words);
+        if candidates.is_empty() {
             return Lookup::NoCity { closest: self.closest_cities(&words) };
+        }
+        // "אלעד בן זכאי 45": both "אלעד" and "בן זכאי" (a moshav) are localities. The reading
+        // in which the other words are a real street of that locality is the right one.
+        let readings: Vec<Lookup> = candidates.into_iter().map(|c| self.resolve_in(&words, c)).collect();
+        let score = |l: &Lookup| match l {
+            Lookup::Found(a) if a.street.is_some() => 0,
+            Lookup::Found(_) => 1,
+            _ => 2,
         };
+        let best = readings.iter().enumerate().min_by_key(|(i, l)| (score(l), *i)).map(|(i, _)| i).unwrap_or(0);
+        readings.into_iter().nth(best).unwrap_or(Lookup::NoCity { closest: Vec::new() })
+    }
+
+    fn resolve_in(&self, words: &[String], (ci, alias, start, len): (usize, String, usize, usize)) -> Lookup {
         let city = &self.cities[ci];
         let rest: Vec<&String> =
             words.iter().enumerate().filter(|(i, _)| *i < start || *i >= start + len).map(|(_, w)| w).collect();
@@ -206,6 +220,8 @@ impl Gazetteer {
         if matches!(street_words.first(), Some(&"רחוב") | Some(&"רח")) {
             street_words.remove(0);
         }
+        // "מושב בן זכאי", "העיר אלעד": words that say what the locality is, not a street.
+        street_words.retain(|w| !matches!(*w, "מושב" | "קיבוצ" | "קבוצ" | "העיר" | "עיר" | "יישוב" | "ישוב"));
         let found = |street: Option<String>| {
             Lookup::Found(Address { city_said: alias.clone(), city: city.name.clone(), street, number: number.clone() })
         };
@@ -243,12 +259,14 @@ impl Gazetteer {
         Lookup::NoStreet { city: city.name.clone(), heard: street_words.join(" "), closest }
     }
 
-    /// The longest run of words that names a locality (exactly, after a prefix letter, or
-    /// with a small misspelling), preferring the last one: callers end with the city.
-    fn find_city(&self, words: &[String]) -> Option<(usize, String, usize, usize)> {
+    /// Every run of words that names a locality exactly (or after a prefix letter), longest
+    /// and latest first (callers end with the city); failing that, one unambiguous small
+    /// misspelling.
+    fn find_cities(&self, words: &[String]) -> Vec<(usize, String, usize, usize)> {
+        let mut all = Vec::new();
         for len in (1..=4.min(words.len())).rev() {
             let mut best: Option<(usize, String, usize, usize)> = None;
-            for start in 0..=words.len() - len {
+            for start in (0..=words.len() - len).rev() {
                 let phrase = words[start..start + len].join(" ");
                 let stripped = strip_prefix(&words[start]).map(|s| {
                     std::iter::once(s)
@@ -259,12 +277,14 @@ impl Gazetteer {
                 for key in std::iter::once(phrase).chain(stripped) {
                     if let Some((ci, alias)) = self.city_keys.get(&key) {
                         best = Some((*ci, alias.clone(), start, len));
+                        all.push((*ci, alias.clone(), start, len));
                     }
                 }
             }
-            if best.is_some() {
-                return best;
-            }
+            let _ = best;
+        }
+        if !all.is_empty() {
+            return all;
         }
         // A misspelled locality ("רמת גאן"): only unambiguous, small differences.
         for len in (1..=3.min(words.len())).rev() {
@@ -279,12 +299,12 @@ impl Gazetteer {
                 for key in std::iter::once(phrase).chain(stripped) {
                     let hits: Vec<_> = self.city_keys.iter().filter(|(k, _)| close_enough(&key, k)).collect();
                     if let [(_, (ci, alias))] = hits[..] {
-                        return Some((*ci, alias.clone(), start, len));
+                        return vec![(*ci, alias.clone(), start, len)];
                     }
                 }
             }
         }
-        None
+        Vec::new()
     }
 
     fn closest_cities(&self, words: &[String]) -> Vec<String> {
@@ -379,6 +399,18 @@ mod tests {
     fn a_locality_alone_and_with_a_prefix() {
         assert_eq!(found(g().resolve("מאלעד")).city, "אלעד");
         assert_eq!(found(g().resolve("לבאר שבע")).city, "באר שבע");
+    }
+
+    #[test]
+    fn a_street_named_like_a_locality_is_read_as_a_street() {
+        // "בן זכאי" is a moshav and a street of אלעד; the street reading wins.
+        let g = Gazetteer::from_tsv(
+            "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+             2066\tבן זכאי\t9000\tבן זכאי\tofficial\n",
+        );
+        assert_eq!(found(g.resolve("אלעד בן זכאי 45")).spoken(), "רבן יוחנן בן זכאי 45, אלעד");
+        assert_eq!(found(g.resolve("בן זכאי 45, אלעד")).spoken(), "רבן יוחנן בן זכאי 45, אלעד");
+        assert_eq!(found(g.resolve("מושב בן זכאי")).city, "בן זכאי");
     }
 
     #[test]

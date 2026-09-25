@@ -232,9 +232,10 @@
     "rules": [
       "Service area: all of Israel. Any Israeli city, street or landmark is a valid place.",
       "For a ride you need pickup, destination and the number of passengers; pickup time is now unless the caller says otherwise.",
-      "The pickup must be exact: street and house number, or a landmark. If the caller names only a city, ask where exactly in it.",
-      "If the destination is only a city, ask once for the exact address there; if the caller does not know, the city is enough.",
-      "Before the read_back of a ride, ask once whether there is anything the driver should know; what the caller says goes in notes (\"אין\" means no notes).",
+      "Book a ride in this order, one short question per turn, skipping whatever the caller already said: 1. pickup city (\"סבבה, מאיזו עיר לאסוף?\"); 2. pickup street and number (\"איזה רחוב ומספר?\"); 3. destination city (\"לאיזו עיר נוסעים?\"); 4. destination street (\"לאיזה רחוב?\"): always ask it once when the destination so far is only a city, even if the caller gave pickup and destination together; only if they then say they do not know is the city enough; 5. passengers (\"כמה נוסעים?\"); 6. a note for the driver (\"יש משהו שהנהג צריך לדעת?\"; \"אין\" means none). Then read_back.",
+      "Examples of the order: caller \"לבאר שבע\" (destination city, no street) → say \"לאיזה רחוב?\", not the passengers yet. Caller \"מרחוב הרצל 10 ברעננה לתל אביב\" → pickup is complete, the destination is only a city → say \"לאיזה רחוב?\". Caller \"לא יודע\" to that → the city is enough → say \"כמה נוסעים?\".",
+      "Pass a place's city as soon as it is said (\"אלעד\"), and its street with the city (\"בן זכאי 45, אלעד\").",
+      "Never repeat back what the caller just said as a question (\"בן זכאי 45 ברעננה, נכון?\"): go on to the next question; the read-back confirms everything.",
       "When the caller gives several details at once, take them all and ask only for what is still missing.",
       "A ride booked earlier in this call can be checked or cancelled with the matching task."
     ],
@@ -242,7 +243,7 @@
     "phrases": [
       "ack", "anything_else", "goodbye", "ask_change", "go_back", "fallback_1", "fallback_restart", "still_there",
       "ask_pickup", "ask_destination", "ask_passengers", "ask_item", "ask_ride_time", "small_talk_answer",
-      "small_talk_short", "ask_pickup_exact", "ask_destination_exact", "ask_notes",
+      "small_talk_short", "ask_pickup_city", "ask_pickup_street", "ask_destination_city", "ask_destination_street", "ask_notes",
       "filler_checking", "invoice_answer", "hours_answer", "cancel_declined"
     ]
   },
@@ -421,8 +422,10 @@
     "filler_hmm": { "variants": ["אממ...", "אהה..."] },
     "tts_cover": { "variants": ["אממ, כן.", "אהה, אוקיי."], "delivery": "quick" },
     "small_talk_short": { "variants": ["הכל טוב, תודה!", "הכל טוב!"] },
-    "ask_pickup_exact": { "variants": ["מאיפה בדיוק? איזה רחוב?", "איזה רחוב ומספר?"] },
-    "ask_destination_exact": { "variants": ["ולאן בדיוק?", "יש כתובת מדויקת?"] },
+    "ask_pickup_city": { "variants": ["סבבה, מאיזו עיר לאסוף?", "מאיזו עיר לאסוף?"] },
+    "ask_pickup_street": { "variants": ["איזה רחוב ומספר?", "ואיזה רחוב ומספר?"] },
+    "ask_destination_city": { "variants": ["לאיזו עיר נוסעים?", "ולאיזו עיר נוסעים?"] },
+    "ask_destination_street": { "variants": ["לאיזה רחוב?", "ולאיזה רחוב?"] },
     "ask_notes": { "variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?"] },
     "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק לך.", "אממ, רגע."] },
     "ride_booked": {

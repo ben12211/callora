@@ -382,21 +382,38 @@ impl Engine {
     /// streets: stored in its official spelling when found, and reported to the agent (with
     /// the closest names) when not, so it asks the caller rather than guessing.
     /// `None` when the place cannot be used as it is (a city alone for a precise slot).
-    fn check_place(&self, slot: &str, value: SlotValue, notes: &mut Vec<String>) -> Option<SlotValue> {
+    fn check_place(&mut self, slot: &str, value: SlotValue, notes: &mut Vec<String>) -> Option<SlotValue> {
         let (Some(g), SlotValue::Place { spoken, address: None, customer_place: None }) = (&self.gazetteer, &value)
         else {
             return Some(value);
         };
         let precise = self.business.config.slots.get(slot).is_some_and(|c| c.precise);
-        Some(match g.resolve(spoken) {
+        // A street given after its city ("מאיזו עיר?" "אלעד" ... "איזה רחוב?" "בן זכאי 45"):
+        // look it up in the city given before, for this slot.
+        let city_before = self.state.place_cities.get(slot).cloned().or_else(|| {
+            self.state.run.as_ref().and_then(|r| r.slots.get(slot)).and_then(|s| match &s.value {
+                SlotValue::Place { spoken, .. } => Some(spoken.clone()),
+                _ => None,
+            })
+        });
+        // With the city given before, try the street there first ("בן זכאי 45" after "אלעד"
+        // is a street of אלעד, not the moshav בן זכאי).
+        let in_city_before = city_before
+            .as_ref()
+            .map(|city| g.resolve(&format!("{spoken}, {city}")))
+            .filter(|l| matches!(l, Lookup::Found(a) if a.street.is_some()));
+        let lookup = in_city_before.unwrap_or_else(|| g.resolve(spoken));
+        Some(match lookup {
             Lookup::Found(a) if precise && a.street.is_none() => {
                 notes.push(format!(
-                    "{slot} \"{}\" is only a city; ask for the street and house number (or a landmark) there",
+                    "{slot} city {} is noted; now ask for the street and house number (or a landmark) there",
                     a.city_said
                 ));
+                self.state.place_cities.insert(slot.to_string(), a.city_said);
                 return None;
             }
             Lookup::Found(a) => {
+                self.state.place_cities.remove(slot);
                 SlotValue::Place { spoken: a.spoken(), address: Some(a.official()), customer_place: None }
             }
             Lookup::NoCity { closest } => {

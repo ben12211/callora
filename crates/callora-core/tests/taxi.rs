@@ -425,7 +425,7 @@ fn a_city_alone_is_not_a_pickup() {
     assert_eq!(call.slot("pickup"), None, "a city alone does not fill the pickup");
     assert_eq!(place(call.slot("destination")), "באר שבע", "a destination may be a city");
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "שבע");
-    assert!(next.user.contains("pickup \"אלעד\" is only a city"), "{}", next.user);
+    assert!(next.user.contains("pickup city אלעד is noted; now ask for the street"), "{}", next.user);
 
     call.engine.on_agent_turn(
         "רבי עקיבא 12",
@@ -433,6 +433,44 @@ fn a_city_alone_is_not_a_pickup() {
         "",
     );
     assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12, אלעד");
+}
+
+#[test]
+fn city_first_then_street_builds_one_address() {
+    // The order the owner asked for: "מאיזו עיר לאסוף?" "אלעד" ... "איזה רחוב ומספר?" "בן זכאי 45".
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         2066\tבן זכאי\t9000\tבן זכאי\tofficial\n9000\tבאר שבע\t120\tרגר\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "מאלעד",
+        decide(AgentAction::None, "איזה רחוב ומספר?", Some("book_ride"), &[("pickup", "אלעד")]),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None);
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "בן זכאי 45");
+    assert!(next.user.contains("- pickup: city אלעד, street MISSING"), "{}", next.user);
+
+    call.engine.on_agent_turn(
+        "בן זכאי 45",
+        decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "בן זכאי 45")]),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "רבן יוחנן בן זכאי 45, אלעד", "the street, in the city given before");
+
+    call.engine.on_agent_turn(
+        "לבאר שבע",
+        decide(AgentAction::None, "לאיזה רחוב?", None, &[("destination", "באר שבע")]),
+        "",
+    );
+    call.engine.on_agent_turn(
+        "רגר 10",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "רגר 10")]),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), "רגר 10, באר שבע", "a destination street joins its city too");
 }
 
 #[test]

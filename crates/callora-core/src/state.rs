@@ -167,6 +167,9 @@ pub struct CallState {
     /// next turn ("passengers \"42\": out of range").
     #[serde(default)]
     pub agent_notes: Vec<String>,
+    /// The locality given for a place slot that still needs its street ("pickup" → "אלעד").
+    #[serde(default)]
+    pub place_cities: BTreeMap<String, String>,
     pub next_action_run: u64,
 }
 
@@ -192,6 +195,7 @@ impl CallState {
             turns: 0,
             history: Vec::new(),
             agent_notes: Vec::new(),
+            place_cities: BTreeMap::new(),
             next_action_run: 1,
         }
     }
