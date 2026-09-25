@@ -282,6 +282,10 @@ pub struct SlotConfig {
     #[serde(rename = "type")]
     pub kind: SlotKind,
     pub description: String,
+    /// A place slot that a locality alone does not satisfy: it needs a street (or one of the
+    /// business's known places). A taxi cannot pick up "אלעד".
+    #[serde(default)]
+    pub precise: bool,
     /// Regexes (Rust syntax) run against the match-normalized utterance. Each needs a
     /// named group `value`. Matched anywhere in the utterance, in any state.
     #[serde(default)]

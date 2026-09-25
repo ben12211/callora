@@ -383,6 +383,27 @@ async fn a_recorded_phrase_split_into_sentences_still_plays_as_its_clip() {
     assert!(frames.iter().all(|b| *b == 0x55), "one recorded clip, no live TTS: {:?}", &frames[..frames.len().min(8)]);
 }
 
+#[tokio::test]
+async fn two_recorded_phrases_in_one_reply_play_as_two_clips() {
+    // "הכל טוב, תודה!" waits (it begins a longer phrase), but "מאיפה אוספים אותך?" does not
+    // continue it: each plays as its own recording, not the pair as one live TTS.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().push_back(
+        json!({ "action": "none", "say": "הכל טוב, תודה! מאיפה אוספים אותך?", "task": "book_ride", "fields": [] }),
+    );
+    let h = start_server_with(Some(agent)).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, "CA46", "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "connected" }).to_string().into())).await.unwrap();
+    ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ1", "start": { "streamSid": "MZ1", "callSid": "CA46", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    collect(&mut ws, Duration::from_millis(400)).await;
+
+    h.stt.say("מה מצב? אני רוצה להזמין מונית").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(500)).await;
+    assert!(frames.len() >= 6, "both phrases play: {} frames", frames.len());
+    assert!(frames.iter().all(|b| *b == 0x55), "recordings only: {:?}", &frames[..frames.len().min(8)]);
+}
+
 fn chrono_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
 }

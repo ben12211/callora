@@ -309,7 +309,7 @@ impl Engine {
                     notes.push(format!("{slot} \"{raw}\" was not accepted{range}"));
                     return None;
                 };
-                let value = self.check_place(slot, value, &mut notes);
+                let value = self.check_place(slot, value, &mut notes)?;
                 Some(SlotFill {
                     slot: slot.clone(),
                     value,
@@ -381,12 +381,21 @@ impl Engine {
     /// A place the business does not know itself, checked against Israel's localities and
     /// streets: stored in its official spelling when found, and reported to the agent (with
     /// the closest names) when not, so it asks the caller rather than guessing.
-    fn check_place(&self, slot: &str, value: SlotValue, notes: &mut Vec<String>) -> SlotValue {
+    /// `None` when the place cannot be used as it is (a city alone for a precise slot).
+    fn check_place(&self, slot: &str, value: SlotValue, notes: &mut Vec<String>) -> Option<SlotValue> {
         let (Some(g), SlotValue::Place { spoken, address: None, customer_place: None }) = (&self.gazetteer, &value)
         else {
-            return value;
+            return Some(value);
         };
-        match g.resolve(spoken) {
+        let precise = self.business.config.slots.get(slot).is_some_and(|c| c.precise);
+        Some(match g.resolve(spoken) {
+            Lookup::Found(a) if precise && a.street.is_none() => {
+                notes.push(format!(
+                    "{slot} \"{}\" is only a city; ask for the street and house number (or a landmark) there",
+                    a.city_said
+                ));
+                return None;
+            }
             Lookup::Found(a) => {
                 SlotValue::Place { spoken: a.spoken(), address: Some(a.official()), customer_place: None }
             }
@@ -408,7 +417,7 @@ impl Engine {
                 notes.push(format!("{slot}: {city} has no street \"{heard}\" ({hint})"));
                 value
             }
-        }
+        })
     }
 
     /// Read the task back for a yes/no, or ask for what is still missing.

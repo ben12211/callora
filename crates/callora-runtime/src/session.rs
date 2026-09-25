@@ -777,17 +777,44 @@ impl Session {
     /// of half of it going through live TTS.
     fn agent_sentence(&mut self, sentence: String) {
         let Some(p) = self.pending_agent.as_mut() else { return };
-        let text = match p.partial_phrase.take() {
-            Some(start) => format!("{start} {sentence}"),
-            None => sentence,
+        if let Some(start) = p.partial_phrase.take() {
+            let joined = format!("{start} {sentence}");
+            if self.continues_a_phrase(&joined) || self.library_has(&joined) {
+                return self.agent_sentence_text(joined);
+            }
+            // "הכל טוב, תודה!" then "מאיפה אוספים אותך?": two recordings, not one live TTS.
+            // The start plays now (it would only wait again), then the new sentence.
+            if let Some(p) = self.pending_agent.as_mut() {
+                p.spoken.push(start.clone());
+            }
+            self.say_now(&start);
+            return self.agent_sentence_text(sentence);
+        }
+        self.agent_sentence_text(sentence);
+    }
+
+    fn agent_sentence_text(&mut self, text: String) {
+        let Some(p) = self.pending_agent.as_mut() else { return };
+        let is_prefix = {
+            let w = words(&text);
+            self.phrase_words.iter().any(|ph| ph.len() > w.len() && ph.starts_with(&w))
         };
-        let w = words(&text);
-        if self.phrase_words.iter().any(|ph| ph.len() > w.len() && ph.starts_with(&w)) {
+        if is_prefix {
             p.partial_phrase = Some(text);
             return;
         }
         p.spoken.push(text.clone());
         self.say_now(&text);
+    }
+
+    fn continues_a_phrase(&self, text: &str) -> bool {
+        let w = words(text);
+        self.phrase_words.iter().any(|ph| ph.len() > w.len() && ph.starts_with(&w))
+    }
+
+    fn library_has(&self, text: &str) -> bool {
+        let delivery = self.engine.state.delivery.clone().unwrap_or_else(|| "normal".into());
+        self.library.get_loose(&delivery, text).is_some()
     }
 
     /// Play one sentence of the agent's reply now.

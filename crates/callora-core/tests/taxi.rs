@@ -410,6 +410,32 @@ fn places_are_checked_against_the_list_of_israeli_streets() {
 }
 
 #[test]
+fn a_city_alone_is_not_a_pickup() {
+    // From a live call: dispatch got "אלעד" as the pickup, with no street.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבי עקיבא\tofficial\n9000\tבאר שבע\t120\tרגר\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "מאלעד לבאר שבע",
+        decide(AgentAction::None, "כמה נוסעים?", Some("book_ride"), &[("pickup", "אלעד"), ("destination", "באר שבע")]),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None, "a city alone does not fill the pickup");
+    assert_eq!(place(call.slot("destination")), "באר שבע", "a destination may be a city");
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "שבע");
+    assert!(next.user.contains("pickup \"אלעד\" is only a city"), "{}", next.user);
+
+    call.engine.on_agent_turn(
+        "רבי עקיבא 12",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("pickup", "רבי עקיבא 12, אלעד")]),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12, אלעד");
+}
+
+#[test]
 fn drawn_out_hesitations_are_noise() {
     let (call, _) = Call::new(business(&[]));
     let b = call.engine.business().clone();

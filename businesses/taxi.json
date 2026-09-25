@@ -187,6 +187,7 @@
     "pickup": {
       "type": "place",
       "description": "כתובת איסוף",
+      "precise": true,
       "priority": 40,
       "patterns": [
         "(?:^| )(?:לאסוף|תאסוף|תאספו|איסוף|אוספים)(?: אותי| אותנו)? (?:מ|ב)?(?P<value>[^ _]{2,}(?: [^ _]+)*?)(?: ל[^ _]| _|$)",
@@ -231,6 +232,9 @@
     "rules": [
       "Service area: all of Israel. Any Israeli city, street or landmark is a valid place.",
       "For a ride you need pickup, destination and the number of passengers; pickup time is now unless the caller says otherwise.",
+      "The pickup must be exact: street and house number, or a landmark. If the caller names only a city, ask where exactly in it.",
+      "If the destination is only a city, ask once for the exact address there; if the caller does not know, the city is enough.",
+      "Before the read_back of a ride, ask once whether there is anything the driver should know; what the caller says goes in notes (\"אין\" means no notes).",
       "When the caller gives several details at once, take them all and ask only for what is still missing.",
       "A ride booked earlier in this call can be checked or cancelled with the matching task."
     ],
@@ -238,6 +242,7 @@
     "phrases": [
       "ack", "anything_else", "goodbye", "ask_change", "go_back", "fallback_1", "fallback_restart", "still_there",
       "ask_pickup", "ask_destination", "ask_passengers", "ask_item", "ask_ride_time", "small_talk_answer",
+      "small_talk_short", "ask_pickup_exact", "ask_destination_exact", "ask_notes",
       "filler_checking", "invoice_answer", "hours_answer", "cancel_declined"
     ]
   },
@@ -414,7 +419,11 @@
     "filler_checking": { "variants": ["שנייה, אני בודק.", "רגע, בודק."] },
     "small_talk_answer": { "variants": ["הכל טוב, תודה! איך אפשר לעזור?", "סבבה לגמרי. במה אפשר לעזור?"] },
     "filler_hmm": { "variants": ["אממ...", "אהה..."] },
-    "tts_cover": { "variants": ["אוקיי, רגע.", "אהה, אוקיי."], "delivery": "quick" },
+    "tts_cover": { "variants": ["אממ, כן.", "אהה, אוקיי."], "delivery": "quick" },
+    "small_talk_short": { "variants": ["הכל טוב, תודה!", "הכל טוב!"] },
+    "ask_pickup_exact": { "variants": ["מאיפה בדיוק? איזה רחוב?", "איזה רחוב ומספר?"] },
+    "ask_destination_exact": { "variants": ["ולאן בדיוק?", "יש כתובת מדויקת?"] },
+    "ask_notes": { "variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?"] },
     "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק לך.", "אממ, רגע."] },
     "ride_booked": {
       "variants": ["מצאתי. יש נהג בערך {eta_minutes} ממך.", "סגור, יש נהג. הוא יגיע בעוד {eta_minutes}."],
