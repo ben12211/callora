@@ -162,12 +162,55 @@ pub fn unheard_words(value: &str, heard: &str) -> Vec<String> {
         }
         false
     };
-    norm(value)
+    let value = norm(value);
+    let words: Vec<&str> = value
         .split(' ')
         .filter(|w| w.chars().count() >= 2 && !w.chars().all(|c| c.is_ascii_digit()))
         .filter(|w| !matches!(*w, "רחוב" | "רח" | "שדרות" | "שד" | "דרכ" | "סמטת" | "כיכר"))
-        .filter(|w| !near(w) && !strip_prefix(w).is_some_and(near))
-        .map(str::to_string)
+        .collect();
+    let unheard: Vec<bool> = words.iter().map(|w| !near(w) && !strip_prefix(w).is_some_and(near)).collect();
+    // A name recognition garbled across words ("בניהול אומה" for "בנייני האומה"): the words
+    // miss, the sounds of the whole name match. Each unheard word with its neighbours, one
+    // consonant off at most, and only when the name has four consonants or more (three
+    // match something in any sentence).
+    // The caller's consonants, digits out, and where each word (or the word after a prefix
+    // letter) starts: a name matches from the start of a word, not from the middle of one
+    // ("זכאי 45 אני נמצאת" holds "קננמ", one off "בננמ").
+    let mut heard_sound: Vec<char> = Vec::new();
+    let mut starts: Vec<usize> = Vec::new();
+    for w in &heard_words {
+        let w: String = w.chars().filter(|c| !c.is_ascii_digit()).collect();
+        let s: Vec<char> = sound(&w).chars().collect();
+        if s.is_empty() {
+            continue;
+        }
+        starts.push(heard_sound.len());
+        if strip_prefix(&w).is_some() && s.len() > 1 {
+            starts.push(heard_sound.len() + 1);
+        }
+        heard_sound.extend(s);
+    }
+    let sounds_heard = |from: usize, to: usize| {
+        let name = sound(&words[from..=to].concat());
+        let len = name.chars().count();
+        len >= 4
+            && starts.iter().any(|&start| {
+                (len..=len + 1).any(|size| {
+                    let end = (start + size).min(heard_sound.len());
+                    let piece: String = heard_sound[start..end].iter().collect();
+                    distance(&name, &piece) <= 1
+                })
+            })
+    };
+    words
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| unheard[*i])
+        .filter(|(i, _)| {
+            let (from, to) = (i.saturating_sub(1), (i + 1).min(words.len().saturating_sub(1)));
+            !(sounds_heard(*i, to) || sounds_heard(from, *i) || sounds_heard(from, to))
+        })
+        .map(|(_, w)| w.to_string())
         .collect()
 }
 
@@ -511,6 +554,8 @@ mod tests {
             "one unheard word rejects it"
         );
         assert!(unheard_words("בנייני האומה, ירושלים", "זה בני ינאי אומה בירושלים").is_empty());
+        // Garbled across words by the recognizer (a live call): the whole name sounds the same.
+        assert!(unheard_words("בנייני האומה, ירושלים", "אה, ירושלים. בניהול אומה.").is_empty());
         // Written in Latin letters by the recognizer: still heard.
         assert!(unheard_words("בנייני האומה, ירושלים", "ירושלים. זה בניין ה-Human, אני לא זוכר את הרחוב").is_empty());
     }

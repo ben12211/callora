@@ -1044,3 +1044,25 @@ fn a_detail_rejected_in_a_read_back_turn_is_asked_for_not_read_back() {
     assert!(said.contains("איזה רחוב ומספר"), "asks for the street: {said}");
     assert!(!said.contains("סגור"), "{said}");
 }
+
+#[test]
+fn a_place_rejected_as_unheard_twice_is_taken_the_third_time() {
+    // A live call looped: the check kept rejecting the agent's (right) landmark, the caller
+    // said "אמרתי כבר" three times and hung up.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn("מונית", decide(AgentAction::None, "מאיזו עיר לאסוף?", Some("book_ride"), &[]), "");
+    for heard in ["זה ליד הבית של דודה", "אמרתי כבר"] {
+        call.engine.on_agent_turn(
+            heard,
+            decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "מגדל שלום, תל אביב")]),
+            "",
+        );
+        assert_eq!(call.slot("destination"), None, "{heard}");
+    }
+    call.engine.on_agent_turn(
+        "אמרתי גם",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "מגדל שלום, תל אביב")]),
+        "",
+    );
+    assert!(call.slot("destination").is_some(), "taken, not asked for a fourth time");
+}

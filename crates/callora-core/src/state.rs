@@ -174,6 +174,10 @@ pub struct CallState {
     /// Place slots whose street was not found once already: the second time it is kept.
     #[serde(default)]
     pub doubted_streets: BTreeSet<String>,
+    /// How many times each slot's place was rejected as never said: the third time the agent
+    /// insists, it is taken (a check that loops is worse than a doubtful place).
+    #[serde(default)]
+    pub unheard_rejections: BTreeMap<String, u8>,
     /// Masculine or feminine once the caller's words show it ("אני צריכה"); neutral until then.
     #[serde(default)]
     pub address_form: AddressForm,
@@ -207,6 +211,7 @@ impl CallState {
             agent_notes: Vec::new(),
             place_cities: BTreeMap::new(),
             doubted_streets: BTreeSet::new(),
+            unheard_rejections: BTreeMap::new(),
             address_form: AddressForm::Unknown,
             caller_phone: None,
             next_action_run: 1,

@@ -337,7 +337,9 @@ impl Engine {
                 let cfg = self.business.config.slots.get(slot)?;
                 if cfg.kind == crate::config::SlotKind::Place {
                     let invented = crate::gazetteer::unheard_words(raw, &heard);
-                    if !invented.is_empty() {
+                    let rejections = self.state.unheard_rejections.get(slot).copied().unwrap_or(0);
+                    if !invented.is_empty() && rejections < 2 {
+                        *self.state.unheard_rejections.entry(slot.clone()).or_default() += 1;
                         notes.push(format!(
                             "{slot}: the caller never said \"{}\"; do not guess, ask for the street name",
                             invented.join(" ")
