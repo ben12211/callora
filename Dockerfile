@@ -41,8 +41,10 @@ COPY --from=build /out/callora /usr/local/bin/callora
 # Empty and owned by the runtime user, so a fresh voice-library volume is writable.
 COPY --from=build --chown=65532:65532 /out/data /data
 COPY businesses /app/businesses
+COPY data/israel-streets.tsv.gz /app/data/israel-streets.tsv.gz
 WORKDIR /app
 ENV BUSINESS_CONFIG_DIR=/app/businesses \
+    STREETS_FILE=/app/data/israel-streets.tsv.gz \
     AUDIO_LIBRARY_DIR=/data/voice-library \
     HOST=0.0.0.0 \
     PORT=3000

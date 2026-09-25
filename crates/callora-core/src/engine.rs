@@ -14,6 +14,7 @@ use crate::agent::{AgentAction, AgentTurn};
 use crate::business::Business;
 use crate::config::{AfterPipeline, MetaIntent, PipelineConfig, RuleEffect};
 use crate::customer::Customer;
+use crate::gazetteer::{Gazetteer, Lookup};
 use crate::render::{RenderContext, Renderer, SeededChooser, SpeechPlan};
 use crate::state::{CallState, CompletedRun, Phase, PipelineRun, SlotState, Speaker, Step, Turn};
 use crate::understanding::{default_value, parse_slot_value, Context, Understanding};
@@ -90,12 +91,18 @@ pub struct Engine {
     chooser: SeededChooser,
     /// "Anything else?" was the last question.
     offered_more: bool,
+    /// Israel's localities and streets, for checking the places the agent passes on.
+    gazetteer: Option<Arc<Gazetteer>>,
 }
 
 impl Engine {
     pub fn new(business: Arc<Business>, seed: u64) -> Self {
         let state = CallState::new(&business.config.id);
-        Self { business, state, chooser: SeededChooser(seed | 1), offered_more: false }
+        Self { business, state, chooser: SeededChooser(seed | 1), offered_more: false, gazetteer: None }
+    }
+
+    pub fn set_gazetteer(&mut self, gazetteer: Option<Arc<Gazetteer>>) {
+        self.gazetteer = gazetteer;
     }
 
     pub fn business(&self) -> &Arc<Business> {
@@ -302,6 +309,7 @@ impl Engine {
                     notes.push(format!("{slot} \"{raw}\" was not accepted{range}"));
                     return None;
                 };
+                let value = self.check_place(slot, value, &mut notes);
                 Some(SlotFill {
                     slot: slot.clone(),
                     value,
@@ -366,6 +374,39 @@ impl Engine {
                         SlotState { value: v, confidence: 1.0, provenance: Provenance::Default, confirmed: false },
                     );
                 }
+            }
+        }
+    }
+
+    /// A place the business does not know itself, checked against Israel's localities and
+    /// streets: stored in its official spelling when found, and reported to the agent (with
+    /// the closest names) when not, so it asks the caller rather than guessing.
+    fn check_place(&self, slot: &str, value: SlotValue, notes: &mut Vec<String>) -> SlotValue {
+        let (Some(g), SlotValue::Place { spoken, address: None, customer_place: None }) = (&self.gazetteer, &value)
+        else {
+            return value;
+        };
+        match g.resolve(spoken) {
+            Lookup::Found(a) => {
+                SlotValue::Place { spoken: a.spoken(), address: Some(a.official()), customer_place: None }
+            }
+            Lookup::NoCity { closest } => {
+                let hint = if closest.is_empty() {
+                    "ask which city".to_string()
+                } else {
+                    format!("closest localities: {}; if the caller meant one, confirm it", closest.join(", "))
+                };
+                notes.push(format!("{slot} \"{spoken}\" names no Israeli locality ({hint})"));
+                value
+            }
+            Lookup::NoStreet { city, heard, closest } => {
+                let hint = if closest.is_empty() {
+                    "ask the caller to repeat the street".to_string()
+                } else {
+                    format!("closest streets there: {}; confirm which one", closest.join(", "))
+                };
+                notes.push(format!("{slot}: {city} has no street \"{heard}\" ({hint})"));
+                value
             }
         }
     }

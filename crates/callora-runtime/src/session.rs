@@ -86,6 +86,8 @@ pub struct Services {
     pub llm: Option<Arc<dyn LanguageModel>>,
     /// The conversation agent's model; with a business `agent` config it runs the call.
     pub agent: Option<Arc<dyn LanguageModel>>,
+    /// Israel's localities and streets, for checking places.
+    pub gazetteer: Option<Arc<callora_core::gazetteer::Gazetteer>>,
     pub tts: Option<Arc<dyn Synthesizer>>,
     pub tts_cache: TtsCache,
     pub actions: Arc<dyn ActionRunner>,
@@ -261,8 +263,10 @@ impl Session {
         let (pl_tx, mut pl_rx) = mpsc::unbounded_channel();
         let (playout, playout_task) = Playout::spawn(outbound, pl_tx, cfg.lead_frames);
         let seed = info.call_id.as_u128() as u64;
+        let mut engine = Engine::new(business.clone(), seed);
+        engine.set_gazetteer(services.gazetteer.clone());
         let mut s = Session {
-            engine: Engine::new(business.clone(), seed),
+            engine,
             business,
             library,
             vad: Vad::new(cfg.vad),

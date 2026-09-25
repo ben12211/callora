@@ -155,7 +155,9 @@ pub fn system_prompt(b: &Business) -> String {
          yet (from this utterance or an earlier one), copied in their words, without a leading preposition \
          (מ/ל/ב). A detail you mention or confirm must be in CURRENT TASK or in your fields; otherwise the \
          system does not have it. Never invent or complete a value. A word after a preposition is a place only if it \
-         names a place (\"לשים מונית\" has no destination).\n\
+         names a place (\"לשים מונית\" has no destination). A place is street, number and city when the \
+         caller gave them (\"דיזנגוף 50, תל אביב\"), with the city from earlier in the call if they said it then; \
+         the system checks it against Israel's official list of localities and streets.\n\
          \nRULES:\n\
          - Speech recognition makes mistakes. If the words make no sense, say you did not catch it and ask again \
          (mention what you did understand). Never guess a value, never end the call because of it.\n\
@@ -223,10 +225,10 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
         None => u.push_str("\nCURRENT TASK: none\n"),
     }
     if !state.agent_notes.is_empty() {
-        u.push_str(&format!(
-            "\nSYSTEM: from your last decision, {}. Tell the caller and ask again.\n",
-            state.agent_notes.join("; ")
-        ));
+        u.push_str("\nSYSTEM NOTES on the details you passed last turn (act on them now):\n");
+        for n in &state.agent_notes {
+            u.push_str(&format!("- {n}\n"));
+        }
     }
     u.push_str(&format!("\nCALLER NOW: \"{transcript}\""));
     u

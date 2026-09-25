@@ -174,6 +174,7 @@ async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
         stt: Arc::new(stt.clone()),
         llm: None,
         agent,
+        gazetteer: None,
         tts: Some(Arc::new(FakeTts)),
         tts_cache: TtsCache::new(100),
         actions: Arc::new(ConfiguredActions::new(reqwest::Client::new(), HashMap::new())),

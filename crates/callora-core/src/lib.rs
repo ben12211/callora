@@ -10,6 +10,7 @@ pub mod business;
 pub mod config;
 pub mod customer;
 pub mod engine;
+pub mod gazetteer;
 pub mod hebrew;
 pub mod llm;
 pub mod render;

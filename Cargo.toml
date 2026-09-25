@@ -16,6 +16,7 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
+flate2 = "1"
 callora-core = { path = "crates/callora-core" }
 callora-audio = { path = "crates/callora-audio" }
 callora-providers = { path = "crates/callora-providers" }

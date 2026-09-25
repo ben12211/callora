@@ -388,6 +388,28 @@ fn an_impossible_value_is_rejected_and_the_agent_hears_about_it() {
 }
 
 #[test]
+fn places_are_checked_against_the_list_of_israeli_streets() {
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "8600\tרמת גן\t205\tז'בוטינסקי\tofficial\n8600\tרמת גן\t205\tזבוטינסקי\tsynonym\n1309\tאלעד\t110\tרבי עקיבא\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "מזבוטינסקי 5 ברמת גן למיל״ד",
+        decide(
+            AgentAction::None,
+            "כמה נוסעים?",
+            Some("book_ride"),
+            &[("pickup", "זבוטינסקי 5, רמת גן"), ("destination", "מיל״ד")],
+        ),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "ז'בוטינסקי 5, רמת גן", "the official spelling");
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "כן");
+    assert!(next.user.contains("names no Israeli locality") && next.user.contains("אלעד"), "{}", next.user);
+}
+
+#[test]
 fn drawn_out_hesitations_are_noise() {
     let (call, _) = Call::new(business(&[]));
     let b = call.engine.business().clone();

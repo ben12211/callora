@@ -146,6 +146,23 @@ fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
     Some(Arc::new(Hedged::new(model(env("AGENT_MODEL"), "gpt-4.1"), model(env("AGENT_BACKUP_MODEL"), "gpt-4o"), hedge)))
 }
 
+/// Israel's localities and streets (`STREETS_FILE`, gzipped TSV; default
+/// `data/israel-streets.tsv.gz`). Missing or unreadable, places are simply not checked.
+fn load_gazetteer() -> Option<Arc<callora_core::gazetteer::Gazetteer>> {
+    use std::io::Read as _;
+    let path = env("STREETS_FILE").unwrap_or_else(|| "data/israel-streets.tsv.gz".into());
+    let mut text = String::new();
+    let read =
+        std::fs::File::open(&path).and_then(|f| flate2::read::GzDecoder::new(f).read_to_string(&mut text).map(|_| ()));
+    if let Err(e) = read {
+        tracing::warn!(path, error = %e, "no list of Israeli streets: places will not be checked");
+        return None;
+    }
+    let g = callora_core::gazetteer::Gazetteer::from_tsv(&text);
+    tracing::info!(localities = g.localities(), "list of Israeli streets loaded");
+    (!g.is_empty()).then(|| Arc::new(g))
+}
+
 /// Speech recognition: Scribe (ElevenLabs) unless STT_PROVIDER=cartesia; either needs its key.
 fn speech_to_text() -> Arc<dyn SpeechToText> {
     let scribe = || {
@@ -427,6 +444,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         });
     }
 
+    let gazetteer = load_gazetteer();
     let agent = agent_model(client.clone());
     if agent.is_none() && registry.all().any(|b| b.config.agent.is_some()) {
         tracing::warn!("OPENAI_API_KEY is not set: businesses with an agent fall back to the rules");
@@ -435,6 +453,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         stt,
         llm,
         agent,
+        gazetteer,
         tts,
         tts_cache: TtsCache::new(env("TTS_CACHE_ENTRIES").and_then(|v| v.parse().ok()).unwrap_or(2000)),
         actions: Arc::new(ConfiguredActions::new(client.clone(), env_snapshot())),
@@ -607,6 +626,31 @@ async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
             u.slots.iter().map(|s| format!("{}={}", s.slot, s.value.spoken())).collect::<Vec<_>>().join(", ")
         );
         pending = engine.on_utterance(u);
+    }
+}
+
+#[cfg(test)]
+mod streets {
+    use callora_core::gazetteer::Lookup;
+
+    /// The real list, as shipped in the image.
+    #[test]
+    fn the_shipped_list_resolves_real_places() {
+        std::env::set_var("STREETS_FILE", concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/israel-streets.tsv.gz"));
+        let g = super::load_gazetteer().expect("the list loads");
+        assert!(g.localities() > 1200, "{}", g.localities());
+        let spoken = |t: &str| match g.resolve(t) {
+            Lookup::Found(a) => a.spoken(),
+            other => panic!("{t}: {other:?}"),
+        };
+        assert_eq!(spoken("זבוטינסקי 5 רמת גן"), "ז'בוטינסקי 5, רמת גן");
+        assert_eq!(spoken("מאלעד"), "אלעד");
+        assert_eq!(spoken("דיזנגוף 50 תל אביב"), "דיזנגוף 50, תל אביב");
+        assert_eq!(spoken("לבאר שבע"), "באר שבע");
+        match g.resolve("מיל״ד") {
+            Lookup::NoCity { closest } => assert!(closest.iter().any(|c| c == "אלעד"), "{closest:?}"),
+            other => panic!("{other:?}"),
+        }
     }
 }
 
