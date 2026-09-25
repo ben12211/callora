@@ -265,6 +265,7 @@ impl Session {
         let seed = info.call_id.as_u128() as u64;
         let mut engine = Engine::new(business.clone(), seed);
         engine.set_gazetteer(services.gazetteer.clone());
+        engine.set_caller_phone(info.from.clone());
         let mut s = Session {
             engine,
             business,
@@ -398,6 +399,10 @@ impl Session {
             p.task.abort();
         }
         playout_task.abort();
+        for card in callora_core::orders::order_cards(&s.business, &s.engine.state) {
+            tracing::info!(call = %s.info.call_sid, summary = %card["summary"].as_str().unwrap_or(""), "order card");
+            s.services.store.record(CallRecord::Order { call_id: s.info.call_id, card });
+        }
         let outcome = format!("{ending:?}");
         s.services.store.record(CallRecord::Ended {
             call_id: s.info.call_id,

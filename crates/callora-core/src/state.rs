@@ -170,6 +170,9 @@ pub struct CallState {
     /// The locality given for a place slot that still needs its street ("pickup" → "אלעד").
     #[serde(default)]
     pub place_cities: BTreeMap<String, String>,
+    /// The number the caller is calling from, when the network gives it.
+    #[serde(default)]
+    pub caller_phone: Option<String>,
     pub next_action_run: u64,
 }
 
@@ -196,6 +199,7 @@ impl CallState {
             history: Vec::new(),
             agent_notes: Vec::new(),
             place_cities: BTreeMap::new(),
+            caller_phone: None,
             next_action_run: 1,
         }
     }

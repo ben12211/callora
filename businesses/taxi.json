@@ -208,6 +208,11 @@
       "context_aliases": { "הביתה": "home", "לבית": "home", "לעבודה": "work" },
       "confirm_below": 0.6
     },
+    "customer_name": {
+      "type": "text",
+      "description": "שם הנוסע",
+      "priority": 89
+    },
     "notes": {
       "type": "text",
       "description": "הערות לנהג",
@@ -232,7 +237,7 @@
     "rules": [
       "Service area: all of Israel. Any Israeli city, street or landmark is a valid place.",
       "For a ride you need pickup, destination and the number of passengers; pickup time is now unless the caller says otherwise.",
-      "Book a ride in this order, one short question per turn, skipping whatever the caller already said: 1. pickup city (\"סבבה, מאיזו עיר לאסוף?\"); 2. pickup street and number (\"איזה רחוב ומספר?\"); 3. destination city (\"לאיזו עיר נוסעים?\"); 4. destination street (\"לאיזה רחוב?\"): always ask it once when the destination so far is only a city, even if the caller gave pickup and destination together; only if they then say they do not know is the city enough; 5. passengers (\"כמה נוסעים?\"); 6. a note for the driver (\"יש משהו שהנהג צריך לדעת?\"; \"אין\" means none). Then read_back.",
+      "Book a ride in this order, one short question per turn, skipping whatever the caller already said: 1. pickup city (\"סבבה, מאיזו עיר לאסוף?\"); 2. pickup street and number (\"איזה רחוב ומספר?\"); 3. destination city (\"לאיזו עיר נוסעים?\"); 4. destination street (\"לאיזה רחוב?\"): always ask it once when the destination so far is only a city, even if the caller gave pickup and destination together; only if they then say they do not know is the city enough; 5. passengers (\"כמה נוסעים?\"); 6. the name for the booking (\"על שם מי ההזמנה?\"; skip it if the system already knows the customer); 7. a note for the driver (\"יש משהו שהנהג צריך לדעת?\"; \"אין\" means none). Then read_back.",
       "Examples of the order: caller \"לבאר שבע\" (destination city, no street) → say \"לאיזה רחוב?\", not the passengers yet. Caller \"מרחוב הרצל 10 ברעננה לתל אביב\" → pickup is complete, the destination is only a city → say \"לאיזה רחוב?\". Caller \"לא יודע\" to that → the city is enough → say \"כמה נוסעים?\".",
       "Small talk together with a request gets one short answer that goes straight to the request: caller \"מה המצב? אני יכול להזמין מונית?\" → say \"סבבה, מאיזו עיר לאסוף?\" (never only \"הכל טוב\" when they asked for something).",
       "When the system did not accept a detail, ask for it again with the short question (\"כמה נוסעים?\"); do not explain the system's limits.",
@@ -246,7 +251,7 @@
     "phrases": [
       "ack", "anything_else", "goodbye", "ask_change", "go_back", "fallback_1", "fallback_restart", "still_there",
       "ask_pickup", "ask_destination", "ask_passengers", "ask_item", "ask_ride_time", "small_talk_answer",
-      "small_talk_short", "ask_pickup_city", "ask_pickup_street", "ask_destination_city", "ask_destination_street", "ask_notes",
+      "small_talk_short", "ask_pickup_city", "ask_pickup_street", "ask_destination_city", "ask_destination_street", "ask_name", "ask_notes",
       "filler_checking", "invoice_answer", "hours_answer", "cancel_declined"
     ]
   },
@@ -277,6 +282,7 @@
         { "slot": "destination", "required": true, "ask": "ask_destination" },
         { "slot": "pickup_time", "required": true, "default": "now" },
         { "slot": "passengers", "required": true, "ask": "ask_passengers" },
+        { "slot": "customer_name", "ask": "ask_name" },
         { "slot": "luggage" },
         { "slot": "wheelchair" },
         { "slot": "child_seat" },
@@ -429,6 +435,7 @@
     "ask_pickup_street": { "variants": ["איזה רחוב ומספר?", "ואיזה רחוב ומספר?"] },
     "ask_destination_city": { "variants": ["לאיזו עיר נוסעים?", "ולאיזו עיר נוסעים?"] },
     "ask_destination_street": { "variants": ["לאיזה רחוב?", "ולאיזה רחוב?"] },
+    "ask_name": { "variants": ["על שם מי ההזמנה?", "מה השם להזמנה?"] },
     "ask_notes": { "variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?"] },
     "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק לך.", "אממ, רגע."] },
     "ride_booked": {

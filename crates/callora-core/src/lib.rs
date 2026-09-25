@@ -13,6 +13,7 @@ pub mod engine;
 pub mod gazetteer;
 pub mod hebrew;
 pub mod llm;
+pub mod orders;
 pub mod render;
 pub mod speech;
 pub mod state;

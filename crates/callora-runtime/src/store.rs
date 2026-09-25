@@ -110,6 +110,13 @@ async fn write(pool: &PgPool, record: &CallRecord) -> sqlx::Result<()> {
                 .execute(pool)
                 .await?;
         }
+        CallRecord::Order { call_id, card } => {
+            sqlx::query("INSERT INTO callora_v2.orders (call_id, card) VALUES ($1, $2)")
+                .bind(call_id)
+                .bind(card)
+                .execute(pool)
+                .await?;
+        }
         CallRecord::Status { call_sid, status, duration_seconds } => {
             sqlx::query("UPDATE callora_v2.calls SET twilio_status = $2, duration_seconds = COALESCE($3, duration_seconds) WHERE call_sid = $1")
                 .bind(call_sid)
@@ -162,6 +169,28 @@ pub async fn list_calls(pool: &PgPool, business: Option<&str>, limit: i64, offse
                 "outcome": r.get::<Option<String>, _>("outcome"),
                 "twilio_status": r.get::<Option<String>, _>("twilio_status"),
                 "duration_seconds": r.get::<Option<i32>, _>("duration_seconds"),
+            })
+        })
+        .collect())
+}
+
+/// The newest order cards, with the calling number and time.
+pub async fn list_orders(pool: &PgPool, limit: i64) -> sqlx::Result<Vec<Value>> {
+    let rows = sqlx::query(
+        "SELECT o.card, o.at, c.from_number, c.id AS call_id FROM callora_v2.orders o
+         JOIN callora_v2.calls c ON c.id = o.call_id ORDER BY o.at DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "card": r.get::<Value, _>("card"),
+                "at": r.get::<chrono::DateTime<chrono::Utc>, _>("at"),
+                "from": r.get::<Option<String>, _>("from_number"),
+                "call_id": r.get::<uuid::Uuid, _>("call_id"),
             })
         })
         .collect())

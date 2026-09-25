@@ -135,6 +135,11 @@ pub enum CallRecord {
         outcome: String,
         state: serde_json::Value,
     },
+    /// A completed task's card (see `callora_core::orders`).
+    Order {
+        call_id: uuid::Uuid,
+        card: serde_json::Value,
+    },
     Status {
         call_sid: String,
         status: String,

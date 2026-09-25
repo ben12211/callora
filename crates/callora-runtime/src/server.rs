@@ -96,6 +96,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(twilio::WHISPER_PATH, post(whisper))
         .route("/api/businesses", get(api_businesses))
         .route("/api/calls", get(api_calls))
+        .route("/api/orders", get(api_orders))
+        .route("/orders", get(orders_page))
         .route("/api/calls/{id}", get(api_call))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
         .with_state(state)
@@ -408,6 +410,27 @@ async fn api_calls(State(s): State<Arc<AppState>>, headers: HeaderMap, Query(q):
         Ok(rows) => Json(rows).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "listing calls failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// The owner's page of order cards. It holds no data itself: it asks for the admin key
+/// once, keeps it in the browser, and reads `/api/orders` with it (so the key never lands in
+/// a URL or an access log).
+async fn orders_page() -> Response {
+    axum::response::Html(include_str!("orders.html")).into_response()
+}
+
+async fn api_orders(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    match crate::store::list_orders(pool, 100).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "listing orders failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

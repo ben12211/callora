@@ -512,6 +512,43 @@ fn a_street_the_caller_never_said_is_not_booked() {
 }
 
 #[test]
+fn a_booked_ride_leaves_an_order_card_with_name_and_phone() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_caller_phone(Some("+972501234567".into()));
+    let fields = [
+        ("pickup", "רבי עקיבא 12"),
+        ("destination", "נתב״ג"),
+        ("passengers", "שניים"),
+        ("customer_name", "בן"),
+        ("notes", "יש מזוודה גדולה"),
+    ];
+    call.engine.on_agent_turn(
+        "מרבי עקיבא 12 לנתב״ג, שניים, על שם בן, יש מזוודה גדולה",
+        decide(AgentAction::ReadBack, "סגור.", Some("book_ride"), &fields),
+        "",
+    );
+    let d = call.engine.on_agent_turn("כן", decide(AgentAction::Submit, "סגור.", None, &[]), "");
+    let (run_id, _, input) = action(&d).expect("the booking runs");
+    assert_eq!(input["caller_phone"], "+972501234567", "dispatch gets the caller's number");
+    call.engine.on_action_result(run_id, Ok(serde_json::json!({ "ride_id": "R-7" })));
+
+    let cards = callora_core::orders::order_cards(call.engine.business(), &call.engine.state);
+    assert_eq!(cards.len(), 1);
+    let summary = cards[0]["summary"].as_str().unwrap();
+    for part in [
+        "הזמנת מונית",
+        "טלפון: +972501234567",
+        "שם הנוסע: בן",
+        "יעד: נמל התעופה בן גוריון",
+        "מספר נוסעים: 2",
+        "הערות לנהג: יש מזוודה גדולה",
+    ] {
+        assert!(summary.contains(part), "{part} in {summary}");
+    }
+    assert_eq!(cards[0]["result"]["ride_id"], "R-7");
+}
+
+#[test]
 fn drawn_out_hesitations_are_noise() {
     let (call, _) = Call::new(business(&[]));
     let b = call.engine.business().clone();

@@ -101,6 +101,10 @@ impl Engine {
         Self { business, state, chooser: SeededChooser(seed | 1), offered_more: false, gazetteer: None }
     }
 
+    pub fn set_caller_phone(&mut self, phone: Option<String>) {
+        self.state.caller_phone = phone.filter(|p| !p.trim().is_empty());
+    }
+
     pub fn set_gazetteer(&mut self, gazetteer: Option<Arc<Gazetteer>>) {
         self.gazetteer = gazetteer;
     }
@@ -901,6 +905,7 @@ impl Engine {
             "intent": run.intent,
             "slots": slots,
             "customer": self.state.customer,
+            "caller_phone": self.state.caller_phone,
         })
     }
 

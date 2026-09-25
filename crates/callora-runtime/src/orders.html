@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>הזמנות</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111418; --card: #1b2027; --text: #e7eaee; --muted: #9aa3ad; --line: #2c333c; --accent: #6ea8fe; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+  header { padding: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { margin: 0; font-size: 20px; }
+  #status { color: var(--muted); font-size: 13px; }
+  main { padding: 0 16px 24px; display: grid; gap: 12px; max-width: 720px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .top { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .task { font-weight: 600; }
+  .time { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  a { color: var(--accent); }
+  .empty { color: var(--muted); text-align: center; padding: 32px 0; }
+  form { display: grid; gap: 8px; max-width: 360px; margin: 32px auto; padding: 0 16px; }
+  input, button { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+  button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
+</style>
+</head>
+<body>
+<header><h1>הזמנות</h1><span id="status"></span></header>
+<main id="list"></main>
+<form id="login" hidden>
+  <label for="key">מפתח גישה</label>
+  <input id="key" type="password" autocomplete="current-password" required>
+  <button type="submit">כניסה</button>
+</form>
+<script>
+const list = document.getElementById("list");
+const status = document.getElementById("status");
+const login = document.getElementById("login");
+let key = null;
+try { key = localStorage.getItem("callora_key"); } catch (_) {}
+
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  if (text != null) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+
+function render(orders) {
+  list.replaceChildren();
+  if (!orders.length) { list.append(el("div", "אין הזמנות עדיין", "empty")); return; }
+  for (const o of orders) {
+    const card = el("article", null, "card");
+    const top = el("div", null, "top");
+    top.append(el("span", o.card.task || "הזמנה", "task"));
+    const when = new Date(o.at);
+    top.append(el("span", when.toLocaleString("he-IL", { timeZone: "Asia/Jerusalem", dateStyle: "short", timeStyle: "short" }), "time"));
+    card.append(top);
+    const dl = el("dl");
+    const phone = o.card.phone || o.from;
+    if (phone) {
+      dl.append(el("dt", "טלפון"));
+      const dd = el("dd");
+      const a = el("a", phone); a.href = "tel:" + phone; a.dir = "ltr";
+      dd.append(a); dl.append(dd);
+    }
+    for (const d of o.card.details || []) {
+      dl.append(el("dt", d.label));
+      dl.append(el("dd", d.address && d.address !== d.value ? d.value + " (" + d.address + ")" : d.value));
+    }
+    card.append(dl);
+    list.append(card);
+  }
+}
+
+async function load() {
+  if (!key) { login.hidden = false; list.hidden = true; return; }
+  try {
+    const r = await fetch("/api/orders", { headers: { "x-api-key": key } });
+    if (r.status === 401) {
+      try { localStorage.removeItem("callora_key"); } catch (_) {}
+      key = null; status.textContent = "מפתח שגוי"; login.hidden = false; list.hidden = true; return;
+    }
+    const orders = await r.json();
+    login.hidden = true; list.hidden = false;
+    render(orders);
+    status.textContent = "עודכן " + new Date().toLocaleTimeString("he-IL", { timeZone: "Asia/Jerusalem" });
+  } catch (e) {
+    status.textContent = "אין חיבור";
+  }
+}
+
+login.addEventListener("submit", (e) => {
+  e.preventDefault();
+  key = document.getElementById("key").value.trim();
+  try { localStorage.setItem("callora_key", key); } catch (_) {}
+  load();
+});
+
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>
