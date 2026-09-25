@@ -450,6 +450,27 @@ impl Engine {
                 notes.push(format!("{slot} \"{spoken}\" names no Israeli locality ({hint})"));
                 value
             }
+            // "בית דחה 45, אלעד": a house number makes it a street, not a landmark, and אלעד
+            // has no such street. Most likely misheard: ask once more; the second time it is
+            // kept (the list may lack a new street).
+            Lookup::NoStreet { city, heard, closest }
+                if spoken.chars().any(|c| c.is_ascii_digit())
+                    && self.state.doubted_streets.insert(slot.to_string()) =>
+            {
+                let hint = if closest.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " (the closest streets there: {}; if one sounds like it, ask \"לרחוב X התכוונת?\")",
+                        closest.join(", ")
+                    )
+                };
+                notes.push(format!(
+                    "{slot}: {city} has no street \"{heard}\"; it was not accepted, probably misheard. Ask for the street again{hint}"
+                ));
+                self.state.place_cities.insert(slot.to_string(), city);
+                return None;
+            }
             Lookup::NoStreet { city, heard, closest } => {
                 let hint = if closest.is_empty() {
                     "fine if it is a landmark or a business; otherwise ask the caller to repeat the street".to_string()

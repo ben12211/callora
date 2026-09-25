@@ -455,6 +455,46 @@ fn a_city_alone_is_not_a_pickup() {
 }
 
 #[test]
+fn a_numbered_street_the_city_does_not_have_is_asked_again_once() {
+    // From a live call: "בית דחה 45" in אלעד went to dispatch; אלעד has no such street.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבינו בחיי\tofficial\n1309\tאלעד\t111\tרבי עקיבא\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "אלעד",
+        decide(AgentAction::None, "איזה רחוב ומספר?", Some("book_ride"), &[("pickup", "אלעד")]),
+        "",
+    );
+    call.engine.on_agent_turn(
+        "בית דחה 45",
+        decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "בית דחה 45, אלעד")]),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None, "not a street of אלעד");
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "בית דחה 45");
+    assert!(next.user.contains("has no street \"בית דחה\"; it was not accepted"), "{}", next.user);
+    assert!(next.user.contains("- pickup: city אלעד, street MISSING"), "{}", next.user);
+
+    // Said again the same way: kept, the list may be missing it.
+    call.engine.on_agent_turn(
+        "בית דחה 45",
+        decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "בית דחה 45")]),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "בית דחה 45");
+}
+
+#[test]
+fn a_default_detail_is_shown_as_its_default() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn("רוצה מונית", decide(AgentAction::None, "מאיזו עיר לאסוף?", Some("book_ride"), &[]), "");
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "אלעד");
+    assert!(next.user.contains("- pickup_time: now (default; do not ask)"), "{}", next.user);
+}
+
+#[test]
 fn city_first_then_street_builds_one_address() {
     // The order the owner asked for: "מאיזו עיר לאסוף?" "אלעד" ... "איזה רחוב ומספר?" "בן זכאי 45".
     let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(

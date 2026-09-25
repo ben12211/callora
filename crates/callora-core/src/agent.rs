@@ -218,6 +218,10 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                             "- {}: city {}, street MISSING (required)\n",
                             ps.slot, state.place_cities[&ps.slot]
                         )),
+                        None if ps.default.is_some() => {
+                            let d = ps.default.as_ref().map(|d| d.as_str().map_or(d.to_string(), str::to_string));
+                            u.push_str(&format!("- {}: {} (default; do not ask)\n", ps.slot, d.unwrap_or_default()))
+                        }
                         None if ps.required => u.push_str(&format!("- {}: MISSING (required)\n", ps.slot)),
                         None => u.push_str(&format!("- {}: not given (optional)\n", ps.slot)),
                     }

@@ -1,7 +1,7 @@
 //! Explicit call state. This, not an LLM transcript, is the source of truth for what the
 //! caller wants and what has been collected.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -170,6 +170,9 @@ pub struct CallState {
     /// The locality given for a place slot that still needs its street ("pickup" → "אלעד").
     #[serde(default)]
     pub place_cities: BTreeMap<String, String>,
+    /// Place slots whose street was not found once already: the second time it is kept.
+    #[serde(default)]
+    pub doubted_streets: BTreeSet<String>,
     /// The number the caller is calling from, when the network gives it.
     #[serde(default)]
     pub caller_phone: Option<String>,
@@ -199,6 +202,7 @@ impl CallState {
             history: Vec::new(),
             agent_notes: Vec::new(),
             place_cities: BTreeMap::new(),
+            doubted_streets: BTreeSet::new(),
             caller_phone: None,
             next_action_run: 1,
         }
