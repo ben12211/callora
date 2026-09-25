@@ -50,8 +50,8 @@ impl LanguageModel for FirstAnswer {
 
 /// The agent's model with a hedge: when the primary has produced nothing after `after`
 /// (or fails), the same request goes to the backup, and whichever speaks first is used.
-/// Measured on the agent prompt, gpt-4.1's first words take ~620 ms and occasionally over a
-/// second; the hedge caps that tail at about `after` plus the backup's own time.
+/// Measured on the agent prompt, the models' first words take ~600-800 ms and occasionally
+/// over a second; the hedge caps that tail at about `after` plus the backup's own time.
 pub struct Hedged {
     primary: Arc<dyn LanguageModel>,
     backup: Arc<dyn LanguageModel>,

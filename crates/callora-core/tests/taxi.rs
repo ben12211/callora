@@ -357,6 +357,20 @@ fn the_read_back_is_not_acknowledged_twice() {
 }
 
 #[test]
+fn a_submit_does_not_say_checking_twice() {
+    // From a live call: "שנייה, אני בודק. רגע, בודק." on a ride status check.
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.engine.on_agent_turn(
+        "יש את המונית?",
+        decide(AgentAction::Submit, "שנייה, אני בודק.", Some("ride_status"), &[]),
+        "",
+    );
+    let text = spoken(&d);
+    assert!(action(&d).is_some(), "the status check runs: {d:?}");
+    assert_eq!(text.matches("בודק").count(), 1, "one filler: {text}");
+}
+
+#[test]
 fn a_question_before_the_read_back_is_dropped() {
     let (mut call, _) = Call::new(business(&[]));
     let fields = [("pickup", "רבי עקיבא 12"), ("destination", "תל אביב"), ("passengers", "שניים")];
@@ -381,7 +395,7 @@ fn an_impossible_value_is_rejected_and_the_agent_hears_about_it() {
     );
     assert_eq!(call.slot("passengers"), None, "not in the booking");
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "ארבעה");
-    assert!(next.user.contains("passengers \"42\" was not accepted (allowed 1-20)"), "{}", next.user);
+    assert!(next.user.contains("passengers \"42\" was not accepted; ask for it again"), "{}", next.user);
     call.engine.on_agent_turn("ארבעה", decide(AgentAction::None, "כמה נוסעים?", None, &[("passengers", "ארבעה")]), "");
     assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 4 }));
     assert!(call.engine.state.agent_notes.is_empty(), "the note was delivered once");

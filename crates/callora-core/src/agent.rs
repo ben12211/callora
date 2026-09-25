@@ -179,7 +179,8 @@ pub fn system_prompt(b: &Business) -> String {
     if !instant.is_empty() {
         s.push_str(
             "\nINSTANT PHRASES: pre-recorded, they play with no delay, while any other wording takes the voice about \
-             a second to produce. Whenever one of them says what you mean, your say must be exactly that phrase:\n",
+             a second to produce. Whenever one of them says what you mean, your say must be exactly that phrase, \
+             word for word: add nothing, not even the city (\"לאיזה רחוב?\", not \"לאיזה רחוב בבאר שבע?\"):\n",
         );
         for p in &instant {
             s.push_str(&format!("\"{p}\"\n"));

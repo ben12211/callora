@@ -239,12 +239,17 @@ impl Engine {
                             .and_then(|c| self.business.response(&c.response))
                             .is_some_and(|resp| resp.prefix.is_some())
                 });
-                let say =
-                    if turn.action == AgentAction::ReadBack && (turn.say.trim_end().ends_with('?') || read_back_acks) {
-                        ""
-                    } else {
-                        turn.say.as_str()
-                    };
+                // And on a submit whose action says its own filler ("רגע, בודק"), the agent's
+                // "שנייה, אני בודק" would be said twice.
+                let action_fills = self.state.run.as_ref().is_some_and(|r| self.pipeline_of(r).filler.is_some());
+                let say = if (turn.action == AgentAction::ReadBack
+                    && (turn.say.trim_end().ends_with('?') || read_back_acks))
+                    || (turn.action == AgentAction::Submit && action_fills)
+                {
+                    ""
+                } else {
+                    turn.say.as_str()
+                };
                 self.agent_say(&mut out, say, spoken);
                 if confirmed_now {
                     if let Some(run) = &mut self.state.run {
@@ -302,11 +307,8 @@ impl Engine {
                 // The parser marks impossible values (42 passengers when the most is 20)
                 // below `reject_below`; the agent's certainty does not make them possible.
                 let Some((value, confidence)) = parsed.filter(|(_, c)| *c >= cfg.reject_below) else {
-                    let range = match (cfg.min, cfg.max) {
-                        (Some(lo), Some(hi)) => format!(" (allowed {lo}-{hi})"),
-                        _ => String::new(),
-                    };
-                    notes.push(format!("{slot} \"{raw}\" was not accepted{range}"));
+                    // Not the limits: given the range, the agent lectured about it every turn.
+                    notes.push(format!("{slot} \"{raw}\" was not accepted; ask for it again with the short question"));
                     return None;
                 };
                 let value = self.check_place(slot, value, &mut notes)?;

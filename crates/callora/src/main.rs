@@ -133,9 +133,9 @@ fn language_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
     }
 }
 
-/// The conversation agent: AGENT_MODEL (default gpt-4.1, the fastest to first words among
-/// the models that got every test turn right), hedged after AGENT_HEDGE_MS (default 900) by
-/// AGENT_BACKUP_MODEL (default gpt-4o). Needs OPENAI_API_KEY.
+/// The conversation agent: AGENT_MODEL (default gpt-4o: on the full taxi prompt it got every
+/// test turn right with first words at ~610 ms median, gpt-4.1 at ~770), hedged after
+/// AGENT_HEDGE_MS (default 900) by AGENT_BACKUP_MODEL (default gpt-4.1). Needs OPENAI_API_KEY.
 fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
     let key = env("OPENAI_API_KEY")?;
     let base = env("TEXT_LLM_BASE_URL");
@@ -143,7 +143,7 @@ fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
         Arc::new(OpenAi::new(http.clone(), key.clone(), base.clone(), Some(name.unwrap_or_else(|| default.into()))))
     };
     let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(900));
-    Some(Arc::new(Hedged::new(model(env("AGENT_MODEL"), "gpt-4.1"), model(env("AGENT_BACKUP_MODEL"), "gpt-4o"), hedge)))
+    Some(Arc::new(Hedged::new(model(env("AGENT_MODEL"), "gpt-4o"), model(env("AGENT_BACKUP_MODEL"), "gpt-4.1"), hedge)))
 }
 
 /// Israel's localities and streets (`STREETS_FILE`, gzipped TSV; default
