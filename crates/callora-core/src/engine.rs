@@ -299,10 +299,29 @@ impl Engine {
     fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> bool {
         let customer = self.state.customer.clone();
         let mut notes = Vec::new();
+        // Everything the caller has said in this call, to check places against.
+        let heard: String = self
+            .state
+            .history
+            .iter()
+            .filter(|t| t.speaker == Speaker::Caller)
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+            .join(". ");
         let fills: Vec<SlotFill> = fields
             .iter()
             .filter_map(|(slot, raw)| {
                 let cfg = self.business.config.slots.get(slot)?;
+                if cfg.kind == crate::config::SlotKind::Place {
+                    let invented = crate::gazetteer::unheard_words(raw, &heard);
+                    if !invented.is_empty() {
+                        notes.push(format!(
+                            "{slot}: the caller never said \"{}\"; do not guess, ask for the street name",
+                            invented.join(" ")
+                        ));
+                        return None;
+                    }
+                }
                 let parsed = parse_slot_value(&self.business, slot, cfg, raw, true, customer.as_ref());
                 // The parser marks impossible values (42 passengers when the most is 20)
                 // below `reject_below`; the agent's certainty does not make them possible.

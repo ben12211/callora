@@ -1058,32 +1058,41 @@ impl Session {
         if !self.agent_busy() && plan.segments.first().is_some_and(|s| self.needs_live_tts(s)) {
             self.cover_live_tts(plan.gain_db);
         }
-        for seg in &plan.segments {
-            let id = self.next_item;
-            self.next_item += 1;
-            if let Some(clip) = self.library.get_loose(&seg.delivery, &seg.text) {
-                self.services.metrics.segment(if seg.origin == SegmentOrigin::Template {
-                    "template"
-                } else {
-                    "cached"
-                });
-                self.enqueue(PlayItem { id, source: Source::Clip(clip), gain_db: plan.gain_db });
-                continue;
-            }
-            let (Some(tts), Some(request)) = (self.services.tts.clone(), self.tts_request(seg)) else {
-                tracing::error!(call = %self.info.call_sid, text = %seg.text, "not in the voice library and no TTS configured; segment skipped");
-                continue;
+        for whole in &plan.segments {
+            // A long sentence for live TTS goes out as short pieces synthesized side by side:
+            // eleven_v3 took 6 to 31 s on a whole read-back, ~1 s on each short piece.
+            let pieces: Vec<SpeechSegment> = if self.library.get_loose(&whole.delivery, &whole.text).is_some() {
+                vec![whole.clone()]
+            } else {
+                split_for_tts(&whole.text).into_iter().map(|text| SpeechSegment { text, ..whole.clone() }).collect()
             };
-            let key = request.cache_key();
-            if let Some(audio) = self.services.tts_cache.get(&key) {
-                self.services.metrics.segment("tts_cached");
-                self.enqueue(PlayItem { id, source: Source::Clip(audio), gain_db: plan.gain_db });
-                continue;
+            for seg in &pieces {
+                let id = self.next_item;
+                self.next_item += 1;
+                if let Some(clip) = self.library.get_loose(&seg.delivery, &seg.text) {
+                    self.services.metrics.segment(if seg.origin == SegmentOrigin::Template {
+                        "template"
+                    } else {
+                        "cached"
+                    });
+                    self.enqueue(PlayItem { id, source: Source::Clip(clip), gain_db: plan.gain_db });
+                    continue;
+                }
+                let (Some(tts), Some(request)) = (self.services.tts.clone(), self.tts_request(seg)) else {
+                    tracing::error!(call = %self.info.call_sid, text = %seg.text, "not in the voice library and no TTS configured; segment skipped");
+                    continue;
+                };
+                let key = request.cache_key();
+                if let Some(audio) = self.services.tts_cache.get(&key) {
+                    self.services.metrics.segment("tts_cached");
+                    self.enqueue(PlayItem { id, source: Source::Clip(audio), gain_db: plan.gain_db });
+                    continue;
+                }
+                self.services.metrics.segment("tts");
+                let (tx, rx) = mpsc::channel(64);
+                self.enqueue(PlayItem { id, source: Source::Stream(rx), gain_db: plan.gain_db });
+                spawn_tts(tts, request, key, tx, self.services.tts_cache.clone(), self.events.clone());
             }
-            self.services.metrics.segment("tts");
-            let (tx, rx) = mpsc::channel(64);
-            self.enqueue(PlayItem { id, source: Source::Stream(rx), gain_db: plan.gain_db });
-            spawn_tts(tts, request, key, tx, self.services.tts_cache.clone(), self.events.clone());
         }
     }
 
@@ -1217,6 +1226,37 @@ impl Session {
 
 /// The same words, ignoring punctuation, spacing and case: a partial transcript that
 /// already says what the final one says.
+/// Pieces of a sentence short enough for fast live TTS: split after commas and sentence
+/// marks, then merged back so no piece is a lone word ("סגור.") next to a short neighbour.
+fn split_for_tts(text: &str) -> Vec<String> {
+    const SHORT: usize = 45;
+    if text.chars().count() <= SHORT {
+        return vec![text.to_string()];
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        current.push(ch);
+        if matches!(ch, ',' | '.' | '?' | '!') {
+            parts.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    let mut out: Vec<String> = Vec::new();
+    for p in parts.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        match out.last_mut() {
+            Some(last) if last.chars().count() + p.chars().count() < 20 => {
+                last.push(' ');
+                last.push_str(&p);
+            }
+            _ => out.push(p),
+        }
+    }
+    out
+}
+
 /// The recognizer's marks for a sentence the caller broke off: a trailing "..." or "-".
 fn is_unfinished(text: &str) -> bool {
     let t = text.trim_end();
@@ -1285,6 +1325,16 @@ fn spawn_tts(
 #[cfg(test)]
 mod tests {
     use super::is_unfinished;
+
+    #[test]
+    fn long_live_sentences_are_split_into_short_pieces() {
+        let read_back = "שלושה נוסעים מרבן יוחנן בן זכאי 45, אלעד לאהרונוביץ ראובן 42, בני ברק, עכשיו. לשלוח?";
+        let pieces = super::split_for_tts(read_back);
+        assert_eq!(pieces.join(" "), read_back, "nothing is lost");
+        assert!(pieces.len() >= 3, "{pieces:?}");
+        assert!(pieces.iter().all(|p| p.chars().count() <= 40), "{pieces:?}");
+        assert_eq!(super::split_for_tts("לאיזה רחוב בבני ברק?"), vec!["לאיזה רחוב בבני ברק?"]);
+    }
 
     #[test]
     fn broken_off_sentences_are_recognised() {

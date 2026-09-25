@@ -349,7 +349,11 @@ fn the_read_back_is_not_acknowledged_twice() {
     // A live call said "סגור. סגור. שבעה נוסעים...": the agent's lead-in plus the read-back's own.
     let (mut call, _) = Call::new(business(&[]));
     let fields = [("pickup", "אלעד"), ("destination", "תל אביב"), ("passengers", "שבע")];
-    let d = call.engine.on_agent_turn("שבע", decide(AgentAction::ReadBack, "סגור.", Some("book_ride"), &fields), "");
+    let d = call.engine.on_agent_turn(
+        "מאלעד לתל אביב, שבע",
+        decide(AgentAction::ReadBack, "סגור.", Some("book_ride"), &fields),
+        "",
+    );
     let text = spoken(&d);
     assert!(text.contains("לשלוח?"), "{text}");
     let acks = ["סגור.", "אוקיי.", "מעולה.", "הבנתי.", "סבבה."].iter().map(|a| text.matches(a).count()).sum::<usize>();
@@ -485,6 +489,25 @@ fn city_first_then_street_builds_one_address() {
         "",
     );
     assert_eq!(place(call.slot("destination")), "רגר 10, באר שבע", "a destination street joins its city too");
+}
+
+#[test]
+fn a_street_the_caller_never_said_is_not_booked() {
+    // From a live call: "אההה, 42." was booked as "רחוב אהרונוביץ' 42, בני ברק".
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "לבני ברק",
+        decide(AgentAction::None, "לאיזה רחוב?", Some("book_ride"), &[("destination", "בני ברק")]),
+        "",
+    );
+    call.engine.on_agent_turn(
+        "אההה, 42.",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "רחוב אהרונוביץ' 42, בני ברק")]),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), "בני ברק", "the invented street is not stored");
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "שלוש");
+    assert!(next.user.contains("the caller never said"), "{}", next.user);
 }
 
 #[test]

@@ -161,8 +161,9 @@ pub fn system_prompt(b: &Business) -> String {
          caller gave them (\"דיזנגוף 50, תל אביב\"), with the city from earlier in the call if they said it then; \
          the system checks it against Israel's official list of localities and streets.\n\
          \nRULES:\n\
-         - Speech recognition makes mistakes. If the words make no sense, say you did not catch it and ask again \
-         (mention what you did understand). Never guess a value, never end the call because of it.\n\
+         - Speech recognition makes mistakes. Act on what you did understand (\"...רוצה ... מונית\" is enough to start \
+         a booking); if nothing makes sense, say you did not catch it and ask again. Never guess a value (a number \
+         alone is a house number, not a street), never end the call because of it.\n\
          - Greetings and small talk get a short friendly answer, then offer help.\n\
          - Prices, arrival times and availability come only from the system. Never promise them yourself.\n\
          - Ask for one missing required detail at a time, the most important first. Never ask about optional \

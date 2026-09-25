@@ -134,6 +134,40 @@ fn sound(s: &str) -> String {
         .collect()
 }
 
+/// Words of a place the caller never said, not even garbled: the agent made them up. A live
+/// call booked "רחוב אהרונוביץ' 42" when the caller had said "אההה, 42": the street was real,
+/// so nothing else caught it. A word counts as heard when it is close to a word the caller
+/// said, or to a stretch of their speech with the spaces removed (recognition splits names:
+/// "בני ינאי אומה" is "בנייני האומה").
+pub fn unheard_words(value: &str, heard: &str) -> Vec<String> {
+    let heard = norm(heard);
+    let heard_words: Vec<&str> = heard.split(' ').filter(|w| !w.is_empty()).collect();
+    let compact: Vec<char> = heard.chars().filter(|c| *c != ' ').collect();
+    let near = |w: &str| {
+        let len = w.chars().count();
+        let limit = len.div_ceil(3).max(1);
+        if heard_words.iter().any(|h| distance(w, h) <= limit) {
+            return true;
+        }
+        for size in len.saturating_sub(1).max(1)..=len + 1 {
+            for start in 0..compact.len().saturating_sub(size - 1) {
+                let piece: String = compact[start..start + size].iter().collect();
+                if distance(w, &piece) <= limit {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+    norm(value)
+        .split(' ')
+        .filter(|w| w.chars().count() >= 2 && !w.chars().all(|c| c.is_ascii_digit()))
+        .filter(|w| !matches!(*w, "רחוב" | "רח" | "שדרות" | "שד" | "דרכ" | "סמטת" | "כיכר"))
+        .filter(|w| !near(w) && !strip_prefix(w).is_some_and(near))
+        .map(str::to_string)
+        .collect()
+}
+
 /// A misspelling small enough to correct without asking.
 fn close_enough(heard: &str, key: &str) -> bool {
     let len = key.chars().count();
@@ -411,6 +445,16 @@ mod tests {
         assert_eq!(found(g.resolve("אלעד בן זכאי 45")).spoken(), "רבן יוחנן בן זכאי 45, אלעד");
         assert_eq!(found(g.resolve("בן זכאי 45, אלעד")).spoken(), "רבן יוחנן בן זכאי 45, אלעד");
         assert_eq!(found(g.resolve("מושב בן זכאי")).city, "בן זכאי");
+    }
+
+    #[test]
+    fn words_nobody_said_are_caught() {
+        // The live call: "אההה, 42" became "רחוב אהרונוביץ' 42".
+        let heard = "אלעד. בן זכר, 45. אה, בני וורק. אההה, 42.";
+        assert_eq!(unheard_words("רחוב אהרונוביץ' 42, בני ברק", heard), vec!["אהרונוביצ"]);
+        assert!(unheard_words("בן זכאי 45, אלעד", heard).is_empty(), "a garbled word is still heard");
+        // Recognition split the name; the agent's knowledge put it together.
+        assert!(unheard_words("בנייני האומה, ירושלים", "נוסעים לירושלים. בני ינאי, אומה.").is_empty());
     }
 
     #[test]
