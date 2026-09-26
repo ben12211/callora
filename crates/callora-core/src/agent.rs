@@ -325,11 +325,9 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
     let schema = json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["action", "say", "task", "fields"],
+        "required": ["action", "fields", "say", "task"],
         "properties": {
             "action": { "type": "string", "enum": actions },
-            "say": { "type": "string" },
-            "task": { "type": ["string", "null"], "enum": tasks },
             "fields": {
                 "type": "array",
                 "items": {
@@ -341,7 +339,9 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
                         "value": { "type": "string" }
                     }
                 }
-            }
+            },
+            "say": { "type": "string" },
+            "task": { "type": ["string", "null"], "enum": tasks }
         }
     });
     LlmRequest { system: system_prompt(b), user: turn_message(b, state, transcript), schema }
@@ -414,6 +414,24 @@ impl SayStream {
         let value = &after[open + 1..];
         let close = value.find('"')?;
         Some(AgentAction::parse(&value[..close]))
+    }
+
+    /// The fields, once the reply has got to `say` (they come before it): the runtime checks
+    /// them before a word is spoken. "47" passengers was rejected after the agent had already
+    /// asked the next question, and the call went out of step.
+    pub fn fields(&self) -> Option<Vec<(String, String)>> {
+        let say = self.raw.find("\"say\"")?;
+        let key = self.raw[..say].find("\"fields\"")?;
+        let head = &self.raw[key..say];
+        let open = head.find('[')?;
+        let close = head.rfind(']')?;
+        let items: Vec<Value> = serde_json::from_str(&head[open..=close]).ok()?;
+        Some(
+            items
+                .iter()
+                .filter_map(|f| Some((f.get("slot")?.as_str()?.to_string(), f.get("value")?.as_str()?.to_string())))
+                .collect(),
+        )
     }
 
     /// Whatever is left of `say` once the reply is complete (a last sentence with no mark).

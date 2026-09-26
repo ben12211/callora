@@ -122,6 +122,21 @@ impl Engine {
         })
     }
 
+    /// Whether any of these values would be rejected (47 passengers when the most is 20):
+    /// the runtime then holds the agent's words back, since they move on without it.
+    pub fn rejects_any(&self, fields: &[(String, String)]) -> bool {
+        let customer = self.state.customer.as_ref();
+        fields.iter().any(|(slot, raw)| {
+            let Some(cfg) = self.business.config.slots.get(slot) else { return false };
+            if cfg.kind == crate::config::SlotKind::Place {
+                return false;
+            }
+            parse_slot_value(&self.business, slot, cfg, raw, true, customer)
+                .filter(|(_, c)| *c >= cfg.reject_below)
+                .is_none()
+        })
+    }
+
     pub fn set_caller_phone(&mut self, phone: Option<String>) {
         self.state.caller_phone = phone.filter(|p| !p.trim().is_empty());
     }
@@ -248,13 +263,23 @@ impl Engine {
                 return self.finish(out);
             }
         }
-        // A detail just rejected: ask for it, never read back or send what was there before.
-        if matches!(action, AgentAction::ReadBack | AgentAction::Submit) {
+        // A detail just rejected: ask for it, never read back or send what was there before,
+        // nor the agent's next question (held back by the runtime, so nothing was said).
+        if matches!(action, AgentAction::ReadBack | AgentAction::Submit)
+            || (action == AgentAction::None && spoken.is_empty() && !rejected.is_empty())
+        {
             if let Some(slot) = rejected.first().cloned() {
                 // The agent's "סגור." was for a read-back that is not coming.
                 self.agent_say(&mut out, "", spoken);
                 if !spoken.trim_end().ends_with('?') {
-                    self.ask(&mut out, &slot, false);
+                    // "רק כדי שלא תהיה טעות, כמה נוסעים? במונית עד עשרים."
+                    let again = format!("ask_again_{slot}");
+                    if self.business.response(&again).is_some() {
+                        let ctx = self.render_ctx(None);
+                        self.say(&mut out, &again, ctx, true);
+                    } else {
+                        self.ask(&mut out, &slot, false);
+                    }
                 }
                 return self.finish(out);
             }

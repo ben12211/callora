@@ -288,8 +288,10 @@ fn hebrew_letters(text: &str) -> String {
 
 /// A misspelling small enough to correct without asking.
 fn close_enough(heard: &str, key: &str) -> bool {
+    // Five letters at least: "חיפה" is one letter from "חיבה" (a spelling of החיד"א in
+    // ירושלים) and a live call booked the wrong street.
     let len = key.chars().count();
-    len >= 4 && distance(heard, key) <= if len >= 8 { 2 } else { 1 }
+    len >= 5 && heard.chars().count() >= 5 && distance(heard, key) <= if len >= 8 { 2 } else { 1 }
 }
 
 impl Gazetteer {

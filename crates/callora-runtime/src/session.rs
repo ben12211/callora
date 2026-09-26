@@ -146,6 +146,11 @@ enum Ev {
         sentence: String,
     },
     /// The agent's whole decision (and the tail of `say` that had no sentence mark).
+    /// The reply's fields, before any of its words.
+    AgentFields {
+        turn: u64,
+        fields: Vec<(String, String)>,
+    },
     AgentDone {
         turn: u64,
         result: anyhow::Result<Value>,
@@ -202,6 +207,9 @@ struct PendingAgent {
     partial_phrase: Option<String>,
     /// The decision, when it finished while still speculative.
     done: Option<(anyhow::Result<Value>, Option<String>)>,
+    /// A value in the reply will be rejected: its words move on without it, so none play
+    /// and the engine asks for the value again.
+    hold_say: bool,
 }
 
 /// Where one reply's time went, from the end of the caller's speech to the first audio.
@@ -871,10 +879,17 @@ impl Session {
                 let mut stream = model.stream(&request).await?;
                 let mut say = SayStream::default();
                 let mut reply = String::new();
+                let mut fields_sent = false;
                 while let Some(delta) = stream.next().await {
                     let delta = delta?;
                     reply.push_str(&delta);
                     let sentences = say.push(&delta);
+                    if !fields_sent {
+                        if let Some(fields) = say.fields() {
+                            fields_sent = true;
+                            let _ = says.send(Ev::AgentFields { turn, fields });
+                        }
+                    }
                     // A read-back or a submit: the engine speaks the words with what follows.
                     if matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit | AgentAction::EndCall))
                     {
@@ -917,6 +932,7 @@ impl Session {
             held: Vec::new(),
             partial_phrase: None,
             done: None,
+            hold_say: false,
         });
     }
 
@@ -925,6 +941,9 @@ impl Session {
     /// of half of it going through live TTS.
     fn agent_sentence(&mut self, sentence: String) {
         let Some(p) = self.pending_agent.as_mut() else { return };
+        if p.hold_say {
+            return;
+        }
         if let Some(start) = p.partial_phrase.take() {
             let joined = format!("{start} {sentence}");
             if self.continues_a_phrase(&joined) || self.library_has(&joined) {
@@ -992,7 +1011,7 @@ impl Session {
             Ok(reply) => {
                 // Whatever is left, with the start of a phrase that was waiting for it.
                 let tail = [p.partial_phrase.take(), rest].into_iter().flatten().collect::<Vec<_>>().join(" ");
-                if !tail.is_empty() {
+                if !tail.is_empty() && !p.hold_say {
                     p.spoken.push(tail.clone());
                     self.say_now(&tail);
                 }
@@ -1164,6 +1183,15 @@ impl Session {
                     return;
                 }
                 self.agent_sentence(sentence);
+            }
+            Ev::AgentFields { turn, fields } => {
+                let rejects = self.engine.rejects_any(&fields);
+                if let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) {
+                    if rejects {
+                        tracing::info!(call = %self.info.call_sid, ?fields, "a value will be rejected; the agent's words are held");
+                        p.hold_say = true;
+                    }
+                }
             }
             Ev::AgentDone { turn, result, rest } => {
                 let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) else { return };

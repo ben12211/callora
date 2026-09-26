@@ -662,7 +662,11 @@ fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
     }
     let request = callora_core::agent::build_request(&b, &Call::new(business(&[])).0.engine.state, "היי");
     let order: Vec<&str> = request.schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(order, ["action", "say", "task", "fields"], "the action, then the words, stream first");
+    assert_eq!(
+        order,
+        ["action", "fields", "say", "task"],
+        "the action and the fields, then the words: values are checked before a word plays"
+    );
     assert!(request.user.ends_with("CALLER NOW: \"היי\""), "{}", request.user);
 }
 
@@ -1262,4 +1266,31 @@ fn a_goodbye_without_the_caller_s_goodbye_is_not_said() {
     assert!(!spoken(&d).contains("יום טוב"), "{}", spoken(&d));
     assert!(spoken(&d).contains("לעזור"), "goes on: {}", spoken(&d));
     assert!(!d.iter().any(|d| matches!(d, Directive::Hangup)));
+}
+
+#[test]
+fn an_impossible_value_is_asked_again_before_anything_else() {
+    // From a live call: "47" passengers, the agent went on to the name, then back.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn("מונית", decide(AgentAction::None, "כמה נוסעים?", Some("book_ride"), &[]), "");
+    let fields = vec![("passengers".to_string(), "47".to_string())];
+    assert!(call.engine.rejects_any(&fields));
+    assert!(!call.engine.rejects_any(&[("passengers".to_string(), "3".to_string())]));
+    // The runtime held the agent's "על שם מי ההזמנה?": nothing was spoken.
+    let d = call.engine.on_agent_turn(
+        "47",
+        decide(AgentAction::None, "על שם מי ההזמנה?", None, &[("passengers", "47")]),
+        "",
+    );
+    assert!(spoken(&d).contains("כמה נוסעים"), "{}", spoken(&d));
+    assert!(!spoken(&d).contains("על שם"), "{}", spoken(&d));
+}
+
+#[test]
+fn the_reply_s_fields_are_known_before_its_words() {
+    let mut s = callora_core::agent::SayStream::default();
+    s.push(r#"{"action":"none","fields":[{"slot":"passengers","value":"47"}],"sa"#);
+    assert_eq!(s.fields(), None, "not before say begins");
+    s.push(r#"y":"על שם"#);
+    assert_eq!(s.fields(), Some(vec![("passengers".to_string(), "47".to_string())]));
 }

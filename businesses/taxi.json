@@ -450,6 +450,7 @@
     "ask_pickup_street": { "variants": ["איזה רחוב ומספר?", "ואיזה רחוב ומספר?"] },
     "ask_destination_city": { "variants": ["לאיזו עיר נוסעים?", "ולאיזו עיר נוסעים?"] },
     "ask_destination_street": { "variants": ["לאיזה רחוב?", "ולאיזה רחוב?"] },
+    "ask_again_passengers": { "variants": ["רק כדי שלא תהיה טעות, כמה נוסעים? במונית עד עשרים."] },
     "ask_name": { "variants": ["על שם מי ההזמנה?", "מה השם להזמנה?"] },
     "ask_notes": { "variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?"] },
     "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק.", "אממ, רגע."] },
