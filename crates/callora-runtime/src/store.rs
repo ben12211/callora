@@ -110,6 +110,14 @@ async fn write(pool: &PgPool, record: &CallRecord) -> sqlx::Result<()> {
                 .execute(pool)
                 .await?;
         }
+        CallRecord::Utterance { call_id, heard, audio } => {
+            sqlx::query("INSERT INTO callora_v2.utterances (call_id, heard, audio) VALUES ($1, $2, $3)")
+                .bind(call_id)
+                .bind(heard)
+                .bind(audio)
+                .execute(pool)
+                .await?;
+        }
         CallRecord::Order { call_id, card } => {
             sqlx::query("INSERT INTO callora_v2.orders (call_id, card) VALUES ($1, $2)")
                 .bind(call_id)

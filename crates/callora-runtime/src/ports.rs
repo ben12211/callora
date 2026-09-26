@@ -142,6 +142,12 @@ pub enum CallRecord {
         outcome: String,
         state: serde_json::Value,
     },
+    /// An utterance's audio and what the stream heard, from a sampled number only.
+    Utterance {
+        call_id: uuid::Uuid,
+        heard: String,
+        audio: Vec<u8>,
+    },
     /// A completed task's card (see `callora_core::orders`).
     Order {
         call_id: uuid::Uuid,

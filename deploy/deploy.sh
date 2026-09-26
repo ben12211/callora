@@ -687,7 +687,7 @@ readonly SYNCED_SETTINGS=(
   STT_PROVIDER CARTESIA_API_KEY OPENAI_API_KEY GEMINI_API_KEY GEMINI_MODEL TEXT_LLM_MODEL TEXT_LLM_REASONING_EFFORT
   TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER
   TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN TAXI_CRM_URL TAXI_CRM_TOKEN
-  ALLOW_LIST ADMIN_API_KEY
+  ALLOW_LIST ADMIN_API_KEY AUDIO_SAMPLE_NUMBERS
 )
 readonly REQUIRED_SYNCED=(TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN)
 
@@ -720,7 +720,7 @@ update_runtime_secrets() {
     return 1
   }
   local e164='\+[1-9][0-9]{7,14}'
-  for name in ALLOW_LIST TAXI_PHONE_NUMBERS; do
+  for name in ALLOW_LIST TAXI_PHONE_NUMBERS AUDIO_SAMPLE_NUMBERS; do
     value="${incoming[$name]:-}"
     [[ -z "$value" || "$value" =~ ^[[:space:]]*${e164}([[:space:]]*,[[:space:]]*${e164})*[[:space:]]*$ ]] || {
       log "$name must be empty or comma-separated E.164 numbers."

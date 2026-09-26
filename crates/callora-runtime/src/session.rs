@@ -64,6 +64,9 @@ pub struct SessionConfig {
     /// on live calls the partial rarely matched the final transcript (1 turn in ~15), and
     /// every miss spends a full request against the account's tokens-per-minute limit.
     pub agent_speculate: bool,
+    /// Callers (E.164) whose utterances are kept as audio, to compare recognizers. Empty:
+    /// no audio is kept.
+    pub sample_audio_from: Vec<String>,
 }
 
 impl Default for SessionConfig {
@@ -76,6 +79,7 @@ impl Default for SessionConfig {
             dynamic_model: None,
             stt_buffer_frames: 150,
             agent_speculate: false,
+            sample_audio_from: Vec::new(),
         }
     }
 }
@@ -791,6 +795,15 @@ impl Session {
         let (fast, needs_llm) = fast_path(&self.business, &self.engine.context(), &transcript);
         if self.fast_lane(&fast, needs_llm) {
             return self.understood(fast);
+        }
+        if self.info.from.as_ref().is_some_and(|f| self.cfg.sample_audio_from.contains(f))
+            && !self.last_utterance.is_empty()
+        {
+            self.services.store.record(CallRecord::Utterance {
+                call_id: self.info.call_id,
+                heard: transcript.clone(),
+                audio: self.last_utterance.clone(),
+            });
         }
         // A city or street expected: hear the words once more, with every name expected as a
         // hint, before the agent decides ("זה ביתר" came back "זה יותר", "אהרונוביץ" as

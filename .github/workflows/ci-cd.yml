@@ -206,6 +206,7 @@ jobs:
       TAXI_CRM_TOKEN: ${{ secrets.TAXI_CRM_TOKEN }}
       ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
       ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+      AUDIO_SAMPLE_NUMBERS: ${{ vars.AUDIO_SAMPLE_NUMBERS }}
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -258,7 +259,7 @@ jobs:
                       ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID ELEVENLABS_DYNAMIC_MODEL \
                       STT_PROVIDER CARTESIA_API_KEY OPENAI_API_KEY GEMINI_API_KEY GEMINI_MODEL                       TEXT_LLM_MODEL TEXT_LLM_REASONING_EFFORT \
                       TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN \
-                      TAXI_CRM_URL TAXI_CRM_TOKEN ALLOW_LIST ADMIN_API_KEY; do
+                      TAXI_CRM_URL TAXI_CRM_TOKEN ALLOW_LIST ADMIN_API_KEY AUDIO_SAMPLE_NUMBERS; do
             value="${!name}"
             value="${value//$'\n'/}"
             printf '%s=%s\n' "$name" "$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
