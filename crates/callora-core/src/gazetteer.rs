@@ -372,6 +372,18 @@ impl Gazetteer {
                 }
             }
         }
+        // "ביתר" is ביתר עילית (and not מיתר, one letter off): the short name of an "עילית"
+        // locality, when no locality has it as its own name.
+        for (ci, city) in g.cities.iter().enumerate() {
+            for suffix in [" עילית", " עלית"] {
+                if let Some(base) = city.name.strip_suffix(suffix) {
+                    let key = norm(base);
+                    if key.chars().count() >= 3 {
+                        g.city_keys.entry(key).or_insert((ci, city.name.clone()));
+                    }
+                }
+            }
+        }
         g
     }
 
@@ -715,6 +727,19 @@ mod tests {
         assert_eq!(terms.len(), 2);
         assert!(terms.contains(&"אהרונוביץ".to_string()), "{terms:?}");
         assert!(g.street_keyterms("עיר שאין", 5).is_empty());
+    }
+
+    #[test]
+    fn the_short_name_of_an_illit_town_is_that_town() {
+        let g = Gazetteer::from_tsv(
+            "3780	ביתר עילית	1	הרמב\"ן	official
+1100	מיתר	2	רימון	official
+             1200	מודיעין-מכבים-רעות	3	עמק החולה	official
+3797	מודיעין עילית	4	אבני נזר	official
+",
+        );
+        assert_eq!(found(g.resolve("הרמב\"ן 16, ביתר")).official(), "הרמב\"ן 16, ביתר עילית");
+        assert_eq!(found(g.resolve("אבני נזר 3, מודיעין עילית")).city, "מודיעין עילית");
     }
 
     #[test]

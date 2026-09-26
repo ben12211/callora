@@ -267,8 +267,13 @@ impl Engine {
                 }
             }
             AgentAction::ReadBack | AgentAction::Submit => {
+                // A yes the caller actually said ("כן", "יאללה", "תשלח"): a live call sent a
+                // wrong ride on "שעמות", a word recognition made up.
+                let said_yes = !self.business.affirm.is_empty()
+                    && self.business.affirm.find(&crate::text::normalize(transcript)).is_some();
                 let confirmed_now = action == AgentAction::Submit
                     && !changed
+                    && said_yes
                     && self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
                 // The read-back asks the question; a question of the agent's own before it
                 // would make two ("anything else? ... send it?").

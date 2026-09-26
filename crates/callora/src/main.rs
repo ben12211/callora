@@ -703,6 +703,8 @@ mod streets {
         assert_eq!(spoken("לבאר שבע"), "באר שבע");
         // "לאלעד" heard as "לעדו", written "עדי" (a moshav): the street names the city.
         assert_eq!(spoken("בן זכאי 45, עדי"), "רבן יוחנן בן זכאי 45, אלעד");
+        // "ביתר" is ביתר עילית, not מיתר (a live call booked "רימון 16, מיתר").
+        assert!(spoken("הרמב\"ן 16, ביתר").ends_with("ביתר עילית"), "{}", spoken("הרמב\"ן 16, ביתר"));
         // Real streets of the city said stay there.
         assert_eq!(spoken("אחוזה 12 רעננה"), "אחוזה 12, רעננה");
         assert_eq!(spoken("הרצל 10 רחובות"), "הרצל 10, רחובות");

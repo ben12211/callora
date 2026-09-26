@@ -1173,6 +1173,23 @@ fn the_agent_is_told_the_street_question_comes_after_a_city() {
 }
 
 #[test]
+fn a_made_up_word_after_the_read_back_does_not_send_the_ride() {
+    // From a live call: recognition wrote "שעמות", the agent submitted a wrong ride.
+    let (mut call, _) = Call::new(business(&[]));
+    let fields =
+        [("pickup", "רבי עקיבא 12"), ("destination", "תל אביב"), ("passengers", "אחד"), ("notes", "יש מזוודה")];
+    call.engine.on_agent_turn(
+        "מרבי עקיבא 12 לתל אביב",
+        decide(AgentAction::ReadBack, "סגור.", Some("book_ride"), &fields),
+        "",
+    );
+    let d = call.engine.on_agent_turn("שעמות", decide(AgentAction::Submit, "", None, &[]), "");
+    assert!(action(&d).is_none(), "not sent: {}", spoken(&d));
+    let d = call.engine.on_agent_turn("כן", decide(AgentAction::Submit, "", None, &[]), "");
+    assert!(action(&d).is_some(), "sent on the yes");
+}
+
+#[test]
 fn the_same_question_over_and_over_is_rephrased_then_handed_off() {
     // From a live call: "כמה נוסעים?" eleven times while the caller answered names.
     let (mut call, _) = Call::new(with_desk());
