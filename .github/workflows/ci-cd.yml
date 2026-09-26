@@ -176,7 +176,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
     needs: [image, host]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     environment: production
     env:
       # Names only here; values come from GitHub Secrets/Variables (see SECRETS.md).

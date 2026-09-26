@@ -362,6 +362,27 @@ install_atomic() {
   mv -f -- "$staged" "$target"
 }
 
+# Replacing the backend ends every call in progress (a live test call was cut mid-sentence
+# by a deploy). Wait, up to 15 minutes, until the running backend reports none.
+wait_for_calls_to_end() {
+  local id ip active i
+  id="$(compose ps -q backend 2>/dev/null || true)"
+  [[ -n "$id" ]] || return 0
+  ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$id" 2>/dev/null | awk '{print $1}' || true)"
+  [[ -n "$ip" ]] || return 0
+  for ((i = 0; i < 180; i++)); do
+    active="$(curl -fsS --max-time 3 "http://$ip:3000/metrics" 2>/dev/null | awk '$1 == "callora_calls_active" { print $2 }' || true)"
+    if [[ -z "$active" || "$active" == "0" ]]; then
+      return 0
+    fi
+    if (( i % 12 == 0 )); then
+      log "Waiting for $active call(s) in progress to end before replacing the backend."
+    fi
+    sleep 5
+  done
+  log 'Calls are still in progress after 15 minutes; replacing the backend anyway.'
+}
+
 wait_for_healthy() {
   local service="$1"
   local attempts="${2:-60}"
@@ -627,6 +648,8 @@ deploy_release() {
   if ! compose run --rm --no-deps backend voice-library build; then
     log 'The voice library build did not finish; missing sentences will use live TTS.'
   fi
+
+  wait_for_calls_to_end
 
   log 'Replacing the backend only after migrations succeed.'
   compose up -d --no-deps backend
