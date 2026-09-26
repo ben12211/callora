@@ -91,6 +91,28 @@ def hebrew_names(tags):
     return names
 
 
+GENERIC = ["בית החולים", "בית חולים", 'בי"ח', "ביה\"ח", "המרכז הרפואי", "מרכז רפואי", "קניון", "מרכז", "מגדלי", "מגדל",
+           "תחנת הרכבת", "תחנת רכבת", "תחנת", "אוניברסיטת", "האוניברסיטה", "מכללת", "המכללה", "בית הספר", "בית ספר",
+           "בית הכנסת", "בית כנסת", "פארק", "גן", "שכונת", "אצטדיון", "היכל", "מלון", "מוזיאון"]
+
+
+def short_names(name, town):
+    """What callers say: "איכילוב" for 'בי"ח איכילוב', "סבידור מרכז" for "תל אביב סבידור מרכז"."""
+    out = []
+    # The locality as a whole, and its first part ("תל אביב" of "תל אביב - יפו").
+    for t in dict.fromkeys([town, town.split(" - ")[0].strip()]):
+        for sep in (" ", " - ", "-"):
+            if name.startswith(t + sep):
+                out.append(name[len(t) + len(sep):].strip(" -"))
+            if name.endswith(sep + t):
+                out.append(name[: -len(t) - len(sep)].strip(" -"))
+    for base in [name] + out:
+        for g in GENERIC:
+            if base.startswith(g + " ") and len(base) - len(g) > 3:
+                out.append(base[len(g) + 1:].strip(" -"))
+    return [o for o in dict.fromkeys(out) if len(norm(o)) >= 3 and o != name]
+
+
 def km(a, b):
     lat = math.radians((a[0] + b[0]) / 2)
     return math.hypot((a[0] - b[0]) * 111.32, (a[1] - b[1]) * 111.32 * math.cos(lat))
@@ -165,7 +187,8 @@ def main(src):
             if len(kept) == PER_LOCALITY:
                 break
         for s, names, street, number, (lat, lon) in kept.values():
-            clean = lambda x: x.replace("\t", " ").replace("|", " ").strip()
+            names = list(dict.fromkeys(names + [a for n in names for a in short_names(n, town)]))
+            clean = lambda x: re.sub(r"[\t|\r\n]+", " ", x).strip()
             rows.append("\t".join([town, clean(names[0]), "|".join(clean(n) for n in names[1:]), clean(street), clean(number), f"{lat:.5f}", f"{lon:.5f}"]))
 
     out = HERE / "israel-places.tsv.gz"

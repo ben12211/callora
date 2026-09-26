@@ -328,7 +328,8 @@ async fn the_agent_runs_the_call_and_its_first_sentence_plays_while_it_is_still_
         json!({ "say": "לאן נוסעים?", "action": "none", "task": "book_ride",
                 "fields": [{ "slot": "pickup", "value": "באר שבע" }] }),
         json!({ "say": "סגור.", "action": "read_back", "task": "book_ride",
-                "fields": [{ "slot": "destination", "value": "תל אביב" }, { "slot": "passengers", "value": "שניים" }] }),
+                "fields": [{ "slot": "destination", "value": "תל אביב" }, { "slot": "passengers", "value": "שניים" },
+                           { "slot": "notes", "value": "יש מזוודה" }] }),
     ]);
     let h = start_server_with(Some(agent.clone())).await;
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
