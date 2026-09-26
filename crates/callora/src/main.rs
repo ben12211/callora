@@ -462,15 +462,18 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     if agent.is_none() && registry.all().any(|b| b.config.agent.is_some()) {
         tracing::warn!("OPENAI_API_KEY is not set: businesses with an agent fall back to the rules");
     }
-    // The second hearing uses the same ElevenLabs key as the stream.
-    let second_hearing = env("ELEVENLABS_API_KEY").map(|key| {
-        Arc::new(callora_providers::scribe_batch::ScribeBatch::new(
-            http(),
-            key,
-            None,
-            env("ELEVENLABS_BATCH_STT_MODEL"),
-        )) as Arc<dyn callora_runtime::ports::Transcriber>
-    });
+    // The second hearing uses the same ElevenLabs key as the stream. Off unless
+    // SECOND_HEARING=1: with a city's streets as hints it made names up on live calls
+    // ("44, 45" heard "בן זכריה ארבעים וחמש"), so it waits for measured results.
+    let second_hearing =
+        env("ELEVENLABS_API_KEY").filter(|_| env("SECOND_HEARING").as_deref() == Some("1")).map(|key| {
+            Arc::new(callora_providers::scribe_batch::ScribeBatch::new(
+                http(),
+                key,
+                None,
+                env("ELEVENLABS_BATCH_STT_MODEL"),
+            )) as Arc<dyn callora_runtime::ports::Transcriber>
+        });
     let services = Services {
         stt,
         llm,

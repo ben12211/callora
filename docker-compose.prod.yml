@@ -78,6 +78,7 @@ services:
       TAXI_CRM_TOKEN: ${TAXI_CRM_TOKEN:-}
       ALLOW_LIST: ${ALLOW_LIST:-}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      AUDIO_SAMPLE_NUMBERS: ${AUDIO_SAMPLE_NUMBERS:-}
       TRANSCRIPT_RETENTION_DAYS: ${TRANSCRIPT_RETENTION_DAYS:-30}
       AUDIO_LIBRARY_DIR: /data/voice-library
     logging: *logging
