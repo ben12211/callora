@@ -1157,6 +1157,22 @@ fn the_city_waiting_for_its_street_is_the_recognition_focus() {
 }
 
 #[test]
+fn the_agent_is_told_the_street_question_comes_after_a_city() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "מרבי עקיבא 12",
+        decide(AgentAction::None, "לאיזו עיר נוסעים?", Some("book_ride"), &[("pickup", "רבי עקיבא 12")]),
+        "",
+    );
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "ירושלים");
+    assert!(
+        next.user.contains("NOW: the caller is giving the destination city") && next.user.contains("\"לאיזה רחוב?\""),
+        "{}",
+        next.user
+    );
+}
+
+#[test]
 fn the_same_question_over_and_over_is_rephrased_then_handed_off() {
     // From a live call: "כמה נוסעים?" eleven times while the caller answered names.
     let (mut call, _) = Call::new(with_desk());

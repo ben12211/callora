@@ -249,6 +249,39 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                     }
                 }
             }
+            // The step the caller is on and the question after it, from the task's order: the
+            // model skipped "לאיזה רחוב?" after a destination city in several calls, asked
+            // "כמה נוסעים?" and then talked past the caller's street.
+            if let Some(p) = b.pipeline(&run.pipeline) {
+                let pending = p.slots.iter().find(|ps| {
+                    !run.slots.contains_key(&ps.slot) && ps.default.is_none() && (ps.required || ps.ask.is_some())
+                });
+                let street_ask = |ps: &crate::config::PipelineSlot| {
+                    ps.ask
+                        .as_ref()
+                        .and_then(|a| b.response(&format!("{a}_street")))
+                        .and_then(|r| r.variants.first().cloned())
+                };
+                let place_with_street = |ps: &crate::config::PipelineSlot| {
+                    b.config.slots.get(&ps.slot).is_some_and(|c| c.precise || c.street_once) && street_ask(ps).is_some()
+                };
+                if let Some(ps) = pending {
+                    if state.place_cities.contains_key(&ps.slot) {
+                        u.push_str(&format!(
+                            "NOW: the caller is giving the street in {} for {}; take it (with the city) and go on.
+",
+                            state.place_cities[&ps.slot], ps.slot
+                        ));
+                    } else if place_with_street(ps) {
+                        u.push_str(&format!(
+                            "NOW: the caller is giving the {} city. When they say only a city, your next question is                              its street, exactly \"{}\", nothing else.
+",
+                            ps.slot,
+                            street_ask(ps).unwrap_or_default()
+                        ));
+                    }
+                }
+            }
             let status = match run.step {
                 Step::AwaitingConfirmation => "details were read back; waiting for the caller's yes/no",
                 Step::Executing { .. } => "being processed by the system",
