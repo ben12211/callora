@@ -164,6 +164,12 @@ fn sound(s: &str) -> String {
         .collect()
 }
 
+/// A street's consonants as an Ashkenazi speaker's name for it would be written: ת and ס one
+/// sound, "טש" the same as "ץ".
+fn ashkenazi(s: &str) -> String {
+    sound(s).replace('ת', "ס").replace("סס", "צ")
+}
+
 /// Words of a place the caller never said, not even garbled: the agent made them up. A live
 /// call booked "רחוב אהרונוביץ' 42" when the caller had said "אההה, 42": the street was real,
 /// so nothing else caught it. A word counts as heard when it is close to a word the caller
@@ -452,6 +458,17 @@ impl Gazetteer {
                 }
             }
         }
+        // Ashkenazi speech ("אהרוינוביטש" for "אהרונוביץ", "שבעס" for "שבת"): the same
+        // consonants once ת/ס and טש/ץ are one sound. Only when one street of the city fits.
+        let heard_key = ashkenazi(&candidates[0]);
+        if heard_key.chars().count() >= 3 {
+            let mut fits = city.street_keys.iter().filter(|(k, _)| ashkenazi(k) == heard_key).map(|(_, &si)| si);
+            if let Some(si) = fits.next() {
+                if fits.all(|other| other == si) {
+                    return found(Some(city.streets[si].clone()));
+                }
+            }
+        }
         // "בן זכאי 45, עדי": עדי has no such street, but אלעד, which recognition turns into
         // "עדי" or "עדו", has. A real street and number pin the city better than the garbled
         // name; the read-back confirms it with the caller.
@@ -649,6 +666,18 @@ mod tests {
         // A street of the same name stays the street.
         assert_eq!(found(g.resolve("רבי עקיבא, אלעד")).place, None);
         assert!(matches!(g.resolve("קניון הזהב, אלעד"), Lookup::NoStreet { .. }));
+    }
+
+    #[test]
+    fn an_ashkenazi_pronunciation_finds_the_street() {
+        let g = Gazetteer::from_tsv(
+            "6100	בני ברק	301	אהרונוביץ ראובן	official
+6100	בני ברק	301	אהרונוביץ	synonym
+             6100	בני ברק	302	רבי עקיבא	official
+",
+        );
+        assert_eq!(found(g.resolve("אהרוינוביטש 22, בני ברק")).spoken(), "אהרונוביץ ראובן 22, בני ברק");
+        assert!(matches!(g.resolve("עונה 32, בני ברק"), Lookup::NoStreet { .. }));
     }
 
     #[test]
