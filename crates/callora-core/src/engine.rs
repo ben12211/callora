@@ -528,7 +528,7 @@ impl Engine {
                     )
                 };
                 notes.push(format!(
-                    "{slot}: {city} has no street \"{heard}\"; it was not accepted, probably misheard. Ask for the street again{hint}"
+                    "{slot}: {city} has no street \"{heard}\"; it was not accepted, probably misheard. Ask for the street again (\"רק כדי שלא תהיה טעות, מה שם הרחוב?\"){hint}"
                 ));
                 self.state.place_cities.insert(slot.to_string(), city);
                 rejected.push(slot.to_string());

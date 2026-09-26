@@ -643,7 +643,7 @@ fn speech_already_streamed_is_recorded_not_repeated() {
 fn an_empty_decision_never_leaves_the_caller_in_silence() {
     let (mut call, _) = Call::new(business(&[]));
     let d = call.engine.on_agent_turn("...", decide(AgentAction::None, "", None, &[]), "");
-    assert!(spoken(&d).contains("לא בטוח שהבנתי"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("כדי שלא תהיה טעות"), "{}", spoken(&d));
 }
 
 #[test]
@@ -718,7 +718,7 @@ fn a_misheard_correction_asks_again_instead_of_reading_it_back() {
     assert!(needs_llm, "a doubtful correction goes to the LLM");
     let d = call.say("בנלחב");
     assert!(!spoken(&d).contains("בנלחב"), "{}", spoken(&d));
-    assert!(spoken(&d).contains("לא בטוח שהבנתי") && spoken(&d).contains("לאן"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("כדי שלא תהיה טעות") && spoken(&d).contains("לאן"), "{}", spoken(&d));
     assert_eq!(call.slot("destination"), None);
     assert_eq!(call.step(), Some(Step::Collecting { awaiting: Some("destination".into()) }));
 
@@ -741,7 +741,7 @@ fn a_clear_correction_while_reading_back_a_value_is_taken() {
 fn fallback_ladder_then_handoff_with_context() {
     let (mut call, _) = Call::new(with_desk());
     let d1 = call.say("בלה בלה בלה");
-    assert!(spoken(&d1).contains("לא בטוח שהבנתי"));
+    assert!(spoken(&d1).contains("כדי שלא תהיה טעות"));
     let d2 = call.say("גלגל ענק ירוק");
     assert!(spoken(&d2).contains("להזמין מונית"));
     let d3 = call.say("פלפל שחור");
