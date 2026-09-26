@@ -276,8 +276,19 @@ impl Engine {
                         out.push(Directive::Hangup);
                     }
                 } else {
+                    // Its goodbye was held back ("תודה, יום טוב!" to a rude remark, in a live
+                    // call): go on with the call instead of saying it.
                     tracing::info!(transcript, "agent wanted to end the call without a goodbye; kept it open");
-                    self.agent_say(&mut out, &turn.say, spoken);
+                    self.agent_say(&mut out, "", spoken);
+                    if self.state.run.is_some() {
+                        self.read_back(&mut out, true);
+                    } else {
+                        let next = if self.state.completed.is_empty() { "small_talk_answer" } else { "anything_else" };
+                        if self.business.response(next).is_some() {
+                            let ctx = self.render_ctx(None);
+                            self.say(&mut out, next, ctx, true);
+                        }
+                    }
                 }
             }
             AgentAction::ReadBack | AgentAction::Submit => {

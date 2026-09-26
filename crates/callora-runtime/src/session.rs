@@ -863,7 +863,8 @@ impl Session {
                     reply.push_str(&delta);
                     let sentences = say.push(&delta);
                     // A read-back or a submit: the engine speaks the words with what follows.
-                    if matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit)) {
+                    if matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit | AgentAction::EndCall))
+                    {
                         continue;
                     }
                     for sentence in sentences {
@@ -872,7 +873,8 @@ impl Session {
                 }
                 let value: Value = serde_json::from_str(&reply)
                     .map_err(|e| anyhow::anyhow!("the agent's reply is not JSON ({e}): {reply}"))?;
-                let held = matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit));
+                let held =
+                    matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit | AgentAction::EndCall));
                 let rest = say.rest().filter(|_| !held);
                 anyhow::Ok((value, rest))
             };

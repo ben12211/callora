@@ -1253,3 +1253,13 @@ fn the_second_hearing_reaches_the_agent_and_counts_as_heard() {
         call.engine.state.agent_notes
     );
 }
+
+#[test]
+fn a_goodbye_without_the_caller_s_goodbye_is_not_said() {
+    // From a live call: a rude remark got "תודה, יום טוב!" although the call stayed open.
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.engine.on_agent_turn("מה אתה אוטיסט?", decide(AgentAction::EndCall, "תודה, יום טוב!", None, &[]), "");
+    assert!(!spoken(&d).contains("יום טוב"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("לעזור"), "goes on: {}", spoken(&d));
+    assert!(!d.iter().any(|d| matches!(d, Directive::Hangup)));
+}
