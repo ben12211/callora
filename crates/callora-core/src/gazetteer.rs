@@ -474,7 +474,8 @@ impl Gazetteer {
         near.sort();
         let mut closest: Vec<String> = Vec::new();
         for (d, s) in near {
-            if d > 3 || closest.len() == 3 {
+            // Only names a third off at most: "עונה" is three letters from anything short.
+            if d > (candidates[0].chars().count() / 3).max(1) || closest.len() == 3 {
                 break;
             }
             if !closest.contains(s) {
