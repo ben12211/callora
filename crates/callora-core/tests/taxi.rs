@@ -1129,6 +1129,34 @@ fn a_note_question_the_agent_asked_itself_is_not_asked_again() {
 }
 
 #[test]
+fn the_city_waiting_for_its_street_is_the_recognition_focus() {
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "6100\tבני ברק\t301\tאהרונוביץ\tofficial\n1309\tאלעד\t110\tרבי עקיבא\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    assert_eq!(call.engine.street_focus(), None);
+    call.engine.on_agent_turn(
+        "מאלעד",
+        decide(AgentAction::None, "איזה רחוב ומספר?", Some("book_ride"), &[("pickup", "אלעד")]),
+        "",
+    );
+    assert_eq!(call.engine.street_focus().as_deref(), Some("אלעד"));
+    call.engine.on_agent_turn(
+        "רבי עקיבא 3",
+        decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "רבי עקיבא 3, אלעד")]),
+        "",
+    );
+    assert_eq!(call.engine.street_focus(), None);
+    call.engine.on_agent_turn(
+        "בני ברק",
+        decide(AgentAction::None, "לאיזה רחוב?", None, &[("destination", "בני ברק")]),
+        "",
+    );
+    assert_eq!(call.engine.street_focus().as_deref(), Some("בני ברק"));
+}
+
+#[test]
 fn a_place_rejected_as_unheard_twice_is_taken_the_third_time() {
     // A live call looped: the check kept rejecting the agent's (right) landmark, the caller
     // said "אמרתי כבר" three times and hung up.

@@ -116,6 +116,11 @@ pub enum Ending {
 
 enum Ev {
     SttReady(anyhow::Result<SttSession>),
+    /// A recognition session biased with a city's streets, opened beside the live one.
+    SttFocused {
+        city: String,
+        result: anyhow::Result<SttSession>,
+    },
     Llm {
         turn: u64,
         result: anyhow::Result<Value>,
@@ -226,6 +231,11 @@ pub struct Session {
     finalize_sent_at: Option<Instant>,
     /// Reconnects since the last transcript.
     stt_reconnects: u32,
+    /// The city whose streets bias recognition now, the one being opened, and a session
+    /// ready to take over once the caller is between utterances.
+    stt_city: Option<String>,
+    stt_opening: Option<String>,
+    stt_next: Option<(String, SttSession)>,
     pending_agent: Option<PendingAgent>,
     /// The recognizer's latest partial text for the utterance in progress.
     last_partial: String,
@@ -291,6 +301,9 @@ impl Session {
             interrupted: false,
             finalize_sent_at: None,
             stt_reconnects: 0,
+            stt_city: None,
+            stt_opening: None,
+            stt_next: None,
             pending_agent: None,
             last_partial: String::new(),
             clock: None,
@@ -323,7 +336,7 @@ impl Session {
         {
             let stt = s.services.stt.clone();
             let language = s.business.config.language.clone();
-            let keyterms = s.business.stt_keyterms();
+            let keyterms = s.stt_keyterms(None);
             let tx = s.events.clone();
             tokio::spawn(async move {
                 let _ = tx.send(Ev::SttReady(stt.open(&language, &keyterms).await));
@@ -481,7 +494,8 @@ impl Session {
             SttEvent::Partial(text) => self.last_partial = text,
             SttEvent::Final(text) => {
                 self.stt_reconnects = 0;
-                self.on_final(text)
+                self.on_final(text);
+                self.swap_stt_if_ready();
             }
             SttEvent::Error(e) => tracing::warn!(call = %self.info.call_sid, error = %e, "stt error"),
             SttEvent::Closed => {
@@ -498,7 +512,7 @@ impl Session {
                 tracing::warn!(call = %self.info.call_sid, attempt = self.stt_reconnects, "stt closed; reconnecting");
                 let stt = self.services.stt.clone();
                 let language = self.business.config.language.clone();
-                let keyterms = self.business.stt_keyterms();
+                let keyterms = self.stt_keyterms(self.stt_city.clone().as_deref());
                 let tx = self.events.clone();
                 let delay = Duration::from_millis(200 * u64::from(self.stt_reconnects));
                 tokio::spawn(async move {
@@ -892,6 +906,20 @@ impl Session {
                 }
                 self.stt = Some(session);
             }
+            Ev::SttFocused { city, result } => {
+                if self.stt_opening.as_deref() == Some(city.as_str()) {
+                    self.stt_opening = None;
+                }
+                match result {
+                    Ok(session) => {
+                        self.stt_next = Some((city, session));
+                        self.swap_stt_if_ready();
+                    }
+                    Err(error) => {
+                        tracing::warn!(call = %self.info.call_sid, %city, %error, "city recognition hints unavailable")
+                    }
+                }
+            }
             Ev::SttReady(Err(error)) => {
                 tracing::error!(call = %self.info.call_sid, %error, "speech recognition unavailable");
                 let d = self.engine.force_handoff("stt_unavailable");
@@ -1015,7 +1043,60 @@ impl Session {
     // -----------------------------------------------------------------------------------
     // Directives
 
+    /// Recognition hints: the city's streets when the call waits for one, then the business's
+    /// own words (the recognizer keeps the first 50).
+    fn stt_keyterms(&self, city: Option<&str>) -> Vec<String> {
+        let mut terms = Vec::new();
+        if let (Some(city), Some(g)) = (city, &self.services.gazetteer) {
+            terms.push(city.to_string());
+            terms.extend(g.street_keyterms(city, 38));
+        }
+        terms.extend(self.business.stt_keyterms());
+        let mut seen = std::collections::HashSet::new();
+        terms.retain(|t| seen.insert(t.clone()));
+        terms
+    }
+
+    /// "בני ברק" given, its street next: open a session biased with its streets beside the
+    /// live one. Recognition cannot be re-biased mid-session, and "אהרונוביץ" in an Ashkenazi
+    /// accent came back as "עונה מ-32" without the hint.
+    fn focus_stt(&mut self) {
+        let Some(city) = self.engine.street_focus() else { return };
+        if self.stt_city.as_ref() == Some(&city)
+            || self.stt_opening.as_ref() == Some(&city)
+            || self.stt_next.as_ref().is_some_and(|(c, _)| *c == city)
+            || self.services.gazetteer.is_none()
+        {
+            return;
+        }
+        self.stt_opening = Some(city.clone());
+        let stt = self.services.stt.clone();
+        let language = self.business.config.language.clone();
+        let keyterms = self.stt_keyterms(Some(&city));
+        let tx = self.events.clone();
+        tokio::spawn(async move {
+            let result = stt.open(&language, &keyterms).await;
+            let _ = tx.send(Ev::SttFocused { city, result });
+        });
+    }
+
+    /// The biased session takes over between utterances only: never while the caller is
+    /// talking or a transcript is still due from the live session.
+    fn swap_stt_if_ready(&mut self) {
+        if self.stt_next.is_none() || self.vad.is_speaking() || self.finalize_sent_at.is_some() {
+            return;
+        }
+        let Some((city, session)) = self.stt_next.take() else { return };
+        if let Some(old) = self.stt.take() {
+            let _ = old.input.try_send(SttInput::Close);
+        }
+        tracing::info!(call = %self.info.call_sid, %city, "recognition biased with the city's streets");
+        self.stt = Some(session);
+        self.stt_city = Some(city);
+    }
+
     fn execute(&mut self, directives: Vec<Directive>) {
+        self.focus_stt();
         for d in directives {
             match d {
                 Directive::Speak { plan, .. } => {

@@ -101,6 +101,13 @@ impl Engine {
         Self { business, state, chooser: SeededChooser(seed | 1), offered_more: false, gazetteer: None }
     }
 
+    /// The city whose street the call is waiting for ("מאיזו עיר?" "בני ברק" ... "איזה
+    /// רחוב?"), in the task's order: the runtime biases recognition with its streets.
+    pub fn street_focus(&self) -> Option<String> {
+        let run = self.state.run.as_ref()?;
+        self.pipeline_of(run).slots.iter().find_map(|ps| self.state.place_cities.get(&ps.slot).cloned())
+    }
+
     pub fn set_caller_phone(&mut self, phone: Option<String>) {
         self.state.caller_phone = phone.filter(|p| !p.trim().is_empty());
     }

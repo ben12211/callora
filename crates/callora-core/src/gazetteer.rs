@@ -85,6 +85,9 @@ struct City {
     streets: Vec<String>,
     /// Normalized street name (official or alternative) → index in `streets`.
     street_keys: HashMap<String, usize>,
+    /// Each street's shortest name as written ("אהרונוביץ" of "אהרונוביץ ראובן"), for
+    /// recognition hints.
+    short: Vec<String>,
     places: Vec<Place>,
     /// Normalized place name (or alias) → index in `places`.
     place_keys: HashMap<String, usize>,
@@ -332,6 +335,7 @@ impl Gazetteer {
                     name: city_name.to_string(),
                     streets: Vec::new(),
                     street_keys: HashMap::new(),
+                    short: Vec::new(),
                     places: Vec::new(),
                     place_keys: HashMap::new(),
                 });
@@ -342,8 +346,13 @@ impl Gazetteer {
             let ids = &mut street_ids[ci];
             let si = *ids.entry(street_code).or_insert_with(|| {
                 city.streets.push(street_name.to_string());
+                city.short.push(street_name.to_string());
                 city.streets.len() - 1
             });
+            let len = street_name.chars().count();
+            if len >= 4 && !street_name.chars().any(|c| c.is_ascii_digit()) && len < city.short[si].chars().count() {
+                city.short[si] = street_name.to_string();
+            }
             if kind == "official" {
                 city.streets[si] = street_name.to_string();
             }
@@ -368,6 +377,33 @@ impl Gazetteer {
 
     pub fn is_empty(&self) -> bool {
         self.cities.is_empty()
+    }
+
+    /// Street names of a locality to bias speech recognition with, the hardest to guess
+    /// first: surnames recognition has no word for ("אהרונוביץ", "ז'בוטינסקי", "רוזנברג"),
+    /// then streets with many spellings (the well-known ones).
+    pub fn street_keyterms(&self, city: &str, limit: usize) -> Vec<String> {
+        let Some(&(ci, _)) = self.city_keys.get(&norm(city)) else { return Vec::new() };
+        let c = &self.cities[ci];
+        let mut spellings = vec![0usize; c.streets.len()];
+        for &si in c.street_keys.values() {
+            spellings[si] += 1;
+        }
+        let foreign = |s: &str| {
+            let n = norm(s);
+            ["וביצ", "ביצ", "וויצ", "סקי", "צקי", "ברג", "שטיינ", "בוימ", "מאנ", "פלד", "ורג", "הויז"]
+                .iter()
+                .any(|end| n.split(' ').any(|w| w.ends_with(end)))
+        };
+        // Not hints: numbered streets, abbreviations ("ש הפומז", "רח 287"), short names.
+        let useful = |s: &str| {
+            s.chars().count() >= 4
+                && !s.chars().any(|c| c.is_ascii_digit())
+                && !["ש ", "שכ ", "רח ", "שד "].iter().any(|p| s.starts_with(p))
+        };
+        let mut ranked: Vec<usize> = (0..c.streets.len()).filter(|&si| useful(&c.short[si])).collect();
+        ranked.sort_by_key(|&si| (!foreign(&c.short[si]), std::cmp::Reverse(spellings[si]), c.short[si].clone()));
+        ranked.into_iter().map(|si| c.short[si].clone()).take(limit).collect()
     }
 
     pub fn localities(&self) -> usize {
@@ -666,6 +702,18 @@ mod tests {
         // A street of the same name stays the street.
         assert_eq!(found(g.resolve("רבי עקיבא, אלעד")).place, None);
         assert!(matches!(g.resolve("קניון הזהב, אלעד"), Lookup::NoStreet { .. }));
+    }
+
+    #[test]
+    fn a_city_s_hard_street_names_come_first_as_recognition_hints() {
+        let g = Gazetteer::from_tsv(
+            "6100\tבני ברק\t301\tאהרונוביץ ראובן\tofficial\n6100\tבני ברק\t301\tאהרונוביץ\tsynonym\n\
+             6100\tבני ברק\t302\tרבי עקיבא\tofficial\n6100\tבני ברק\t303\tז'בוטינסקי\tofficial\n",
+        );
+        let terms = g.street_keyterms("בני ברק", 2);
+        assert_eq!(terms.len(), 2);
+        assert!(terms.contains(&"אהרונוביץ".to_string()), "{terms:?}");
+        assert!(g.street_keyterms("עיר שאין", 5).is_empty());
     }
 
     #[test]
