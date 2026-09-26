@@ -449,6 +449,19 @@ impl Gazetteer {
         readings.into_iter().nth(best).unwrap_or(Lookup::NoCity { closest: Vec::new() })
     }
 
+    /// A street (or place) looked up in one named locality only: the agent writes "street,
+    /// city", and "חיפה 32, ירושלים" is רחוב חיפה in ירושלים, not רחוב ירושלים in חיפה.
+    /// `None` when `city` is not a locality.
+    pub fn resolve_within(&self, street: &str, city: &str) -> Option<Lookup> {
+        let (ci, alias) = self.city_keys.get(&norm(city)).cloned()?;
+        let words: Vec<String> = norm(street).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect();
+        if words.is_empty() {
+            return None;
+        }
+        let n = words.len();
+        Some(self.resolve_in(&words, (ci, alias, n, 0)))
+    }
+
     fn resolve_in(&self, words: &[String], (ci, alias, start, len): (usize, String, usize, usize)) -> Lookup {
         let city = &self.cities[ci];
         let rest: Vec<&String> =
@@ -735,6 +748,20 @@ mod tests {
         assert_eq!(terms.len(), 2);
         assert!(terms.contains(&"אהרונוביץ".to_string()), "{terms:?}");
         assert!(g.street_keyterms("עיר שאין", 5).is_empty());
+    }
+
+    #[test]
+    fn street_comma_city_is_looked_up_in_that_city() {
+        let g = Gazetteer::from_tsv(
+            "3000	ירושלים	10	חיפה	official
+4000	חיפה	20	ירושלים	official
+",
+        );
+        match g.resolve_within("חיפה 32", "ירושלים") {
+            Some(Lookup::Found(a)) => assert_eq!(a.official(), "חיפה 32, ירושלים"),
+            other => panic!("{other:?}"),
+        }
+        assert!(g.resolve_within("חיפה 32", "לא עיר").is_none());
     }
 
     #[test]

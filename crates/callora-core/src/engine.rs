@@ -547,7 +547,9 @@ impl Engine {
             .as_ref()
             .map(|city| g.resolve(&format!("{spoken}, {city}")))
             .filter(|l| matches!(l, Lookup::Found(a) if a.street.is_some()));
-        let lookup = in_city_before.unwrap_or_else(|| g.resolve(spoken));
+        // "street, city" as the agent writes it: the city after the comma, the street before.
+        let explicit = spoken.rsplit_once(',').and_then(|(street, city)| g.resolve_within(street, city.trim()));
+        let lookup = explicit.or(in_city_before).unwrap_or_else(|| g.resolve(spoken));
         Some(match lookup {
             // Asked once already, and the caller has no street: the locality is enough.
             Lookup::Found(a)
