@@ -188,6 +188,12 @@ impl Engine {
         self.state.remember(Speaker::Caller, transcript);
         // Notes were for the decision just made; new ones are for the next.
         self.state.agent_notes.clear();
+        // Asked the same thing five times over and still stuck: a person takes the call (or,
+        // with no desk, it ends politely) rather than a sixth round of the same question.
+        if self.state.same_question_streak() >= 5 {
+            tracing::warn!(transcript, "the same question five times; handing off");
+            return self.force_handoff("stuck_on_a_question");
+        }
 
         // The task.
         if let Some(intent) = turn.task.as_deref().and_then(|t| self.business.intent(t)).cloned() {

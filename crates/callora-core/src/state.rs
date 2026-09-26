@@ -222,6 +222,28 @@ impl CallState {
         }
     }
 
+    /// How many times in a row, up to now, the agent asked the very same question
+    /// ("כמה נוסעים?" eleven times in a live call while the caller answered other things).
+    pub fn same_question_streak(&self) -> usize {
+        let asked: Vec<String> = self
+            .history
+            .iter()
+            .filter(|t| t.speaker == Speaker::Agent)
+            .map(|t| crate::text::normalize(t.text.rsplit(['.', '!']).next().unwrap_or(&t.text)))
+            .collect();
+        let Some(last) = asked.last().filter(|q| !q.is_empty()) else { return 0 };
+        if !self
+            .history
+            .iter()
+            .rev()
+            .find(|t| t.speaker == Speaker::Agent)
+            .is_some_and(|t| t.text.trim_end().ends_with('?'))
+        {
+            return 0;
+        }
+        asked.iter().rev().take_while(|q| *q == last).count()
+    }
+
     pub fn remember(&mut self, speaker: Speaker, text: &str) {
         if text.trim().is_empty() {
             return;

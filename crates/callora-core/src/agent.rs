@@ -258,6 +258,14 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
         }
         None => u.push_str("\nCURRENT TASK: none\n"),
     }
+    let streak = state.same_question_streak();
+    if streak >= 3 {
+        u.push_str(&format!(
+            "
+STUCK: you asked the same question {streak} times in a row and the caller keeps answering something              else. Do not ask it the same way again: say simply what you need and why, with an example (\"כמה אנשים              נוסעים, למשל שניים?\"), or take what they said if it answers something else. If it is optional, skip it.
+"
+        ));
+    }
     if !state.agent_notes.is_empty() {
         u.push_str("\nSYSTEM NOTES on the details you passed last turn (act on them now):\n");
         for n in &state.agent_notes {

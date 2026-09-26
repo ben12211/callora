@@ -1157,6 +1157,23 @@ fn the_city_waiting_for_its_street_is_the_recognition_focus() {
 }
 
 #[test]
+fn the_same_question_over_and_over_is_rephrased_then_handed_off() {
+    // From a live call: "כמה נוסעים?" eleven times while the caller answered names.
+    let (mut call, _) = Call::new(with_desk());
+    call.engine.on_agent_turn("מונית", decide(AgentAction::None, "כמה נוסעים?", Some("book_ride"), &[]), "");
+    call.engine.on_agent_turn("עומר", decide(AgentAction::None, "כמה נוסעים?", None, &[]), "");
+    let b = call.engine.business().clone();
+    assert!(!callora_core::agent::build_request(&b, &call.engine.state, "x").user.contains("STUCK"));
+    call.engine.on_agent_turn("עומר", decide(AgentAction::None, "כמה נוסעים?", None, &[]), "");
+    let next = callora_core::agent::build_request(&b, &call.engine.state, "שוויצר");
+    assert!(next.user.contains("STUCK: you asked the same question 3 times"), "{}", next.user);
+    call.engine.on_agent_turn("שוויצר", decide(AgentAction::None, "כמה נוסעים?", None, &[]), "");
+    call.engine.on_agent_turn("שוויצר", decide(AgentAction::None, "כמה נוסעים?", None, &[]), "");
+    let d = call.engine.on_agent_turn("74", decide(AgentAction::None, "כמה נוסעים?", None, &[]), "");
+    assert!(d.iter().any(|d| matches!(d, Directive::Handoff { .. })), "{d:?}");
+}
+
+#[test]
 fn a_place_rejected_as_unheard_twice_is_taken_the_third_time() {
     // A live call looped: the check kept rejecting the agent's (right) landmark, the caller
     // said "אמרתי כבר" three times and hung up.
