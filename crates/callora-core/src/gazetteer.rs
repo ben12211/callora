@@ -497,7 +497,8 @@ impl Gazetteer {
         // Ashkenazi speech ("אהרוינוביטש" for "אהרונוביץ", "שבעס" for "שבת"): the same
         // consonants once ת/ס and טש/ץ are one sound. Only when one street of the city fits.
         let heard_key = ashkenazi(&candidates[0]);
-        if heard_key.chars().count() >= 3 {
+        // Four consonants at least: "שוויצר" and "יוסי הצייר" are both ס-צ-ר.
+        if heard_key.chars().count() >= 4 {
             let mut fits = city.street_keys.iter().filter(|(k, _)| ashkenazi(k) == heard_key).map(|(_, &si)| si);
             if let Some(si) = fits.next() {
                 if fits.all(|other| other == si) {
@@ -726,6 +727,12 @@ mod tests {
         );
         assert_eq!(found(g.resolve("אהרוינוביטש 22, בני ברק")).spoken(), "אהרונוביץ ראובן 22, בני ברק");
         assert!(matches!(g.resolve("עונה 32, בני ברק"), Lookup::NoStreet { .. }));
+        // Three consonants are not enough to call it the same street.
+        let g = Gazetteer::from_tsv(
+            "3000	ירושלים	10	יוסי הצייר	official
+",
+        );
+        assert!(matches!(g.resolve("שוויצר 3, ירושלים"), Lookup::NoStreet { .. }));
     }
 
     #[test]
