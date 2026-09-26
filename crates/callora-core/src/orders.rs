@@ -26,6 +26,10 @@ pub fn order_cards(b: &Business, state: &CallState) -> Vec<Value> {
                 let Some(value) = run.slots.get(&ps.slot) else { continue };
                 let label = b.config.slots.get(&ps.slot).map_or(ps.slot.as_str(), |s| s.description.as_str());
                 let spoken = value.spoken();
+                // "אין" to the note question leaves nothing to show.
+                if spoken.trim().is_empty() {
+                    continue;
+                }
                 let address = match value {
                     SlotValue::Place { address: Some(a), .. } if *a != spoken => Some(a.clone()),
                     _ => None,
