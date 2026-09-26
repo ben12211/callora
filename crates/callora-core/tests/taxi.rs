@@ -1294,3 +1294,21 @@ fn the_reply_s_fields_are_known_before_its_words() {
     s.push(r#"y":"על שם"#);
     assert_eq!(s.fields(), Some(vec![("passengers".to_string(), "47".to_string())]));
 }
+
+#[test]
+fn street_comma_city_from_the_agent_is_looked_up_in_that_city() {
+    // "חיפה 32, ירושלים" was booked as "ירושלים 32, חיפה".
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "3000	ירושלים	10	חיפה	official
+4000	חיפה	20	ירושלים	official
+",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "רחוב חיפה 32 בירושלים",
+        decide(AgentAction::None, "לאיזו עיר נוסעים?", Some("book_ride"), &[("pickup", "חיפה 32, ירושלים")]),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "חיפה 32, ירושלים");
+}

@@ -442,7 +442,7 @@ impl Engine {
                     rejected.push(slot.clone());
                     return None;
                 };
-                let value = self.check_place(slot, value, &mut notes, &mut rejected)?;
+                let value = self.check_place(slot, value, raw, &mut notes, &mut rejected)?;
                 Some(SlotFill {
                     slot: slot.clone(),
                     value,
@@ -520,6 +520,7 @@ impl Engine {
         &mut self,
         slot: &str,
         value: SlotValue,
+        raw: &str,
         notes: &mut Vec<String>,
         rejected: &mut Vec<String>,
     ) -> Option<SlotValue> {
@@ -547,8 +548,9 @@ impl Engine {
             .as_ref()
             .map(|city| g.resolve(&format!("{spoken}, {city}")))
             .filter(|l| matches!(l, Lookup::Found(a) if a.street.is_some()));
-        // "street, city" as the agent writes it: the city after the comma, the street before.
-        let explicit = spoken.rsplit_once(',').and_then(|(street, city)| g.resolve_within(street, city.trim()));
+        // "street, city" as the agent wrote it (the parsed value has lost the comma): the
+        // city after the comma, the street before.
+        let explicit = raw.rsplit_once(',').and_then(|(street, city)| g.resolve_within(street, city.trim()));
         let lookup = explicit.or(in_city_before).unwrap_or_else(|| g.resolve(spoken));
         Some(match lookup {
             // Asked once already, and the caller has no street: the locality is enough.
