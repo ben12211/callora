@@ -88,6 +88,8 @@ pub struct Services {
     pub agent: Option<Arc<dyn LanguageModel>>,
     /// Israel's localities and streets, for checking places.
     pub gazetteer: Option<Arc<callora_core::gazetteer::Gazetteer>>,
+    /// A second, slower transcription of doubtful utterances (a city or street expected).
+    pub second_hearing: Option<Arc<dyn crate::ports::Transcriber>>,
     pub tts: Option<Arc<dyn Synthesizer>>,
     pub tts_cache: TtsCache,
     pub actions: Arc<dyn ActionRunner>,
@@ -120,6 +122,11 @@ enum Ev {
     SttFocused {
         city: String,
         result: anyhow::Result<SttSession>,
+    },
+    /// The second hearing of an utterance (or its failure / timeout).
+    SecondHearing {
+        id: u64,
+        text: Option<String>,
     },
     Llm {
         turn: u64,
@@ -234,6 +241,13 @@ pub struct Session {
     /// The city whose streets bias recognition now, the one being opened, and a session
     /// ready to take over once the caller is between utterances.
     stt_city: Option<String>,
+    /// The caller's audio: the last 300 ms before speech, the utterance being spoken, and the
+    /// last one finished; and the transcript waiting for its second hearing.
+    preroll: std::collections::VecDeque<Bytes>,
+    utterance: Vec<u8>,
+    last_utterance: Vec<u8>,
+    second_pending: Option<(u64, String)>,
+    second_ids: u64,
     stt_opening: Option<String>,
     stt_next: Option<(String, SttSession)>,
     pending_agent: Option<PendingAgent>,
@@ -302,6 +316,11 @@ impl Session {
             finalize_sent_at: None,
             stt_reconnects: 0,
             stt_city: None,
+            preroll: std::collections::VecDeque::new(),
+            utterance: Vec::new(),
+            last_utterance: Vec::new(),
+            second_pending: None,
+            second_ids: 0,
             stt_opening: None,
             stt_next: None,
             pending_agent: None,
@@ -431,7 +450,9 @@ impl Session {
     // Caller audio
 
     fn on_audio(&mut self, frame: Bytes) {
-        match self.vad.push(&frame) {
+        let vad_event = self.vad.push(&frame);
+        self.keep_audio(&frame, vad_event.as_ref());
+        match vad_event {
             Some(VadEvent::SpeechStarted) => {
                 self.silence_generation += 1;
                 if self.pending_agent.as_ref().is_some_and(|p| p.speculative) {
@@ -476,6 +497,64 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// The caller's words as audio, for a second hearing: from 300 ms before speech starts
+    /// to its end (a transcript may join a few of these).
+    fn keep_audio(&mut self, frame: &Bytes, event: Option<&VadEvent>) {
+        const PREROLL_FRAMES: usize = 15;
+        const MAX_BYTES: usize = 8000 * 20;
+        match event {
+            Some(VadEvent::SpeechStarted) => {
+                self.utterance = self.preroll.iter().flat_map(|f| f.iter().copied()).collect();
+                self.utterance.extend_from_slice(frame);
+            }
+            Some(VadEvent::SpeechEnded) => {
+                self.utterance.extend_from_slice(frame);
+                let finished = std::mem::take(&mut self.utterance);
+                // Pieces of one sentence split by a pause stay together.
+                if self.second_pending.is_none() && self.finalize_sent_at.is_none() {
+                    self.last_utterance.clear();
+                }
+                self.last_utterance.extend(finished);
+                if self.last_utterance.len() > MAX_BYTES {
+                    let cut = self.last_utterance.len() - MAX_BYTES;
+                    self.last_utterance.drain(..cut);
+                }
+            }
+            None if self.vad.is_speaking() => {
+                if self.utterance.len() < MAX_BYTES {
+                    self.utterance.extend_from_slice(frame);
+                }
+            }
+            _ => {}
+        }
+        self.preroll.push_back(frame.clone());
+        while self.preroll.len() > PREROLL_FRAMES {
+            self.preroll.pop_front();
+        }
+    }
+
+    /// Keyterms for a second hearing of this turn, when it is worth one: the caller is
+    /// giving a street (every street of the city) or a city (the towns). Elsewhere the
+    /// stream is good enough and waiting would only slow the call.
+    fn second_hearing_terms(&self) -> Option<Vec<String>> {
+        let g = self.services.gazetteer.as_ref()?;
+        self.services.second_hearing.as_ref()?;
+        if self.last_utterance.len() < 8000 / 4 {
+            return None;
+        }
+        let mut terms = if let Some(city) = self.engine.street_focus() {
+            let mut t = vec![city.clone()];
+            t.extend(g.street_keyterms(&city, 950));
+            t
+        } else if self.engine.awaiting_city() {
+            g.town_names(20)
+        } else {
+            return None;
+        };
+        terms.extend(self.business.stt_keyterms());
+        Some(terms)
     }
 
     fn barge_in(&mut self) {
@@ -713,6 +792,41 @@ impl Session {
         if self.fast_lane(&fast, needs_llm) {
             return self.understood(fast);
         }
+        // A city or street expected: hear the words once more, with every name expected as a
+        // hint, before the agent decides ("זה ביתר" came back "זה יותר", "אהרונוביץ" as
+        // "עונה מ-32"). The agent gets both.
+        if let Some((_, earlier)) = self.second_pending.take() {
+            transcript = format!("{earlier} {transcript}");
+        }
+        if let (Some(terms), Some(t)) = (self.second_hearing_terms(), self.services.second_hearing.clone()) {
+            self.second_ids += 1;
+            let id = self.second_ids;
+            let audio = self.last_utterance.clone();
+            let language = self.business.config.language.clone();
+            let tx = self.events.clone();
+            let started = Instant::now();
+            let call = self.info.call_sid.clone();
+            tokio::spawn(async move {
+                let heard =
+                    tokio::time::timeout(Duration::from_millis(1500), t.transcribe(&audio, &language, &terms)).await;
+                let text = match heard {
+                    Ok(Ok(text)) => Some(text),
+                    Ok(Err(e)) => {
+                        tracing::warn!(%call, error = %e, "second hearing failed");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!(%call, "second hearing timed out");
+                        None
+                    }
+                };
+                tracing::info!(%call, second = text.as_deref().unwrap_or(""), ms = started.elapsed().as_millis() as u64, "second hearing");
+                let _ = tx.send(Ev::SecondHearing { id, text });
+            });
+            self.second_pending = Some((id, transcript));
+            return;
+        }
+        self.engine.state.second_hearing = None;
         self.start_agent(transcript, false);
     }
 
@@ -905,6 +1019,14 @@ impl Session {
                     let _ = session.input.try_send(SttInput::Audio(frame));
                 }
                 self.stt = Some(session);
+            }
+            Ev::SecondHearing { id, text } => {
+                if self.second_pending.as_ref().map(|(i, _)| *i) != Some(id) {
+                    return;
+                }
+                let Some((_, transcript)) = self.second_pending.take() else { return };
+                self.engine.state.second_hearing = text.filter(|t| !t.is_empty());
+                self.start_agent(transcript, false);
             }
             Ev::SttFocused { city, result } => {
                 if self.stt_opening.as_deref() == Some(city.as_str()) {

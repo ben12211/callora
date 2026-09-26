@@ -6,4 +6,5 @@ pub mod elevenlabs;
 pub mod openai;
 pub mod race;
 pub mod scribe;
+pub mod scribe_batch;
 pub mod twilio_rest;

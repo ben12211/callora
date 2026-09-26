@@ -1227,3 +1227,29 @@ fn a_place_rejected_as_unheard_twice_is_taken_the_third_time() {
     );
     assert!(call.slot("destination").is_some(), "taken, not asked for a fourth time");
 }
+
+#[test]
+fn the_second_hearing_reaches_the_agent_and_counts_as_heard() {
+    // The stream heard "זה יותר"; the second hearing, hinted with the towns, "זה ביתר".
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn("מונית", decide(AgentAction::None, "מאיזו עיר לאסוף?", Some("book_ride"), &[]), "");
+    assert!(call.engine.awaiting_city());
+    call.engine.state.second_hearing = Some("זה ביתר".into());
+    let b = call.engine.business().clone();
+    let next = callora_core::agent::build_request(&b, &call.engine.state, "זה יותר");
+    assert!(
+        next.user.contains("SECOND HEARING of the same words") && next.user.contains("\"זה ביתר\""),
+        "{}",
+        next.user
+    );
+    call.engine.on_agent_turn(
+        "זה יותר",
+        decide(AgentAction::None, "איזה רחוב ומספר?", None, &[("destination", "בית הכרם, ביתר")]),
+        "",
+    );
+    assert!(
+        !call.engine.state.agent_notes.iter().any(|n| n.contains("never said \"ביתר\"")),
+        "{:?}",
+        call.engine.state.agent_notes
+    );
+}

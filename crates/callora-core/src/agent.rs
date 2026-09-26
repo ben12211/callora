@@ -306,6 +306,12 @@ STUCK: you asked the same question {streak} times in a row and the caller keeps 
         }
     }
     u.push_str(&format!("\nCALLER NOW: \"{transcript}\""));
+    if let Some(second) = state.second_hearing.as_deref().filter(|s| !s.is_empty() && *s != transcript) {
+        u.push_str(&format!(
+            "\nSECOND HEARING of the same words (a slower, more accurate recognizer, hinted with the places \
+             expected): \"{second}\". Where the two differ, go by the one that makes sense (usually this one)."
+        ));
+    }
     u
 }
 

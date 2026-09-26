@@ -108,6 +108,20 @@ impl Engine {
         self.pipeline_of(run).slots.iter().find_map(|ps| self.state.place_cities.get(&ps.slot).cloned())
     }
 
+    /// The call is about to hear a place's city ("מאיזו עיר לאסוף?"): the task's next
+    /// missing detail is a place that needs a street, and no city for it yet.
+    pub fn awaiting_city(&self) -> bool {
+        let Some(run) = self.state.run.as_ref() else { return false };
+        let pending =
+            self.pipeline_of(run).slots.iter().find(|ps| {
+                !run.slots.contains_key(&ps.slot) && ps.default.is_none() && (ps.required || ps.ask.is_some())
+            });
+        pending.is_some_and(|ps| {
+            !self.state.place_cities.contains_key(&ps.slot)
+                && self.business.config.slots.get(&ps.slot).is_some_and(|c| c.precise || c.street_once)
+        })
+    }
+
     pub fn set_caller_phone(&mut self, phone: Option<String>) {
         self.state.caller_phone = phone.filter(|p| !p.trim().is_empty());
     }
@@ -361,6 +375,11 @@ impl Engine {
             .map(|t| t.text.as_str())
             .collect::<Vec<_>>()
             .join(". ");
+        // What the second hearing heard counts as said too.
+        let heard = match &self.state.second_hearing {
+            Some(second) => format!("{heard}. {second}"),
+            None => heard,
+        };
         let fills: Vec<SlotFill> = fields
             .iter()
             .filter_map(|(slot, raw)| {

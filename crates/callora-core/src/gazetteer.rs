@@ -418,6 +418,12 @@ impl Gazetteer {
         ranked.into_iter().map(|si| c.short[si].clone()).take(limit).collect()
     }
 
+    /// Towns and cities (localities with at least `min_streets` streets), for hinting
+    /// recognition when the caller is about to say one.
+    pub fn town_names(&self, min_streets: usize) -> Vec<String> {
+        self.cities.iter().filter(|c| c.streets.len() >= min_streets).map(|c| c.name.clone()).collect()
+    }
+
     pub fn localities(&self) -> usize {
         self.cities.len()
     }

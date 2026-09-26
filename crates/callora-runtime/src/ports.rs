@@ -54,6 +54,13 @@ pub trait SpeechToText: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
+/// One utterance transcribed on its own, slower and more accurate than the stream: a second
+/// hearing when the stream's transcript is doubtful. `keyterms` may be long (a city's streets).
+#[async_trait]
+pub trait Transcriber: Send + Sync {
+    async fn transcribe(&self, mulaw: &[u8], language: &str, keyterms: &[String]) -> anyhow::Result<String>;
+}
+
 // ---------------------------------------------------------------------------------------
 // LLM structured extraction
 
