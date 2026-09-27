@@ -18,11 +18,15 @@ pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
 pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 pub const GEMINI_MODEL: &str = "gemini-3.8-flash";
 
-/// The agent's model when `AGENT_MODEL` is unset: GPT-6 Sol, the reasoning-capable
-/// successor of gpt-4o, with reasoning off so first words stay fast.
-pub const AGENT_MODEL: &str = "gpt-6-sol";
-/// The hedge behind it: GPT-6 Luna, OpenAI's low-latency model of the same family.
+/// The agent's model when `AGENT_MODEL` is unset: Gemini 3.8 Flash (needs GEMINI_API_KEY),
+/// for its price per call. Any `gemini-*` name goes to Gemini, anything else to OpenAI.
+pub const AGENT_MODEL: &str = "gemini-3.8-flash";
+/// The hedge behind it: GPT-6 Luna, OpenAI's low-latency, low-cost model (needs
+/// OPENAI_API_KEY; without it the agent runs unhedged). Another provider, so a Gemini
+/// outage ("503 high demand") does not silence the call.
 pub const AGENT_BACKUP_MODEL: &str = "gpt-6-luna";
+/// An OpenAI agent model named nowhere else (see [`OpenAi::agent`]).
+pub const OPENAI_AGENT_MODEL: &str = "gpt-6-sol";
 /// No reasoning before the first word: a phone turn cannot wait for it. `low` is the
 /// next step up when the eval shows it is worth the time.
 pub const AGENT_REASONING_EFFORT: &str = "none";
@@ -76,7 +80,8 @@ impl OpenAi {
         reasoning_effort: Option<String>,
     ) -> Self {
         let nonblank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
-        let mut llm = Self::new(http, api_key, base_url, Some(nonblank(model).unwrap_or_else(|| AGENT_MODEL.into())));
+        let mut llm =
+            Self::new(http, api_key, base_url, Some(nonblank(model).unwrap_or_else(|| OPENAI_AGENT_MODEL.into())));
         if is_reasoning_model(&llm.model) {
             llm.reasoning_effort = Some(nonblank(reasoning_effort).unwrap_or_else(|| AGENT_REASONING_EFFORT.into()));
         }
@@ -127,6 +132,9 @@ impl OpenAi {
             // The limit counts reasoning tokens too: leave room for them when thinking is on.
             let thinking = self.reasoning_effort.as_deref().is_some_and(|e| e != "none" && e != "minimal");
             body["max_completion_tokens"] = json!(if thinking { 4000 } else { 600 });
+        } else if self.label == "gemini" {
+            // Gemini counts its thinking in the limit too.
+            body["max_tokens"] = json!(2000);
         } else {
             body["max_tokens"] = json!(400);
         }
@@ -347,7 +355,7 @@ mod tests {
     #[test]
     fn reasoning_models_are_told_how_hard_to_think_and_get_no_temperature() {
         let body = OpenAi::agent(reqwest::Client::new(), "k".into(), None, None, None).body(&request());
-        assert_eq!(body["model"], AGENT_MODEL);
+        assert_eq!(body["model"], OPENAI_AGENT_MODEL);
         assert_eq!(body["reasoning_effort"], "none");
         assert_eq!(body["max_completion_tokens"], 600);
         assert!(body.get("temperature").is_none());
@@ -362,6 +370,15 @@ mod tests {
         let body = old.body(&request());
         assert_eq!(body["temperature"], 0.0);
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn the_default_agent_runs_on_gemini_with_room_to_think() {
+        let llm = OpenAi::gemini(reqwest::Client::new(), "k".into(), None, Some(AGENT_MODEL.into()), None);
+        let body = llm.body(&request());
+        assert_eq!(body["model"], "gemini-3.8-flash");
+        assert_eq!(body["reasoning_effort"], "low");
+        assert_eq!(body["max_tokens"], 2000, "its thinking counts in the limit");
     }
 
     #[test]

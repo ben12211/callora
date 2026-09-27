@@ -167,28 +167,35 @@ fn language_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
     }
 }
 
-/// One agent model by name, with AGENT_REASONING_EFFORT (default `none`) for reasoning
-/// models. Needs OPENAI_API_KEY.
+/// One agent model by name: a `gemini-*` model through Gemini (GEMINI_API_KEY, thinking
+/// `low` unless AGENT_REASONING_EFFORT says otherwise), anything else through OpenAI
+/// (OPENAI_API_KEY, reasoning `none` by default). `None` without the provider's key.
 fn agent_model_named(http: reqwest::Client, model: &str, effort: Option<String>) -> Option<Arc<dyn LanguageModel>> {
-    let key = env("OPENAI_API_KEY")?;
     let effort = effort.or_else(|| env("AGENT_REASONING_EFFORT"));
+    if model.starts_with("gemini") {
+        let key = env("GEMINI_API_KEY")?;
+        return Some(Arc::new(OpenAi::gemini(http, key, None, Some(model.into()), effort)));
+    }
+    let key = env("OPENAI_API_KEY")?;
     Some(Arc::new(OpenAi::agent(http, key, env("TEXT_LLM_BASE_URL"), Some(model.into()), effort)))
 }
 
-/// The conversation agent: AGENT_MODEL (default gpt-6-sol: gpt-4o, the previous default,
-/// gave answers that callers found plainly wrong), hedged after AGENT_HEDGE_MS (default
-/// 1200) by AGENT_BACKUP_MODEL (default gpt-6-luna, the family's low-latency model). Run
-/// `callora eval --model <a> --model <b>` to compare models on the recorded conversations
-/// before changing either. Needs OPENAI_API_KEY.
+/// The conversation agent: AGENT_MODEL (default gemini-3.8-flash), hedged after
+/// AGENT_HEDGE_MS (default 1200) by AGENT_BACKUP_MODEL (default gpt-6-luna) when that
+/// provider's key is set. Run `callora eval --model <a> --model <b>` to compare models on
+/// the recorded conversations before changing either.
 fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
     let primary = env("AGENT_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_MODEL.into());
     let backup = env("AGENT_BACKUP_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_BACKUP_MODEL.into());
     let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(1200));
-    Some(Arc::new(Hedged::new(
-        agent_model_named(http.clone(), &primary, None)?,
-        agent_model_named(http, &backup, None)?,
-        hedge,
-    )))
+    let primary_model = agent_model_named(http.clone(), &primary, None)?;
+    Some(match agent_model_named(http, &backup, None) {
+        Some(backup_model) => Arc::new(Hedged::new(primary_model, backup_model, hedge)),
+        None => {
+            tracing::warn!(%backup, "no key for the agent's backup model; the agent runs unhedged");
+            primary_model
+        }
+    })
 }
 
 /// Israel's localities and streets (`STREETS_FILE`, gzipped TSV; default
@@ -514,7 +521,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     let gazetteer = load_gazetteer();
     let agent = agent_model(client.clone());
     if agent.is_none() && registry.all().any(|b| b.config.agent.is_some()) {
-        tracing::warn!("OPENAI_API_KEY is not set: businesses with an agent fall back to the rules");
+        tracing::warn!("no key for AGENT_MODEL's provider: businesses with an agent fall back to the rules");
     }
     // The second hearing uses the same ElevenLabs key as the stream. Off unless
     // SECOND_HEARING=1: with a city's streets as hints it made names up on live calls
@@ -667,11 +674,11 @@ async fn run_eval(dir: &Path, args: EvalArgs) -> anyhow::Result<()> {
             env("AGENT_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_MODEL.into()),
             env("AGENT_BACKUP_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_BACKUP_MODEL.into())
         );
-        models.push((name, agent_model(client.clone()).context("OPENAI_API_KEY is required")?));
+        models.push((name, agent_model(client.clone()).context("the agent model's API key is not set")?));
     }
     for m in &args.models {
-        let model =
-            agent_model_named(client.clone(), m, args.reasoning.clone()).context("OPENAI_API_KEY is required")?;
+        let model = agent_model_named(client.clone(), m, args.reasoning.clone())
+            .with_context(|| format!("no API key for {m} (GEMINI_API_KEY or OPENAI_API_KEY)"))?;
         let label = match args.reasoning.clone().or_else(|| env("AGENT_REASONING_EFFORT")) {
             Some(e) if callora_providers::openai::is_reasoning_model(m) => format!("{m} (reasoning {e})"),
             _ => m.clone(),

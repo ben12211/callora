@@ -181,7 +181,7 @@ Do not run `docker compose down --volumes` in production.
 ## After a deployment: the agent and the calls page
 
 - The agent's model comes from the GitHub Variables `AGENT_MODEL`, `AGENT_BACKUP_MODEL` and
-  `AGENT_REASONING_EFFORT` (defaults `gpt-6-sol`, `gpt-6-luna`, `none`); the pipeline sends
+  `AGENT_REASONING_EFFORT` (defaults `gemini-3.8-flash` with thinking `low`, hedged by `gpt-6-luna`); the pipeline sends
   them on every deployment. Compare models with the **Agent eval** workflow (Actions tab)
   before changing them.
 - `https://<host>/calls` shows the numbers of the last day, week or month, every call with

@@ -22,8 +22,8 @@ secrets already configured in GitHub keep working.
 | `CARTESIA_API_KEY` | optional | Backup speech-to-text (Cartesia `ink-whisper`), used with `STT_PROVIDER=cartesia` or when there is no ElevenLabs key. *legacy* |
 | `ELEVENLABS_API_KEY` | yes | Speech-to-text (Scribe v2 Realtime), voice library generation and dynamic TTS. Without it calls cannot be understood. *legacy* |
 | `ELEVENLABS_VOICE_ID` | yes for audio | The business voice (also accepted as a Variable, which is preferred). |
-| `OPENAI_API_KEY` | yes | The conversation agent (`AGENT_MODEL`, default `gpt-6-sol`), the agent eval, and understanding for businesses without an agent. Without it the agent is off and the rules run the calls. *legacy* |
-| `GEMINI_API_KEY` | optional | Understanding for businesses without an agent, with Gemini (default `gemini-3.8-flash`); raced with OpenAI when both are set. Not used by the agent. |
+| `OPENAI_API_KEY` | yes | The agent's backup model (`gpt-6-luna`), OpenAI agent models, and understanding for businesses without an agent. *legacy* |
+| `GEMINI_API_KEY` | yes | The conversation agent (default `gemini-3.8-flash`). A free-tier key is rate limited to a few requests a minute: use a paid one. Also understanding for businesses without an agent. |
 | `TAXI_PHONE_NUMBERS` | yes | Comma-separated E.164 Twilio numbers the taxi business answers on (also accepted as a Variable). |
 | `TAXI_HANDOFF_NUMBER` | recommended | E.164 number of the human dispatch desk. Without it, handoff says no one is available (also accepted as a Variable). |
 | `TAXI_DISPATCH_URL` | optional | The taxi company's dispatch endpoint. Unset → demo (mock) results. |
@@ -41,7 +41,7 @@ secrets already configured in GitHub keep working.
 | `PUBLIC_BASE_URL` | yes for a fresh VM | `https://<hostname>` Twilio calls, no trailing slash. Written into the VM's `.env` only when absent there (never overwritten). The hostname's DNS A record must point at the VM. |
 | `ELEVENLABS_VOICE_ID` | yes for audio | Preferred place for the voice id (not sensitive). |
 | `ELEVENLABS_DYNAMIC_MODEL` | optional | Overrides the business's dynamic TTS model. |
-| `AGENT_MODEL` | optional | The agent's model (default `gpt-6-sol`). Sent by the pipeline: unset here means the default, even if the VM's `.env` said otherwise. Run the eval before changing it. |
+| `AGENT_MODEL` | optional | The agent's model (default `gemini-3.8-flash`, needs `GEMINI_API_KEY`; a non-`gemini-*` name goes to OpenAI). Sent by the pipeline: unset here means the default, even if the VM's `.env` said otherwise. Run the eval before changing it. |
 | `AGENT_BACKUP_MODEL` | optional | The hedge: asked when the agent's model has said nothing after `AGENT_HEDGE_MS` (default `gpt-6-luna`). |
 | `AGENT_REASONING_EFFORT` | optional | How much a reasoning model thinks before its first word: `none` (default), `low`, `medium`. Each step up is slower on the phone. |
 | `AGENT_PRICES` | optional | Dollars per million tokens as `model=input/cached/output`, comma separated (`gpt-6-sol=2/0.2/10,gpt-6-luna=0.1/0.01/0.5`), for the cost per call on `/calls` and in the eval. Without it cost is shown as unknown. |
