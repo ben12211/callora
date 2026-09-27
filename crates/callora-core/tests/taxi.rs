@@ -275,6 +275,7 @@ fn the_llm_decides_whether_an_ununderstood_utterance_was_meant_for_the_agent() {
 
 fn decide(action: AgentAction, say: &str, task: Option<&str>, fields: &[(&str, &str)]) -> AgentTurn {
     AgentTurn {
+        phrase: None,
         say: say.into(),
         action,
         task: task.map(Into::into),
@@ -664,8 +665,18 @@ fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
     let order: Vec<&str> = request.schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(
         order,
-        ["action", "fields", "say", "task"],
+        ["action", "fields", "phrase", "say", "task"],
         "the action and the fields, then the words: values are checked before a word plays"
+    );
+    // Phrases are offered by id, with their wording, and only those with nothing to fill in.
+    assert!(system.contains("- ask_destination_street: \"לאיזה רחוב?\""), "{system}");
+    let ids = request.schema["properties"]["phrase"]["enum"].as_array().unwrap();
+    assert!(ids.contains(&serde_json::json!("ask_name")) && ids.contains(&serde_json::Value::Null));
+    // Nothing of the taxi business is written in the generic prompt: its words come from its file.
+    assert!(system.contains("experienced human dispatcher"), "the role comes from agent.prompt");
+    assert!(
+        system.contains("(luggage, wheelchair, child_seat, vehicle)"),
+        "optional details come from the pipelines: {system}"
     );
     assert!(request.user.ends_with("CALLER NOW: \"היי\""), "{}", request.user);
 }
@@ -1087,7 +1098,7 @@ fn a_known_place_is_taken_and_an_unknown_one_is_asked_about_once() {
     );
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "לא יודע");
     assert!(next.user.contains("is not a street or a known place in ירושלים"), "{}", next.user);
-    assert!(next.user.contains("יש כתובת של המקום?"), "{}", next.user);
+    assert!(next.user.contains("Ask for its address (phrase ask_place_address)"), "{}", next.user);
     call.engine.on_agent_turn(
         "לא יודע",
         decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "קניון הזהב, ירושלים")]),
@@ -1311,4 +1322,61 @@ fn street_comma_city_from_the_agent_is_looked_up_in_that_city() {
         "",
     );
     assert_eq!(place(call.slot("pickup")), "חיפה 32, ירושלים");
+}
+
+#[test]
+fn a_phrase_the_runtime_did_not_play_is_said_by_the_engine_and_never_before_a_read_back() {
+    let (mut call, _) = Call::new(business(&[]));
+    let mut turn = decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "הרצל 10, רעננה")]);
+    turn.phrase = Some("ask_destination".into());
+    let d = call.engine.on_agent_turn("מונית מהרצל 10 רעננה", turn, "");
+    let text = spoken(&d);
+    assert!(["לאן נוסעים?", "ולאן?", "לאן צריך להגיע?"].contains(&text.as_str()), "{text}");
+    assert!(call.engine.state.history.last().is_some_and(|t| t.text == text), "what was said is remembered");
+
+    // Everything known: a question phrase before the read-back would ask twice.
+    call.engine.on_agent_turn(
+        "לעזריאלי, שניים",
+        decide(
+            AgentAction::None,
+            "",
+            None,
+            &[("destination", "עזריאלי"), ("passengers", "2"), ("customer_name", "דני")],
+        ),
+        "",
+    );
+    call.engine.on_agent_turn("אין", decide(AgentAction::None, "", None, &[("notes", "אין")]), "");
+    let mut back = decide(AgentAction::ReadBack, "", None, &[]);
+    back.phrase = Some("ask_passengers".into());
+    let d = call.engine.on_agent_turn("זהו", back, "");
+    let text = spoken(&d);
+    assert!(!text.contains("כמה נוסעים"), "{text}");
+    assert!(text.contains("לשלוח?"), "the read-back: {text}");
+}
+
+#[test]
+fn a_ride_that_may_have_gone_through_is_checked_by_a_person_not_called_failed() {
+    let (mut call, _) = Call::new(with_desk());
+    call.say("צריך מונית מרבי עקיבא 12 לנתב\"ג, אנחנו שניים");
+    let (run_id, _, input) = action(&call.say("כן")).unwrap();
+    assert_eq!(input["run_id"], run_id, "every attempt carries its run, for the idempotency key");
+    let d = call
+        .engine
+        .on_action_result(run_id, Err(callora_core::engine::ActionFailure::unknown("create_ride: timed out")));
+    let text = spoken(&d);
+    assert!(text.contains("שיוודא שההזמנה נקלטה"), "{text}");
+    assert!(!text.contains("אין נהג פנוי"), "never \"failed\" for a ride that may be on its way: {text}");
+    let summary = d.iter().find_map(|d| match d {
+        Directive::Handoff { summary } => Some(summary.clone()),
+        _ => None,
+    });
+    let summary = summary.expect("a person checks it");
+    assert_eq!(summary.reason, "action_outcome_unknown");
+    assert!(summary.text.contains("רבי עקיבא 12"), "the person gets the ride: {}", summary.text);
+    assert_eq!(call.engine.state.action_failures, 0, "not counted as a failure");
+
+    let cards = callora_core::orders::order_cards(call.engine.business(), &call.engine.state);
+    assert_eq!(cards.len(), 1, "the owner sees it too");
+    assert_eq!(cards[0]["verify"], true);
+    assert!(cards[0]["summary"].as_str().unwrap().starts_with("לבדוק"), "{}", cards[0]["summary"]);
 }

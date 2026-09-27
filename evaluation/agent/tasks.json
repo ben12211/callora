@@ -1,0 +1,68 @@
+[
+  {
+    "id": "price_question",
+    "turns": [
+      {
+        "caller": "כמה עולה מונית לנתב\"ג?",
+        "expect": {
+          "task": "price_question",
+          "fields": {
+            "destination": "נתב"
+          },
+          "says_none": [
+            "שקל"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "lost_item",
+    "note": "\"השארתי תיק במונית\" is a lost item, not a booking",
+    "turns": [
+      {
+        "caller": "השארתי תיק במונית אתמול בערב",
+        "expect": {
+          "task": "lost_item",
+          "fields": {
+            "item": "תיק"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "complaint_goes_to_a_person",
+    "turns": [
+      {
+        "caller": "אני רוצה להתלונן על הנהג שהיה לי",
+        "expect": {
+          "task": "complaint",
+          "handoff": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "ride_status",
+    "turns": [
+      {
+        "caller": "איפה הנהג שלי? הזמנתי לפני רבע שעה",
+        "expect": {
+          "task": "ride_status"
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_person_on_request",
+    "turns": [
+      {
+        "caller": "אני רוצה לדבר עם בן אדם",
+        "expect": {
+          "handoff": true
+        }
+      }
+    ]
+  }
+]

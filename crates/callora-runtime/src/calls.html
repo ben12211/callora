@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>שיחות</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb;
+          --good: #15803d; --bad: #b91c1c; --warn: #b45309; --caller: #eef2ff; --agent: #f3f4f6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111418; --card: #1b2027; --text: #e7eaee; --muted: #9aa3ad; --line: #2c333c; --accent: #6ea8fe;
+            --good: #4ade80; --bad: #f87171; --warn: #fbbf24; --caller: #1f2a44; --agent: #232a33; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+  header { padding: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 20px; }
+  h2 { font-size: 16px; margin: 16px 0 8px; }
+  nav a { margin-inline-start: 12px; }
+  #status { color: var(--muted); font-size: 13px; }
+  main { padding: 0 16px 32px; max-width: 900px; margin: 0 auto; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .tile .label { color: var(--muted); font-size: 13px; }
+  .tile .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .sub { color: var(--muted); font-size: 12px; }
+  .period { display: flex; gap: 6px; margin: 12px 0; }
+  .period button { background: var(--card); color: var(--text); border: 1px solid var(--line); }
+  .period button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  th, td { padding: 9px 10px; text-align: start; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--agent); }
+  .scroll { overflow-x: auto; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+  .turn { max-width: 85%; padding: 8px 12px; border-radius: 12px; margin: 6px 0; overflow-wrap: anywhere; }
+  .turn.caller { background: var(--caller); margin-inline-start: 0; }
+  .turn.agent { background: var(--agent); margin-inline-start: auto; }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 2px; direction: rtl; }
+  .meta .err { color: var(--bad); }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 10px 0; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  textarea { width: 100%; min-height: 60px; }
+  input, button, textarea { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+  button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
+  button.plain { background: var(--card); color: var(--text); border: 1px solid var(--line); }
+  button.good-btn[aria-pressed="true"] { background: var(--good); color: #fff; }
+  button.bad-btn[aria-pressed="true"] { background: var(--bad); color: #fff; }
+  .empty { color: var(--muted); text-align: center; padding: 32px 0; }
+  form#login { display: grid; gap: 8px; max-width: 360px; margin: 32px auto; padding: 0 16px; }
+  audio { width: 100%; max-width: 360px; }
+  .ltr { direction: ltr; unicode-bidi: embed; }
+</style>
+</head>
+<body>
+<header>
+  <h1>שיחות</h1>
+  <div><span id="status"></span><nav style="display:inline"><a href="/orders">הזמנות</a></nav></div>
+</header>
+<main id="app" hidden>
+  <div class="period" role="group" aria-label="תקופה">
+    <button type="button" data-days="1">היום</button>
+    <button type="button" data-days="7">7 ימים</button>
+    <button type="button" data-days="30">30 ימים</button>
+  </div>
+  <section class="tiles" id="tiles"></section>
+  <section id="list-view">
+    <h2>שיחות אחרונות</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>מתי</th><th>ממי</th><th>סיום</th><th>משך</th><th>הזמנות</th><th>טוקנים</th><th>בדיקה</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </section>
+  <section id="detail-view" hidden></section>
+</main>
+<form id="login" hidden>
+  <label for="key">מפתח גישה</label>
+  <input id="key" type="password" autocomplete="current-password" required>
+  <button type="submit">כניסה</button>
+</form>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let key = null;
+try { key = localStorage.getItem("callora_key"); } catch (_) {}
+let days = 7;
+try { days = Number(localStorage.getItem("callora_days")) || 7; } catch (_) {}
+
+const OUTCOMES = { CallerHungUp: "המתקשר ניתק", AgentHungUp: "הסוכן סיים", HandedOff: "הועבר למוקדן", TimeLimit: "מגבלת זמן" };
+const ACTIONS = { none: "", read_back: "הקראה", submit: "שליחה", transfer: "העברה", end_call: "סיום" };
+
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  if (text != null) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+const when = (t) => new Date(t).toLocaleString("he-IL", { timeZone: "Asia/Jerusalem", dateStyle: "short", timeStyle: "short" });
+const pct = (x) => x == null ? "—" : Math.round(x * 100) + "%";
+const dollars = (x) => x == null ? "—" : "$" + (x < 0.1 ? x.toFixed(4) : x.toFixed(2));
+const secs = (s) => s == null ? "—" : (s >= 60 ? Math.floor(s / 60) + ":" + String(Math.round(s % 60)).padStart(2, "0") : Math.round(s) + " ש׳");
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { "x-api-key": key, ...(opts.headers || {}) } });
+  if (r.status === 401) {
+    try { localStorage.removeItem("callora_key"); } catch (_) {}
+    key = null; showLogin("מפתח שגוי");
+    throw new Error("unauthorized");
+  }
+  if (!r.ok) throw new Error(r.status + " " + (await r.text()));
+  return r;
+}
+
+function showLogin(msg) { $("status").textContent = msg || ""; $("login").hidden = false; $("app").hidden = true; }
+
+function tile(label, value, sub, cls) {
+  const t = el("div", null, "tile");
+  t.append(el("div", label, "label"), el("div", value, "value" + (cls ? " " + cls : "")));
+  if (sub) t.append(el("div", sub, "sub"));
+  return t;
+}
+
+async function loadStats() {
+  const s = await (await api("/api/stats?days=" + days)).json();
+  const tiles = $("tiles");
+  tiles.replaceChildren(
+    tile("שיחות", String(s.calls)),
+    tile("בוצע בלי מוקדן", pct(s.done_without_a_person_share), s.done_without_a_person + " שיחות", "good"),
+    tile("הועבר למוקדן", pct(s.handed_off_share), s.handed_off + " שיחות"),
+    tile("בלי תוצאה", String(s.nothing_done), "ניתקו לפני שהושלם משהו", s.nothing_done ? "warn" : ""),
+    tile("לבדוק", String(s.to_verify), "הזמנות שלא ידוע אם נקלטו", s.to_verify ? "bad" : ""),
+    tile("משך ממוצע", secs(s.avg_duration_seconds)),
+    tile("עלות לשיחה", dollars(s.cost_per_call), s.cost == null ? "הגדירו AGENT_PRICES" : "סה״כ " + dollars(s.cost)),
+    tile("סומנו לא תקין", String(s.reviewed_bad), s.reviewed_good + " סומנו תקין", s.reviewed_bad ? "bad" : ""),
+  );
+  for (const b of document.querySelectorAll(".period button")) b.setAttribute("aria-pressed", String(Number(b.dataset.days) === days));
+}
+
+function callTokens(usage) {
+  // Prices live on the server (the cost tile); a row shows the call's tokens.
+  if (!usage) return "—";
+  return Math.round((usage.input + usage.output) / 1000) + "K טוקנים";
+}
+
+async function loadList() {
+  const calls = await (await api("/api/calls?limit=100")).json();
+  const rows = $("rows");
+  rows.replaceChildren();
+  if (!calls.length) {
+    const tr = el("tr"); const td = el("td", "אין שיחות עדיין", "empty"); td.colSpan = 7; tr.append(td); rows.append(tr); return;
+  }
+  for (const c of calls) {
+    const tr = el("tr");
+    tr.tabIndex = 0;
+    tr.addEventListener("click", () => { location.hash = "call=" + c.id; });
+    tr.addEventListener("keydown", (e) => { if (e.key === "Enter") location.hash = "call=" + c.id; });
+    const from = el("td", c.from || "—"); from.classList.add("ltr");
+    const outcome = el("td", c.outcome ? (OUTCOMES[c.outcome] || c.outcome) : "בשיחה", c.outcome ? "" : "warn");
+    const verdict = el("td");
+    if (c.verdict) verdict.append(el("span", c.verdict === "good" ? "תקין" : "לא תקין", "badge " + (c.verdict === "good" ? "good" : "bad")));
+    tr.append(el("td", when(c.started_at)), from, outcome, el("td", secs(c.duration_seconds)),
+              el("td", c.orders ? String(c.orders) : "—"), el("td", callTokens(c.usage), "muted"), verdict);
+    rows.append(tr);
+  }
+}
+
+function fieldsText(fields) {
+  return (fields || []).map((f) => f.slot + "=" + f.value).join(", ");
+}
+
+function turnView(t) {
+  const d = el("div", null, "turn " + (t.speaker === "caller" ? "caller" : "agent"));
+  d.append(el("div", t.text));
+  const detail = t.detail || {};
+  if (t.speaker === "caller") {
+    const meta = el("div", null, "meta");
+    if (detail.route === "agent") {
+      const r = detail.reply || {};
+      const parts = ["סוכן"];
+      if (detail.decision_ms != null) parts.push(detail.decision_ms + " ms");
+      if (r.action && ACTIONS[r.action]) parts.push(ACTIONS[r.action]);
+      if (r.task) parts.push(r.task);
+      if (r.phrase) parts.push("הקלטה: " + r.phrase);
+      const f = fieldsText(r.fields);
+      if (f) parts.push(f);
+      meta.append(el("span", parts.join(" · ")));
+      if (detail.second_hearing) meta.append(el("div", "שמיעה שנייה: " + detail.second_hearing));
+      if (detail.error) meta.append(el("div", "שגיאה: " + detail.error, "err"));
+    } else if (detail.transcript != null) {
+      meta.append(el("span", "נענה בחוקים, בלי הסוכן"));
+    }
+    if (meta.childNodes.length) d.append(meta);
+  }
+  return d;
+}
+
+async function playButton(u) {
+  const box = el("div", null, "row");
+  const btn = el("button", "נגן", "plain");
+  btn.type = "button";
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      const blob = await (await api("/api/utterances/" + u.id)).blob();
+      const audio = el("audio"); audio.controls = true; audio.src = URL.createObjectURL(blob);
+      btn.replaceWith(audio); audio.play().catch(() => {});
+    } catch (e) { btn.disabled = false; btn.textContent = "לא נטען"; }
+  });
+  box.append(btn, el("span", u.heard, "muted"));
+  return box;
+}
+
+async function showCall(id) {
+  const view = $("detail-view");
+  $("list-view").hidden = true; view.hidden = false;
+  view.replaceChildren(el("div", "טוען...", "empty"));
+  let c;
+  try { c = await (await api("/api/calls/" + encodeURIComponent(id))).json(); }
+  catch (e) { view.replaceChildren(el("div", "השיחה לא נמצאה", "empty")); return; }
+
+  const back = el("button", "→ כל השיחות", "plain"); back.type = "button";
+  back.addEventListener("click", () => { location.hash = ""; });
+  const head = el("div", null, "panel");
+  const from = el("span", c.from || "—", "ltr");
+  head.append(el("div", when(c.started_at) + " · " + (c.outcome ? (OUTCOMES[c.outcome] || c.outcome) : "בשיחה")));
+  const line = el("div", "ממספר: "); line.append(from); head.append(line);
+  if (c.usage) head.append(el("div", "מודל: " + c.usage.model + " · " + c.usage.input + " טוקנים נכנסים (" + c.usage.cached + " מהמטמון), " + c.usage.output + " יוצאים", "muted"));
+
+  // The verdict: a bad call is exported as an eval case and fixed there.
+  const review = el("div", null, "panel");
+  review.append(el("h2", "בדיקה"));
+  const note = el("textarea"); note.placeholder = "מה השתבש? (למשל: הזמין את הרחוב הלא נכון)";
+  note.value = (c.review && c.review.note) || "";
+  const good = el("button", "תקין", "plain good-btn"), bad = el("button", "לא תקין", "plain bad-btn");
+  good.type = bad.type = "button";
+  const mark = (v) => { good.setAttribute("aria-pressed", String(v === "good")); bad.setAttribute("aria-pressed", String(v === "bad")); };
+  mark(c.review && c.review.verdict);
+  const saved = el("span", "", "muted");
+  const save = async (verdict) => {
+    try {
+      await api("/api/calls/" + c.id + "/review", { method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ verdict, note: note.value }) });
+      mark(verdict); saved.textContent = "נשמר";
+    } catch (e) { saved.textContent = "לא נשמר"; }
+  };
+  good.addEventListener("click", () => save("good"));
+  bad.addEventListener("click", () => save("bad"));
+  const exp = el("button", "הורדה כמקרה בדיקה (eval)", "plain"); exp.type = "button";
+  exp.addEventListener("click", async () => {
+    const data = await (await api("/api/calls/" + c.id + "/eval-case")).json();
+    const a = el("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2) + "\n"], { type: "application/json" }));
+    a.download = "call_" + (c.call_sid || c.id) + ".json";
+    document.body.append(a); a.click(); a.remove();
+  });
+  const buttons = el("div", null, "row"); buttons.append(good, bad, saved);
+  review.append(note, buttons, el("div", "שמרו את הקובץ תחת evaluation/agent וכתבו מה היה צריך לקרות (evaluation/README.md).", "muted"));
+  const expRow = el("div", null, "row"); expRow.append(exp); review.append(expRow);
+
+  const convo = el("div", null, "panel");
+  convo.append(el("h2", "השיחה"));
+  if (!(c.turns || []).length) convo.append(el("div", "התמליל נמחק (לפי TRANSCRIPT_RETENTION_DAYS) או ריק", "muted"));
+  for (const t of c.turns || []) convo.append(turnView(t));
+
+  const parts = [back, head, review, convo];
+  if ((c.utterances || []).length) {
+    const rec = el("div", null, "panel");
+    rec.append(el("h2", "הקלטות המתקשר"), el("div", "נשמרות רק ממספרי בדיקה (AUDIO_SAMPLE_NUMBERS)", "muted"));
+    for (const u of c.utterances) rec.append(await playButton(u));
+    parts.push(rec);
+  }
+  if ((c.actions || []).length) {
+    const act = el("div", null, "panel");
+    act.append(el("h2", "פעולות"));
+    for (const a of c.actions) {
+      const unknown = a.result && a.result.error && a.result.error.outcome_unknown;
+      const state = a.ok ? ["הצליח", "good"] : unknown ? ["לא ידוע אם נקלט", "warn"] : ["נכשל", "bad"];
+      const row = el("div", null, "row");
+      row.append(el("span", a.action), el("span", state[0], "badge " + state[1]), el("span", a.latency_ms + " ms", "muted"));
+      act.append(row);
+    }
+    parts.push(act);
+  }
+  for (const h of c.handoffs || []) {
+    const p = el("div", null, "panel");
+    p.append(el("h2", "הועבר למוקדן: " + h.reason), el("div", (h.summary && h.summary.text) || ""));
+    parts.push(p);
+  }
+  view.replaceChildren(...parts);
+}
+
+function route() {
+  const m = /^#call=([0-9a-f-]+)$/.exec(location.hash);
+  if (m) { showCall(m[1]); return; }
+  $("detail-view").hidden = true; $("list-view").hidden = false;
+}
+
+async function refresh() {
+  if (!key) { showLogin(); return; }
+  try {
+    await Promise.all([loadStats(), loadList()]);
+    $("login").hidden = true; $("app").hidden = false;
+    $("status").textContent = "עודכן " + new Date().toLocaleTimeString("he-IL", { timeZone: "Asia/Jerusalem" }) + " ";
+  } catch (e) {
+    if (key) $("status").textContent = "אין חיבור ";
+  }
+}
+
+for (const b of document.querySelectorAll(".period button")) {
+  b.addEventListener("click", () => {
+    days = Number(b.dataset.days);
+    try { localStorage.setItem("callora_days", String(days)); } catch (_) {}
+    loadStats().catch(() => {});
+  });
+}
+$("login").addEventListener("submit", (e) => {
+  e.preventDefault();
+  key = $("key").value.trim();
+  try { localStorage.setItem("callora_key", key); } catch (_) {}
+  refresh().then(route);
+});
+window.addEventListener("hashchange", route);
+refresh().then(route);
+setInterval(() => { if ($("detail-view").hidden) refresh(); }, 30000);
+</script>
+</body>
+</html>

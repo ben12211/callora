@@ -31,6 +31,8 @@ use callora_runtime::ports::{
 use callora_runtime::server::{router, AppState, ServerSettings};
 use callora_runtime::session::{Services, SessionConfig};
 
+mod eval;
+
 #[derive(Parser)]
 #[command(name = "callora", version, about = "Callora V2 phone agent")]
 struct Cli {
@@ -74,6 +76,38 @@ enum Command {
     AgentPrompt {
         #[arg(long, default_value = "taxi")]
         business: String,
+    },
+    /// Run the agent on the recorded conversations with the real model and report the pass
+    /// rate, the latency and the cost (see evaluation/README.md).
+    Eval {
+        /// A case file or a directory of them.
+        #[arg(long, default_value = "evaluation/agent")]
+        cases: PathBuf,
+        /// A model to test; repeat to compare. Without one, the production agent (its model
+        /// and hedge, from AGENT_MODEL / AGENT_BACKUP_MODEL / AGENT_HEDGE_MS).
+        #[arg(long = "model")]
+        models: Vec<String>,
+        /// Reasoning effort for the models given (default AGENT_REASONING_EFFORT, else none).
+        #[arg(long)]
+        reasoning: Option<String>,
+        /// Runs per case: the model is not deterministic.
+        #[arg(long, default_value_t = 3)]
+        repeat: usize,
+        /// Only the cases whose id contains this.
+        #[arg(long)]
+        only: Option<String>,
+        /// Cases running at once (mind the account's rate limits).
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+        /// Also write the full report (every reply, every failure) as JSON.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Only check that the case files are well formed; no model is called.
+        #[arg(long)]
+        check: bool,
+        /// Exit with status 1 when a model's pass rate is below this (0 to 1).
+        #[arg(long)]
+        min_pass: Option<f64>,
     },
 }
 
@@ -133,17 +167,28 @@ fn language_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
     }
 }
 
-/// The conversation agent: AGENT_MODEL (default gpt-4o: on the full taxi prompt it got every
-/// test turn right with first words at ~610 ms median, gpt-4.1 at ~770), hedged after
-/// AGENT_HEDGE_MS (default 900) by AGENT_BACKUP_MODEL (default gpt-4.1). Needs OPENAI_API_KEY.
-fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
+/// One agent model by name, with AGENT_REASONING_EFFORT (default `none`) for reasoning
+/// models. Needs OPENAI_API_KEY.
+fn agent_model_named(http: reqwest::Client, model: &str, effort: Option<String>) -> Option<Arc<dyn LanguageModel>> {
     let key = env("OPENAI_API_KEY")?;
-    let base = env("TEXT_LLM_BASE_URL");
-    let model = |name: Option<String>, default: &str| -> Arc<dyn LanguageModel> {
-        Arc::new(OpenAi::new(http.clone(), key.clone(), base.clone(), Some(name.unwrap_or_else(|| default.into()))))
-    };
-    let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(900));
-    Some(Arc::new(Hedged::new(model(env("AGENT_MODEL"), "gpt-4o"), model(env("AGENT_BACKUP_MODEL"), "gpt-4.1"), hedge)))
+    let effort = effort.or_else(|| env("AGENT_REASONING_EFFORT"));
+    Some(Arc::new(OpenAi::agent(http, key, env("TEXT_LLM_BASE_URL"), Some(model.into()), effort)))
+}
+
+/// The conversation agent: AGENT_MODEL (default gpt-6-sol: gpt-4o, the previous default,
+/// gave answers that callers found plainly wrong), hedged after AGENT_HEDGE_MS (default
+/// 1200) by AGENT_BACKUP_MODEL (default gpt-6-luna, the family's low-latency model). Run
+/// `callora eval --model <a> --model <b>` to compare models on the recorded conversations
+/// before changing either. Needs OPENAI_API_KEY.
+fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
+    let primary = env("AGENT_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_MODEL.into());
+    let backup = env("AGENT_BACKUP_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_BACKUP_MODEL.into());
+    let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(1200));
+    Some(Arc::new(Hedged::new(
+        agent_model_named(http.clone(), &primary, None)?,
+        agent_model_named(http, &backup, None)?,
+        hedge,
+    )))
 }
 
 /// Israel's localities and streets (`STREETS_FILE`, gzipped TSV; default
@@ -279,6 +324,15 @@ async fn main() -> anyhow::Result<()> {
             let request = callora_core::agent::build_request(&b, &engine.state, "…");
             println!("{}", serde_json::json!({ "system": request.system, "schema": request.schema }));
             Ok(())
+        }
+        Command::Eval { cases, models, reasoning, repeat, only, concurrency, json, check, min_pass } => {
+            let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into());
+            tracing_subscriber::fmt().with_env_filter(filter).with_target(false).init();
+            run_eval(
+                &cli.businesses,
+                EvalArgs { cases, models, reasoning, repeat, only, concurrency, json, check, min_pass },
+            )
+            .await
         }
         Command::Understand { business, text } => {
             let reg = load_registry(&cli.businesses)?;
@@ -521,6 +575,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         allow_list: env("ALLOW_LIST").map(|l| parse_allow_list(&l)).unwrap_or_default(),
         admin_api_key: env("ADMIN_API_KEY").filter(|k| k.len() >= 8),
         skip_signature_validation,
+        prices: callora_runtime::pricing::parse_prices(&env("AGENT_PRICES").unwrap_or_default()),
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
     let app = router(state);
@@ -566,6 +621,100 @@ async fn shutdown() {
         () = term => {},
     }
     tracing::info!("shutting down");
+}
+
+struct EvalArgs {
+    cases: PathBuf,
+    models: Vec<String>,
+    reasoning: Option<String>,
+    repeat: usize,
+    only: Option<String>,
+    concurrency: usize,
+    json: Option<PathBuf>,
+    check: bool,
+    min_pass: Option<f64>,
+}
+
+async fn run_eval(dir: &Path, args: EvalArgs) -> anyhow::Result<()> {
+    use futures::StreamExt as _;
+
+    // As in production, a human desk takes handoffs; an unset number would turn every
+    // transfer into "no one is available".
+    let lookup = |k: &str| env(k).or_else(|| k.ends_with("HANDOFF_NUMBER").then(|| "+972500000001".to_string()));
+    let registry = Arc::new(BusinessRegistry::load_dir(dir, &lookup).map_err(|e| anyhow::anyhow!("{e}"))?);
+    let mut cases = eval::load_cases(&args.cases)?;
+    if let Some(only) = &args.only {
+        cases.retain(|c| c.id.contains(only.as_str()));
+    }
+    let problems: Vec<String> = cases.iter().flat_map(|c| eval::check_case(c, &registry)).collect();
+    if !problems.is_empty() {
+        for p in &problems {
+            eprintln!("{p}");
+        }
+        anyhow::bail!("{} problem(s) in the cases", problems.len());
+    }
+    println!("{} cases, well formed.", cases.len());
+    if args.check {
+        return Ok(());
+    }
+    anyhow::ensure!(!cases.is_empty(), "no case to run");
+
+    let client = http();
+    let mut models: Vec<(String, Arc<dyn LanguageModel>)> = Vec::new();
+    if args.models.is_empty() {
+        let name = format!(
+            "production ({} hedged by {})",
+            env("AGENT_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_MODEL.into()),
+            env("AGENT_BACKUP_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_BACKUP_MODEL.into())
+        );
+        models.push((name, agent_model(client.clone()).context("OPENAI_API_KEY is required")?));
+    }
+    for m in &args.models {
+        let model =
+            agent_model_named(client.clone(), m, args.reasoning.clone()).context("OPENAI_API_KEY is required")?;
+        let label = match args.reasoning.clone().or_else(|| env("AGENT_REASONING_EFFORT")) {
+            Some(e) if callora_providers::openai::is_reasoning_model(m) => format!("{m} (reasoning {e})"),
+            _ => m.clone(),
+        };
+        models.push((label, model));
+    }
+    let runner = Arc::new(eval::Runner {
+        registry,
+        gazetteer: load_gazetteer(),
+        // Mock backends only: an eval never books a real ride.
+        actions: Arc::new(ConfiguredActions::new(client, HashMap::new())),
+    });
+    let prices =
+        callora_runtime::pricing::parse_prices(&env("EVAL_PRICES").or_else(|| env("AGENT_PRICES")).unwrap_or_default());
+    let mut reports = Vec::new();
+    for (label, model) in models {
+        println!("Running {} cases × {} with {label}...", cases.len(), args.repeat);
+        let jobs = cases.iter().flat_map(|c| (0..args.repeat as u64).map(move |i| (c, i)));
+        let runs: Vec<eval::CaseRun> = futures::stream::iter(jobs)
+            .map(|(c, i)| {
+                let runner = runner.clone();
+                let model = model.clone();
+                async move { runner.run_case(c, model.as_ref(), 1000 + i).await }
+            })
+            .buffer_unordered(args.concurrency.max(1))
+            .collect()
+            .await;
+        reports.push(eval::summarize(&label, runs, &prices));
+    }
+    print!("{}", eval::render(&reports));
+    if let Some(path) = &args.json {
+        std::fs::write(path, serde_json::to_string_pretty(&reports)?)?;
+        println!(
+            "
+Full report: {}",
+            path.display()
+        );
+    }
+    if let Some(min) = args.min_pass {
+        let below: Vec<&str> = reports.iter().filter(|r| r.pass_rate < min).map(|r| r.model.as_str()).collect();
+        anyhow::ensure!(below.is_empty(), "pass rate below {min} for {}", below.join(", "));
+    }
+    Ok(())
 }
 
 async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {

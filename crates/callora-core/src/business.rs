@@ -490,6 +490,7 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
             ("filler", &p.filler),
             ("on_success", &p.on_success),
             ("on_failure", &p.on_failure),
+            ("on_unknown", &p.on_unknown),
             ("on_complete", &p.on_complete),
         ] {
             if let Some(r) = r {

@@ -22,9 +22,10 @@ use crate::config::SlotKind;
 use crate::llm::LlmRequest;
 use crate::state::{CallState, Speaker, Step};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentAction {
     /// Just talk.
+    #[default]
     None,
     /// Read the task's details back and wait for yes/no.
     ReadBack,
@@ -51,8 +52,11 @@ impl AgentAction {
 }
 
 /// One decision of the agent.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AgentTurn {
+    /// A pre-recorded phrase (a response id from the business's `agent.phrases`), said
+    /// before `say`. It plays the moment its id arrives: no text to generate, no TTS.
+    pub phrase: Option<String>,
     pub say: String,
     pub action: AgentAction,
     /// Intent id the caller is on now, if any.
@@ -63,8 +67,19 @@ pub struct AgentTurn {
 
 /// The fixed wording of the business's instant phrases.
 pub fn phrases(b: &Business) -> Vec<String> {
+    phrase_ids(b).iter().filter_map(|id| b.config.responses.get(*id)).flat_map(|r| r.variants.iter().cloned()).collect()
+}
+
+/// The ids of the business's instant phrases: responses with nothing to fill in, so every
+/// variant is a recorded clip.
+pub fn phrase_ids(b: &Business) -> Vec<&str> {
     let Some(agent) = &b.config.agent else { return Vec::new() };
-    agent.phrases.iter().filter_map(|id| b.config.responses.get(id)).flat_map(|r| r.variants.iter().cloned()).collect()
+    agent
+        .phrases
+        .iter()
+        .filter(|id| b.config.responses.get(*id).is_some_and(|r| r.variants.iter().all(|v| !v.contains('{'))))
+        .map(String::as_str)
+        .collect()
 }
 
 fn kind_hint(kind: SlotKind) -> &'static str {
@@ -79,10 +94,15 @@ fn kind_hint(kind: SlotKind) -> &'static str {
 }
 
 /// The system prompt: who the agent is, what the business can do, and the rules. It does
-/// not change during a call, so providers can cache it.
+/// not change during a call, so providers can cache it. Nothing in it belongs to one kind of
+/// business: the examples come from the business's `agent.prompt`, its rules from
+/// `agent.rules`.
 pub fn system_prompt(b: &Business) -> String {
     let c = &b.config;
     let agent = c.agent.as_ref();
+    let words = agent.map(|a| &a.prompt);
+    let eg = |example: Option<&String>| example.map(|e| format!(" ({e})")).unwrap_or_default();
+    let role = words.and_then(|w| w.role.as_deref()).unwrap_or("receptionist");
     let mut s = String::new();
     if let Some(a) = agent {
         s.push_str(&a.persona);
@@ -90,7 +110,7 @@ pub fn system_prompt(b: &Business) -> String {
     }
     s.push_str(&format!(
         "You are the phone agent of \"{}\" (language {}). You run the conversation like an experienced human \
-         dispatcher: listen, understand what the caller means, and move them to what they need in as few turns as \
+         {role}: listen, understand what the caller means, and move them to what they need in as few turns as \
          possible. The system executes your decisions and enforces the rules below.\n\n",
         c.name, c.language
     ));
@@ -141,58 +161,116 @@ pub fn system_prompt(b: &Business) -> String {
         ));
     }
 
+    let instant = phrase_ids(b);
+    s.push_str("\nREPLY with JSON, every turn:\n");
     s.push_str(
-        "\nREPLY with JSON, every turn:\n\
-         - say: what you say now: exactly ONE short, natural sentence in the caller's language, like a real \
-         dispatcher. Never repeat the greeting, never list options unless the caller is lost, never say you did \
-         not understand and then ask something else in the same turn. Unless the caller is saying goodbye, it \
-         moves the call on: after taking a detail it asks the next question (\"כמה נוסעים?\"), never just \
-         \"הבנתי.\".\n\
-         - action: \"none\"; \"read_back\" when every required detail of the task is known and the caller has \
-         nothing to add: the system then reads the details back and asks to confirm, so your say is only \"סגור.\" \
-         or \"אוקיי.\" (never a question); \"submit\" only when the caller just confirmed that read-back: the \
-         system then sends it and tells the caller the result, so your say is only \"סגור.\"; \"transfer\" for a \
-         human; \"end_call\" only when the caller clearly says goodbye or that they need nothing more.\n\
-         - task: the task the caller is on now, or null.\n\
-         - fields: details of the current task that the caller has given and that CURRENT TASK does not show \
-         yet (from this utterance or an earlier one), copied in their words, without a leading preposition \
-         (מ/ל/ב). A detail you mention or confirm must be in CURRENT TASK or in your fields; otherwise the \
-         system does not have it. Never invent or complete a value. A word after a preposition is a place only if it \
-         names a place (\"לשים מונית\" has no destination). A place is street, number and city when the \
-         caller gave them (\"דיזנגוף 50, תל אביב\"), with the city from earlier in the call if they said it then; \
-         the system checks it against Israel's official list of localities and streets.\n\
-         \nRULES:\n\
-         - Speech recognition makes mistakes. Act on what you did understand (\"...רוצה ... מונית\" is enough to start \
-         a booking); if nothing makes sense, say you did not catch it and ask again. Never guess a value (a number \
-         alone is a house number, not a street), never end the call because of it.\n\
+        "- action: \"none\"; \"read_back\" when every required detail of the task is known and the caller has \
+         nothing to add: the system then reads the details back and asks to confirm, so add no question of your \
+         own (at most a short acknowledgement); \"submit\" only when the caller just confirmed that read-back: \
+         the system then sends it and tells the caller the result, so at most a short acknowledgement; \
+         \"transfer\" for a human; \"end_call\" only when the caller clearly says goodbye or that they need \
+         nothing more.\n",
+    );
+    // Addresses only for a business that takes places.
+    let places = c.slots.values().any(|slot| slot.kind == SlotKind::Place);
+    s.push_str(&format!(
+        "- fields: details of the current task that the caller has given and that CURRENT TASK does not show \
+         yet (from this utterance or an earlier one), copied in their words, without a leading preposition. A \
+         detail you mention or confirm must be in CURRENT TASK or in your fields; otherwise the system does not \
+         have it. Never invent or complete a value. A word after a preposition is a detail only if it names \
+         one{}.",
+        eg(words.and_then(|w| w.not_a_place.as_ref())),
+    ));
+    if places {
+        s.push_str(&format!(
+            " A place is street, number and city when the caller gave them{}, with the city from earlier in the \
+             call if they said it then; the system checks places against the official list of localities and \
+             streets.",
+            eg(words.and_then(|w| w.place.as_ref())),
+        ));
+    }
+    s.push('\n');
+    if !instant.is_empty() {
+        s.push_str(
+            "- phrase: the id of an INSTANT PHRASE (below) that says what you mean, or null. A phrase starts \
+             playing the moment you write its id, while any other words take the voice about a second to \
+             produce: whenever one fits, use it.\n",
+        );
+    }
+    s.push_str(&format!(
+        "- say: what you say {}: at most ONE short, natural sentence in the caller's language, like a real \
+         {role}. Never repeat the greeting, never list options unless the caller is lost, never say you did not \
+         understand and then ask something else in the same turn. Unless the caller is saying goodbye, the turn \
+         moves the call on: after taking a detail it asks the next question{}, never just an acknowledgement.\n",
+        if instant.is_empty() { "now" } else { "after the phrase, or instead of one (usually \"\" with a phrase)" },
+        eg(words.and_then(|w| w.next_question.as_ref())),
+    ));
+    s.push_str("- task: the task the caller is on now, or null.\n");
+
+    s.push_str(&format!(
+        "\nRULES:\n\
+         - Speech recognition makes mistakes. Act on what you did understand{}; if nothing makes sense, ask again. \
+         Never guess a value{}, never end the call because of it.\n\
          - Greetings and small talk get a short friendly answer, then offer help.\n\
          - Prices, arrival times and availability come only from the system. Never promise them yourself.\n\
-         - Ask for one missing required detail at a time, the most important first. Never ask about optional \
-         details (luggage, seats, vehicle, notes) unless the caller brings them up.\n\
+         - Ask for one missing required detail at a time, the most important first.\n\
          - If the caller corrects a detail while details are being confirmed, take the correction and choose \
          read_back again.\n",
-    );
+        eg(words.and_then(|w| w.garbled.as_ref())),
+        if places { " (a number alone is a house number, not a street)" } else { "" },
+    ));
+    let optional = optional_details(b);
+    if !optional.is_empty() {
+        s.push_str(&format!(
+            "- Never ask about optional details ({}) unless the caller brings them up.\n",
+            optional.join(", ")
+        ));
+    }
     if let Some(a) = agent {
         for r in &a.rules {
             s.push_str(&format!("- {r}\n"));
         }
     }
-    let instant = phrases(b);
     if !instant.is_empty() {
         s.push_str(
-            "\nINSTANT PHRASES: pre-recorded, they play with no delay, while any other wording takes the voice about \
-             a second to produce. Whenever one of them says what you mean, your say must be exactly that phrase, \
-             word for word: add nothing, not even the city (\"לאיזה רחוב?\", not \"לאיזה רחוב בבאר שבע?\"):\n",
+            "\nINSTANT PHRASES (id: its recorded wording, one variant is played). Use the id in phrase; never \
+             write a phrase's words in say with something added (not even a city):\n",
         );
-        for p in &instant {
-            s.push_str(&format!("\"{p}\"\n"));
+        for id in &instant {
+            let variants = c.responses.get(*id).map(|r| r.variants.clone()).unwrap_or_default();
+            let quoted: Vec<String> = variants.iter().map(|v| format!("\"{v}\"")).collect();
+            s.push_str(&format!("- {id}: {}\n", quoted.join(" / ")));
         }
     }
     s
 }
 
+/// Details of any task that are optional and never asked for: the agent must not ask about
+/// them either (a caller who wants one brings it up).
+fn optional_details(b: &Business) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in b.config.pipelines.values() {
+        for ps in &p.slots {
+            if !ps.required && ps.ask.is_none() && ps.default.is_none() && !out.contains(&ps.slot) {
+                out.push(ps.slot.clone());
+            }
+        }
+    }
+    out
+}
+
+/// A response the agent can name as a phrase: the id, with its wording for the model.
+fn as_phrase(b: &Business, id: &str) -> Option<String> {
+    if !phrase_ids(b).contains(&id) {
+        return None;
+    }
+    let first = b.response(id)?.variants.first()?.clone();
+    Some(format!("phrase {id} (\"{first}\")"))
+}
+
 /// The per-turn message: the conversation so far, where the task stands, what was just said.
 pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String {
+    let words = b.config.agent.as_ref().map(|a| &a.prompt);
     let mut u = String::from("CONVERSATION:\n");
     for t in &state.history {
         let who = if t.speaker == Speaker::Agent { "Agent" } else { "Caller" };
@@ -201,21 +279,14 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
     if let Some(name) = state.customer.as_ref().and_then(|c| c.name.as_deref()) {
         u.push_str(&format!("\nThe caller is a known customer: {name}.\n"));
     }
-    u.push_str(match state.address_form {
-        AddressForm::Unknown => {
-            "\nADDRESS FORM: unknown. Speak gender-neutral Hebrew: impersonal questions (\"לאן נוסעים?\", \"מאיפה \
-             לאסוף?\", \"כמה נוסעים?\", \"לשלוח עכשיו?\", \"אפשר להמשיך?\"); no אתה/את, no second-person verbs \
-             (תרצה, תגיד) and no לך/אליך/אותך/שלך. Never ask whether the caller is a man or a woman.\n"
-        }
-        AddressForm::Masculine => {
-            "\nADDRESS FORM: masculine (the caller speaks of himself in masculine). When a sentence needs it, \
-             address him in masculine (\"אתה רוצה שאשלח עכשיו?\", \"מאיפה תרצה שאאסוף אותך?\").\n"
-        }
-        AddressForm::Feminine => {
-            "\nADDRESS FORM: feminine (the caller speaks of herself in feminine). When a sentence needs it, \
-             address her in feminine (\"את רוצה שאשלח עכשיו?\", \"מאיפה תרצי שאאסוף אותך?\").\n"
-        }
-    });
+    if let Some(forms) = words.and_then(|w| w.address_forms.as_ref()) {
+        let (form, how) = match state.address_form {
+            AddressForm::Unknown => ("unknown", &forms.neutral),
+            AddressForm::Masculine => ("masculine (the caller speaks of himself in masculine)", &forms.masculine),
+            AddressForm::Feminine => ("feminine (the caller speaks of herself in feminine)", &forms.feminine),
+        };
+        u.push_str(&format!("\nADDRESS FORM: {form}. {how}\n"));
+    }
     for done in &state.completed {
         u.push_str(&format!("\nEarlier in this call: {} ({})", done.pipeline, done.outcome));
         if let Some(r) = &done.result {
@@ -250,17 +321,15 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                 }
             }
             // The step the caller is on and the question after it, from the task's order: the
-            // model skipped "לאיזה רחוב?" after a destination city in several calls, asked
-            // "כמה נוסעים?" and then talked past the caller's street.
+            // model skipped the street after a destination city in several calls, asked for the
+            // passengers and then talked past the caller's street.
             if let Some(p) = b.pipeline(&run.pipeline) {
                 let pending = p.slots.iter().find(|ps| {
                     !run.slots.contains_key(&ps.slot) && ps.default.is_none() && (ps.required || ps.ask.is_some())
                 });
                 let street_ask = |ps: &crate::config::PipelineSlot| {
-                    ps.ask
-                        .as_ref()
-                        .and_then(|a| b.response(&format!("{a}_street")))
-                        .and_then(|r| r.variants.first().cloned())
+                    let id = format!("{}_street", ps.ask.as_ref()?);
+                    as_phrase(b, &id).or_else(|| b.response(&id)?.variants.first().map(|v| format!("\"{v}\"")))
                 };
                 let place_with_street = |ps: &crate::config::PipelineSlot| {
                     b.config.slots.get(&ps.slot).is_some_and(|c| c.precise || c.street_once) && street_ask(ps).is_some()
@@ -268,14 +337,13 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                 if let Some(ps) = pending {
                     if state.place_cities.contains_key(&ps.slot) {
                         u.push_str(&format!(
-                            "NOW: the caller is giving the street in {} for {}; take it (with the city) and go on.
-",
+                            "NOW: the caller is giving the street in {} for {}; take it (with the city) and go on.\n",
                             state.place_cities[&ps.slot], ps.slot
                         ));
                     } else if place_with_street(ps) {
                         u.push_str(&format!(
-                            "NOW: the caller is giving the {} city. When they say only a city, your next question is                              its street, exactly \"{}\", nothing else.
-",
+                            "NOW: the caller is giving the {} city. When they say only a city, your next question \
+                             is its street: {}, nothing else.\n",
                             ps.slot,
                             street_ask(ps).unwrap_or_default()
                         ));
@@ -293,10 +361,12 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
     }
     let streak = state.same_question_streak();
     if streak >= 3 {
+        let example =
+            words.and_then(|w| w.stuck.as_ref()).map(|e| format!(", with an example ({e})")).unwrap_or_default();
         u.push_str(&format!(
-            "
-STUCK: you asked the same question {streak} times in a row and the caller keeps answering something              else. Do not ask it the same way again: say simply what you need and why, with an example (\"כמה אנשים              נוסעים, למשל שניים?\"), or take what they said if it answers something else. If it is optional, skip it.
-"
+            "\nSTUCK: you asked the same question {streak} times in a row and the caller keeps answering something \
+             else. Do not ask it the same way again: say simply what you need and why{example}, or take what they \
+             said if it answers something else. If it is optional, skip it.\n"
         ));
     }
     if !state.agent_notes.is_empty() {
@@ -320,29 +390,40 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
     let tasks: Vec<Value> = c.intents.iter().map(|i| json!(i.id)).chain([Value::Null]).collect();
     let slots: Vec<Value> = c.slots.keys().map(|k| json!(k)).collect();
     let actions: Vec<&str> = AgentAction::ALL.iter().map(|(n, _)| *n).collect();
-    // `action` (a few tokens) then `say`: the runtime knows whether this turn reads back or
-    // submits before any words arrive, and speaks the rest while it is still being generated.
+    // `action` (a few tokens), `fields`, then `phrase` and `say`: the runtime knows whether
+    // this turn reads back or submits, and whether its values will be accepted, before any
+    // words arrive; a phrase plays as soon as its id is complete, and `say` is spoken while
+    // it is still being generated.
+    let mut properties = serde_json::Map::new();
+    properties.insert("action".into(), json!({ "type": "string", "enum": actions }));
+    properties.insert(
+        "fields".into(),
+        json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["slot", "value"],
+                "properties": {
+                    "slot": { "type": "string", "enum": slots },
+                    "value": { "type": "string" }
+                }
+            }
+        }),
+    );
+    let phrases: Vec<Value> = phrase_ids(b).into_iter().map(|id| json!(id)).collect();
+    if !phrases.is_empty() {
+        let options: Vec<Value> = phrases.into_iter().chain([Value::Null]).collect();
+        properties.insert("phrase".into(), json!({ "type": ["string", "null"], "enum": options }));
+    }
+    properties.insert("say".into(), json!({ "type": "string" }));
+    properties.insert("task".into(), json!({ "type": ["string", "null"], "enum": tasks }));
+    let required: Vec<String> = properties.keys().cloned().collect();
     let schema = json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["action", "fields", "say", "task"],
-        "properties": {
-            "action": { "type": "string", "enum": actions },
-            "fields": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["slot", "value"],
-                    "properties": {
-                        "slot": { "type": "string", "enum": slots },
-                        "value": { "type": "string" }
-                    }
-                }
-            },
-            "say": { "type": "string" },
-            "task": { "type": ["string", "null"], "enum": tasks }
-        }
+        "required": required,
+        "properties": properties,
     });
     LlmRequest { system: system_prompt(b), user: turn_message(b, state, transcript), schema }
 }
@@ -353,6 +434,7 @@ pub fn parse(b: &Business, reply: &Value) -> AgentTurn {
     let say = reply.get("say").and_then(Value::as_str).unwrap_or("").trim().to_string();
     let action = AgentAction::parse(reply.get("action").and_then(Value::as_str).unwrap_or("none"));
     let task = reply.get("task").and_then(Value::as_str).filter(|t| b.intent(t).is_some()).map(str::to_string);
+    let phrase = reply.get("phrase").and_then(Value::as_str).filter(|p| phrase_ids(b).contains(p)).map(str::to_string);
     let fields = reply
         .get("fields")
         .and_then(Value::as_array)
@@ -364,7 +446,7 @@ pub fn parse(b: &Business, reply: &Value) -> AgentTurn {
             (b.config.slots.contains_key(slot) && !value.is_empty()).then(|| (slot.to_string(), value.to_string()))
         })
         .collect();
-    AgentTurn { say, action, task, fields }
+    AgentTurn { phrase, say, action, task, fields }
 }
 
 /// Pulls finished sentences of the `say` value out of a JSON reply while it streams in, so
@@ -416,13 +498,14 @@ impl SayStream {
         Some(AgentAction::parse(&value[..close]))
     }
 
-    /// The fields, once the reply has got to `say` (they come before it): the runtime checks
-    /// them before a word is spoken. "47" passengers was rejected after the agent had already
-    /// asked the next question, and the call went out of step.
+    /// The fields, once the reply has got past them (to `phrase` or `say`): the runtime
+    /// checks them before a word is spoken. "47" passengers was rejected after the agent had
+    /// already asked the next question, and the call went out of step.
     pub fn fields(&self) -> Option<Vec<(String, String)>> {
-        let say = self.raw.find("\"say\"")?;
-        let key = self.raw[..say].find("\"fields\"")?;
-        let head = &self.raw[key..say];
+        let key = self.raw.find("\"fields\"")?;
+        let after = &self.raw[key..];
+        let end = [after.find("\"phrase\""), after.find("\"say\"")].into_iter().flatten().min()?;
+        let head = &after[..end];
         let open = head.find('[')?;
         let close = head.rfind(']')?;
         let items: Vec<Value> = serde_json::from_str(&head[open..=close]).ok()?;
@@ -432,6 +515,16 @@ impl SayStream {
                 .filter_map(|f| Some((f.get("slot")?.as_str()?.to_string(), f.get("value")?.as_str()?.to_string())))
                 .collect(),
         )
+    }
+
+    /// The recorded phrase to play, once its id is complete (`None` for null or not yet).
+    pub fn phrase(&self) -> Option<String> {
+        let key = self.raw.find("\"phrase\"")?;
+        let after = &self.raw[key + 8..];
+        let value = after[after.find(':')? + 1..].trim_start();
+        let id = value.strip_prefix('"')?;
+        let close = id.find('"')?;
+        Some(id[..close].to_string()).filter(|p| !p.is_empty())
     }
 
     /// Whatever is left of `say` once the reply is complete (a last sentence with no mark).
@@ -502,6 +595,23 @@ mod tests {
         assert_eq!(s.action(), None, "not complete yet");
         s.push("back\", \"say\": \"סג");
         assert_eq!(s.action(), Some(AgentAction::ReadBack));
+    }
+
+    #[test]
+    fn the_phrase_is_known_as_soon_as_its_id_is_complete() {
+        let mut s = SayStream::default();
+        s.push(
+            "{\"action\": \"none\", \"fields\": [{\"slot\": \"passengers\", \"value\": \"3\"}], \"phrase\": \"ask_na",
+        );
+        assert_eq!(s.fields(), Some(vec![("passengers".to_string(), "3".to_string())]), "fields end at the phrase");
+        assert_eq!(s.phrase(), None, "not complete yet");
+        s.push("me\", \"say\": \"\", \"task\": \"book_ride\"}");
+        assert_eq!(s.phrase().as_deref(), Some("ask_name"));
+        assert_eq!(s.rest(), None);
+
+        let mut none = SayStream::default();
+        none.push("{\"action\": \"none\", \"fields\": [], \"phrase\": null, \"say\": \"שלום.\"}");
+        assert_eq!(none.phrase(), None);
     }
 
     #[test]

@@ -22,8 +22,8 @@ secrets already configured in GitHub keep working.
 | `CARTESIA_API_KEY` | optional | Backup speech-to-text (Cartesia `ink-whisper`), used with `STT_PROVIDER=cartesia` or when there is no ElevenLabs key. *legacy* |
 | `ELEVENLABS_API_KEY` | yes | Speech-to-text (Scribe v2 Realtime), voice library generation and dynamic TTS. Without it calls cannot be understood. *legacy* |
 | `ELEVENLABS_VOICE_ID` | yes for audio | The business voice (also accepted as a Variable, which is preferred). |
-| `GEMINI_API_KEY` | recommended | LLM structured understanding with Gemini (default model `gemini-3.8-flash`). With `OPENAI_API_KEY` too, both are asked and the first valid answer wins. A free-tier key is rate limited to a few requests a minute. |
-| `OPENAI_API_KEY` | recommended | LLM structured understanding when the fast path is unsure. Without it only the deterministic path runs. *legacy* |
+| `OPENAI_API_KEY` | yes | The conversation agent (`AGENT_MODEL`, default `gpt-6-sol`), the agent eval, and understanding for businesses without an agent. Without it the agent is off and the rules run the calls. *legacy* |
+| `GEMINI_API_KEY` | optional | Understanding for businesses without an agent, with Gemini (default `gemini-3.8-flash`); raced with OpenAI when both are set. Not used by the agent. |
 | `TAXI_PHONE_NUMBERS` | yes | Comma-separated E.164 Twilio numbers the taxi business answers on (also accepted as a Variable). |
 | `TAXI_HANDOFF_NUMBER` | recommended | E.164 number of the human dispatch desk. Without it, handoff says no one is available (also accepted as a Variable). |
 | `TAXI_DISPATCH_URL` | optional | The taxi company's dispatch endpoint. Unset → demo (mock) results. |
@@ -41,7 +41,12 @@ secrets already configured in GitHub keep working.
 | `PUBLIC_BASE_URL` | yes for a fresh VM | `https://<hostname>` Twilio calls, no trailing slash. Written into the VM's `.env` only when absent there (never overwritten). The hostname's DNS A record must point at the VM. |
 | `ELEVENLABS_VOICE_ID` | yes for audio | Preferred place for the voice id (not sensitive). |
 | `ELEVENLABS_DYNAMIC_MODEL` | optional | Overrides the business's dynamic TTS model. |
-| `TEXT_LLM_MODEL` | optional | OpenAI-side model for understanding (default `gpt-4o-mini`). *legacy* |
+| `AGENT_MODEL` | optional | The agent's model (default `gpt-6-sol`). Sent by the pipeline: unset here means the default, even if the VM's `.env` said otherwise. Run the eval before changing it. |
+| `AGENT_BACKUP_MODEL` | optional | The hedge: asked when the agent's model has said nothing after `AGENT_HEDGE_MS` (default `gpt-6-luna`). |
+| `AGENT_REASONING_EFFORT` | optional | How much a reasoning model thinks before its first word: `none` (default), `low`, `medium`. Each step up is slower on the phone. |
+| `AGENT_PRICES` | optional | Dollars per million tokens as `model=input/cached/output`, comma separated (`gpt-6-sol=2/0.2/10,gpt-6-luna=0.1/0.01/0.5`), for the cost per call on `/calls` and in the eval. Without it cost is shown as unknown. |
+| `AUDIO_SAMPLE_NUMBERS` | optional | Comma-separated E.164 callers (the owner's test phones) whose utterances are kept as audio, for listening on `/calls` and comparing recognizers. Deleted with transcripts after `TRANSCRIPT_RETENTION_DAYS`. |
+| `TEXT_LLM_MODEL` | optional | OpenAI-side model for understanding without an agent (default `gpt-4o-mini`). *legacy* |
 | `GEMINI_MODEL` | optional | Gemini model for understanding (default `gemini-3.8-flash`). |
 | `TEXT_LLM_REASONING_EFFORT` | optional | Gemini thinking level, sent as `reasoning_effort` (default `low`; `gemini-3.8-flash` rejects `minimal`). |
 | `STT_PROVIDER` | optional | `scribe` (default) or `cartesia`. |
@@ -55,7 +60,9 @@ generated on the VM and never leaves it, and `PUBLIC_BASE_URL` comes from the Va
 
 ## Optional runtime tuning (environment)
 
-`AGENT_MODEL` (default `gpt-4o`), `AGENT_BACKUP_MODEL` (default `gpt-4.1`), `AGENT_HEDGE_MS` (default `900`), `AGENT_SPECULATE` (`true` to start the agent on partial transcripts),
+`AGENT_HEDGE_MS` (default `1200`), `AGENT_SPECULATE` (`true` to start the agent on partial transcripts),
+`SECOND_HEARING` (`1` for a second, hinted transcription of cities and streets; off until measured),
+`EVAL_PRICES` (prices for `callora eval` only; defaults to `AGENT_PRICES`),
 `RUST_LOG`, `LOG_FORMAT`, `HOST`, `PORT`, `BUSINESS_CONFIG_DIR`, `AUDIO_LIBRARY_DIR`,
 `TRANSCRIPT_RETENTION_DAYS` (*legacy*), `TTS_CACHE_ENTRIES`, `VAD_TRIGGER_MS`,
 `VAD_ENDPOINT_MS`, `ELEVENLABS_API_BASE_URL` (*legacy*), `ELEVENLABS_LIBRARY_MODEL`,

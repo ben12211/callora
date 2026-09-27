@@ -386,6 +386,10 @@ pub struct PipelineConfig {
     /// Spoken when the action fails for good (after retries), before any handoff.
     #[serde(default)]
     pub on_failure: Option<ResponseId>,
+    /// Spoken when it is not known whether the action went through (it timed out after the
+    /// request was sent): a person is asked to check, so it must not say "failed".
+    #[serde(default)]
+    pub on_unknown: Option<ResponseId>,
     /// Spoken when the pipeline has no action and all slots are filled.
     #[serde(default)]
     pub on_complete: Option<ResponseId>,
@@ -661,6 +665,49 @@ pub struct AgentConfig {
     /// Ceiling for one agent decision; past it the rules decide the turn.
     #[serde(default = "default_agent_timeout")]
     pub timeout_ms: u64,
+    /// The business's own words for the generic instructions (examples, the role).
+    #[serde(default)]
+    pub prompt: AgentPrompt,
+}
+
+/// What the generic agent prompt cannot know about a business: its examples, in its own
+/// language. Everything is optional; an instruction without its example still stands.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPrompt {
+    /// The role the agent plays, as a person would ("dispatcher", "receptionist").
+    #[serde(default)]
+    pub role: Option<String>,
+    /// A next question asked after taking a detail ("כמה נוסעים?").
+    #[serde(default)]
+    pub next_question: Option<String>,
+    /// A complete place as a caller gives it ("דיזנגוף 50, תל אביב").
+    #[serde(default)]
+    pub place: Option<String>,
+    /// Words after a preposition that name no place ("\"לשים מונית\" has no destination").
+    #[serde(default)]
+    pub not_a_place: Option<String>,
+    /// A garbled utterance that is still enough to act on ("\"...רוצה ... מונית\" is enough
+    /// to start a booking").
+    #[serde(default)]
+    pub garbled: Option<String>,
+    /// A stuck question asked another way, with an example answer ("כמה אנשים נוסעים,
+    /// למשל שניים?").
+    #[serde(default)]
+    pub stuck: Option<String>,
+    /// How to address a caller whose gender is unknown, a man, a woman: for languages that
+    /// inflect the second person. Without it, the agent is not told about address forms.
+    #[serde(default)]
+    pub address_forms: Option<AddressForms>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddressForms {
+    /// Until the caller's gender is known: the instruction and its examples.
+    pub neutral: String,
+    pub masculine: String,
+    pub feminine: String,
 }
 
 fn default_agent_filler_after() -> u64 {

@@ -248,11 +248,15 @@ dependencies = [
  "callora-runtime",
  "clap",
  "flate2",
+ "futures",
+ "parking_lot",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

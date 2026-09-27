@@ -24,7 +24,6 @@ use callora_audio::tts::{Synthesizer, TtsCache, TtsRequest};
 use callora_audio::vad::{Vad, VadConfig, VadEvent};
 use callora_core::agent::{self, AgentAction, SayStream};
 use callora_core::business::Business;
-use callora_core::config::MetaIntent;
 use callora_core::customer::Customer;
 use callora_core::engine::{Directive, Engine, HandoffSummary};
 use callora_core::llm;
@@ -35,8 +34,12 @@ use callora_core::understanding::{fast_path, merge, Understanding};
 use crate::metrics::Metrics;
 use crate::ports::{
     ActionRunner, CallInfo, CallRecord, CallStore, LanguageModel, SpeechToText, SttEvent, SttInput, SttSession,
-    Telephony, WhisperRegistry,
+    Telephony, Usage, WhisperRegistry,
 };
+
+mod agent_turn;
+mod hearing;
+mod speech;
 
 /// Up to this many words that nothing understood are treated as noise when the LLM cannot
 /// be asked.
@@ -146,6 +149,11 @@ enum Ev {
         sentence: String,
     },
     /// The agent's whole decision (and the tail of `say` that had no sentence mark).
+    /// The reply's recorded phrase, as soon as its id is complete.
+    AgentPhrase {
+        turn: u64,
+        id: String,
+    },
     /// The reply's fields, before any of its words.
     AgentFields {
         turn: u64,
@@ -155,12 +163,13 @@ enum Ev {
         turn: u64,
         result: anyhow::Result<Value>,
         rest: Option<String>,
+        usage: Option<Usage>,
     },
     Action {
         run_id: u64,
         action: String,
         input: Value,
-        result: Result<Value, String>,
+        result: Result<Value, callora_core::engine::ActionFailure>,
         elapsed: Duration,
     },
     Silence {
@@ -202,11 +211,15 @@ struct PendingAgent {
     spoken: Vec<String>,
     /// Sentences held back while speculative.
     held: Vec<String>,
+    /// The recorded phrase held back while speculative.
+    held_phrase: Option<String>,
+    /// The recorded phrase already played.
+    phrase: Option<String>,
     /// The start of what may be a recorded phrase ("הכל טוב, תודה!" of "הכל טוב, תודה!
     /// איך אפשר לעזור?"), waiting for its next sentence so the whole clip plays.
     partial_phrase: Option<String>,
     /// The decision, when it finished while still speculative.
-    done: Option<(anyhow::Result<Value>, Option<String>)>,
+    done: Option<(anyhow::Result<Value>, Option<String>, Option<Usage>)>,
     /// A value in the reply will be rejected: its words move on without it, so none play
     /// and the engine asks for the value again.
     hold_say: bool,
@@ -276,6 +289,8 @@ pub struct Session {
     /// The caller turn (engine turn count) the thinking filler last played on. A filler
     /// on every turn sounds scripted, so it never plays on two turns in a row.
     filler_turn: Option<u32>,
+    /// What the agent's decisions cost in this call.
+    usage: Usage,
 }
 
 impl Session {
@@ -343,8 +358,9 @@ impl Session {
             unfinished: None,
             unfinished_generation: 0,
             filler_turn: None,
+            usage: Usage::default(),
         };
-        s.phrase_words = agent::phrases(&s.business).iter().map(|p| words(p)).collect();
+        s.phrase_words = agent::phrases(&s.business).iter().map(|p| agent_turn::words(p)).collect();
         s.services.store.record(CallRecord::Started { info: s.info.clone() });
 
         // Open the agent's and the voice's connections while the greeting plays, so the
@@ -452,598 +468,11 @@ impl Session {
             call_id: s.info.call_id,
             outcome,
             state: serde_json::to_value(&s.engine.state).unwrap_or(Value::Null),
+            usage: s.usage.clone(),
         });
         metrics.calls_active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(call = %s.info.call_sid, ?ending, turns = s.engine.state.turns, "call ended");
         ending
-    }
-
-    // -----------------------------------------------------------------------------------
-    // Caller audio
-
-    fn on_audio(&mut self, frame: Bytes) {
-        let vad_event = self.vad.push(&frame);
-        self.keep_audio(&frame, vad_event.as_ref());
-        match vad_event {
-            Some(VadEvent::SpeechStarted) => {
-                self.silence_generation += 1;
-                if self.pending_agent.as_ref().is_some_and(|p| p.speculative) {
-                    // The caller went on talking: the guess was about half a sentence.
-                    if let Some(p) = self.pending_agent.take() {
-                        p.task.abort();
-                    }
-                }
-                if self.agent_busy() {
-                    self.barge_in();
-                }
-            }
-            Some(VadEvent::SpeechEnded) => {
-                let now = Instant::now();
-                self.speech_ended_at = Some(now);
-                self.clock = Some(TurnClock {
-                    speech_end: now,
-                    final_at: None,
-                    agent_first: None,
-                    speculative_hit: false,
-                    audio: "",
-                });
-                if let Some(stt) = &self.stt {
-                    if stt.input.try_send(SttInput::Finalize).is_ok() {
-                        self.finalize_sent_at = Some(now);
-                    }
-                }
-                self.speculate();
-            }
-            None => {}
-        }
-        match &self.stt {
-            Some(stt) => {
-                if stt.input.try_send(SttInput::Audio(frame)).is_err() {
-                    tracing::warn!(call = %self.info.call_sid, "stt input is full; dropping a frame");
-                }
-            }
-            None => {
-                self.stt_backlog.push_back(frame);
-                while self.stt_backlog.len() > self.cfg.stt_buffer_frames {
-                    self.stt_backlog.pop_front();
-                }
-            }
-        }
-    }
-
-    /// The caller's words as audio, for a second hearing: from 300 ms before speech starts
-    /// to its end (a transcript may join a few of these).
-    fn keep_audio(&mut self, frame: &Bytes, event: Option<&VadEvent>) {
-        const PREROLL_FRAMES: usize = 15;
-        const MAX_BYTES: usize = 8000 * 20;
-        match event {
-            Some(VadEvent::SpeechStarted) => {
-                self.utterance = self.preroll.iter().flat_map(|f| f.iter().copied()).collect();
-                self.utterance.extend_from_slice(frame);
-            }
-            Some(VadEvent::SpeechEnded) => {
-                self.utterance.extend_from_slice(frame);
-                let finished = std::mem::take(&mut self.utterance);
-                // Pieces of one sentence split by a pause stay together.
-                if self.second_pending.is_none() && self.finalize_sent_at.is_none() {
-                    self.last_utterance.clear();
-                }
-                self.last_utterance.extend(finished);
-                if self.last_utterance.len() > MAX_BYTES {
-                    let cut = self.last_utterance.len() - MAX_BYTES;
-                    self.last_utterance.drain(..cut);
-                }
-            }
-            None if self.vad.is_speaking() => {
-                if self.utterance.len() < MAX_BYTES {
-                    self.utterance.extend_from_slice(frame);
-                }
-            }
-            _ => {}
-        }
-        self.preroll.push_back(frame.clone());
-        while self.preroll.len() > PREROLL_FRAMES {
-            self.preroll.pop_front();
-        }
-    }
-
-    /// Keyterms for a second hearing of this turn, when it is worth one: the caller is
-    /// giving a street (every street of the city) or a city (the towns). Elsewhere the
-    /// stream is good enough and waiting would only slow the call.
-    fn second_hearing_terms(&self) -> Option<Vec<String>> {
-        let g = self.services.gazetteer.as_ref()?;
-        self.services.second_hearing.as_ref()?;
-        if self.last_utterance.len() < 8000 / 4 {
-            return None;
-        }
-        let mut terms = if let Some(city) = self.engine.street_focus() {
-            let mut t = vec![city.clone()];
-            t.extend(g.street_keyterms(&city, 950));
-            t
-        } else if self.engine.awaiting_city() {
-            g.town_names(20)
-        } else {
-            return None;
-        };
-        terms.extend(self.business.stt_keyterms());
-        Some(terms)
-    }
-
-    fn barge_in(&mut self) {
-        self.barge_in_started = Some(Instant::now());
-        self.interrupted = true;
-        self.playout.cancel();
-        self.services.metrics.barge_ins_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::debug!(call = %self.info.call_sid, rms = self.vad.last_rms, "barge-in: caller talked over the agent");
-    }
-
-    // -----------------------------------------------------------------------------------
-    // Transcripts and understanding
-
-    fn on_stt(&mut self, event: SttEvent) {
-        match event {
-            SttEvent::Partial(text) => self.last_partial = text,
-            SttEvent::Final(text) => {
-                self.stt_reconnects = 0;
-                self.on_final(text);
-                self.swap_stt_if_ready();
-            }
-            SttEvent::Error(e) => tracing::warn!(call = %self.info.call_sid, error = %e, "stt error"),
-            SttEvent::Closed => {
-                self.stt = None;
-                self.stt_reconnects += 1;
-                if self.stt_reconnects > MAX_STT_RECONNECTS {
-                    // A session the service keeps closing (a rejected request, an outage)
-                    // would otherwise reconnect forever while the caller talks to no one.
-                    tracing::error!(call = %self.info.call_sid, "speech recognition keeps closing; giving up");
-                    let d = self.engine.force_handoff("stt_unavailable");
-                    self.execute(d);
-                    return;
-                }
-                tracing::warn!(call = %self.info.call_sid, attempt = self.stt_reconnects, "stt closed; reconnecting");
-                let stt = self.services.stt.clone();
-                let language = self.business.config.language.clone();
-                let keyterms = self.stt_keyterms(self.stt_city.clone().as_deref());
-                let tx = self.events.clone();
-                let delay = Duration::from_millis(200 * u64::from(self.stt_reconnects));
-                tokio::spawn(async move {
-                    tokio::time::sleep(delay).await;
-                    let _ = tx.send(Ev::SttReady(stt.open(&language, &keyterms).await));
-                });
-            }
-        }
-    }
-
-    fn on_final(&mut self, text: String) {
-        if let Some(t) = self.finalize_sent_at.take() {
-            self.services.metrics.stt_final.observe(t.elapsed().as_millis() as u64);
-        }
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-        if self.pending_llm.is_none() {
-            let (u, _) = fast_path(&self.business, &self.engine.context(), &text);
-            if u.noise {
-                return self.on_noise(&text);
-            }
-        }
-        self.interrupted = false;
-        self.silence_generation += 1;
-        if self.speech_ended_at.is_none() {
-            self.speech_ended_at = Some(Instant::now());
-        }
-        // Some recognizers only send finals: a transcript while the agent talks is also a
-        // barge-in (the VAD may have missed a quiet caller).
-        if self.agent_busy() {
-            self.barge_in();
-        }
-        if let Some(c) = &mut self.clock {
-            c.final_at.get_or_insert_with(Instant::now);
-        }
-        // The recognizer marks a sentence the caller broke off ("ואני רוצה להגיע ל...",
-        // "מתל-ב-ב-"): answering it talks over them. Wait for the rest; a short pause
-        // later, answer what there is.
-        let text = match self.unfinished.take() {
-            Some(start) => format!("{start} {text}"),
-            None => text,
-        };
-        if is_unfinished(&text) {
-            tracing::info!(call = %self.info.call_sid, caller = %text, "unfinished sentence; waiting for the rest");
-            self.unfinished = Some(text);
-            self.unfinished_generation += 1;
-            let generation = self.unfinished_generation;
-            let tx = self.events.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(UNFINISHED_WAIT).await;
-                let _ = tx.send(Ev::UnfinishedDue { generation });
-            });
-            return;
-        }
-        if self.agent_mode() {
-            return self.on_final_agent(text);
-        }
-        // A new sentence while the LLM is still thinking about the previous one: they are
-        // one utterance.
-        let transcript = match self.pending_llm.take() {
-            Some(p) => {
-                p.task.abort();
-                format!("{} {text}", p.transcript)
-            }
-            None => text,
-        };
-        self.services.metrics.turns_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::info!(call = %self.info.call_sid, caller = %transcript, "caller");
-
-        let (fast, needs_llm) = fast_path(&self.business, &self.engine.context(), &transcript);
-        match (&self.services.llm, needs_llm) {
-            (Some(model), true) => {
-                self.turn += 1;
-                let turn = self.turn;
-                let request =
-                    llm::build_request(&self.business, &self.engine.context(), &self.engine.state, &transcript);
-                let timeout = Duration::from_millis(self.business.config.understanding.llm_timeout_ms);
-                let model = model.clone();
-                let tx = self.events.clone();
-                let task = tokio::spawn(async move {
-                    let started = Instant::now();
-                    let result = match tokio::time::timeout(timeout, model.extract(&request)).await {
-                        Ok(r) => r,
-                        Err(_) => Err(anyhow::anyhow!("timed out after {timeout:?}")),
-                    };
-                    let _ = tx.send(Ev::Llm { turn, result, elapsed: started.elapsed() });
-                });
-                if self.business.config.understanding.thinking_filler.is_some() {
-                    let tx = self.events.clone();
-                    let after = Duration::from_millis(self.business.config.understanding.filler_after_ms);
-                    tokio::spawn(async move {
-                        tokio::time::sleep(after).await;
-                        let _ = tx.send(Ev::FillerDue { turn });
-                    });
-                }
-                self.services.metrics.llm_calls_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                self.pending_llm = Some(PendingLlm { turn, transcript, fast, task });
-            }
-            _ => self.understood(fast),
-        }
-    }
-
-    /// A transcript of nothing but filler words, which recognizers invent on line noise
-    /// ("תודה."). It must not talk over the agent; if noise already cut the agent off,
-    /// the reply is said again.
-    fn on_noise(&mut self, text: &str) {
-        tracing::info!(call = %self.info.call_sid, caller = %text, "ignored as noise");
-        if self.agent_busy() {
-            return;
-        }
-        if std::mem::take(&mut self.interrupted) {
-            let directives = self.engine.replay_last();
-            self.execute(directives);
-        } else {
-            self.arm_silence();
-        }
-    }
-
-    // -----------------------------------------------------------------------------------
-    // The conversation agent
-
-    fn agent_mode(&self) -> bool {
-        self.services.agent.is_some() && self.business.config.agent.is_some()
-    }
-
-    /// Utterances with one certain meaning skip the agent: "רגע", "מה?", "לא שמעתי", and a
-    /// plain yes to a read-back (so a booking goes out the moment the caller confirms it).
-    fn fast_lane(&self, u: &Understanding, needs_llm: bool) -> bool {
-        if needs_llm || u.intent.is_some() || !u.slots.is_empty() {
-            return false;
-        }
-        match u.meta {
-            Some(m) => matches!(
-                m,
-                MetaIntent::Wait
-                    | MetaIntent::RepeatLast
-                    | MetaIntent::DidNotUnderstand
-                    | MetaIntent::SpeakSlower
-                    | MetaIntent::SpeakLouder
-            ),
-            None => {
-                u.affirm == Some(true)
-                    && u.coverage >= 0.99
-                    && self
-                        .engine
-                        .state
-                        .run
-                        .as_ref()
-                        .is_some_and(|r| r.step == callora_core::state::Step::AwaitingConfirmation)
-            }
-        }
-    }
-
-    /// At the end of speech, start the agent on the recognizer's partial text instead of
-    /// waiting ~230 ms for the final transcript. Its speech is held until the final
-    /// transcript confirms the words; a different final starts over.
-    fn speculate(&mut self) {
-        if !self.cfg.agent_speculate || !self.agent_mode() || self.pending_agent.is_some() || self.pending_llm.is_some()
-        {
-            return;
-        }
-        let text = self.last_partial.trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-        let (u, needs_llm) = fast_path(&self.business, &self.engine.context(), &text);
-        if u.noise || self.fast_lane(&u, needs_llm) {
-            return;
-        }
-        self.start_agent(text, true);
-    }
-
-    fn on_final_agent(&mut self, text: String) {
-        self.last_partial.clear();
-        let mut transcript = text;
-        if let Some(p) = self.pending_agent.take() {
-            if p.speculative && same_words(&p.transcript, &transcript) {
-                tracing::info!(call = %self.info.call_sid, caller = %transcript, "caller");
-                self.services.metrics.turns_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if let Some(c) = &mut self.clock {
-                    c.speculative_hit = true;
-                }
-                self.pending_agent = Some(p);
-                return self.adopt_speculation();
-            }
-            p.task.abort();
-            // A new sentence while the agent was still thinking about the previous one:
-            // they are one utterance.
-            if !p.speculative && p.spoken.is_empty() {
-                transcript = format!("{} {transcript}", p.transcript);
-            }
-        }
-        self.services.metrics.turns_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::info!(call = %self.info.call_sid, caller = %transcript, "caller");
-        let (fast, needs_llm) = fast_path(&self.business, &self.engine.context(), &transcript);
-        if self.fast_lane(&fast, needs_llm) {
-            return self.understood(fast);
-        }
-        if self.info.from.as_ref().is_some_and(|f| self.cfg.sample_audio_from.contains(f))
-            && !self.last_utterance.is_empty()
-        {
-            self.services.store.record(CallRecord::Utterance {
-                call_id: self.info.call_id,
-                heard: transcript.clone(),
-                audio: self.last_utterance.clone(),
-            });
-        }
-        // A city or street expected: hear the words once more, with every name expected as a
-        // hint, before the agent decides ("זה ביתר" came back "זה יותר", "אהרונוביץ" as
-        // "עונה מ-32"). The agent gets both.
-        if let Some((_, earlier)) = self.second_pending.take() {
-            transcript = format!("{earlier} {transcript}");
-        }
-        if let (Some(terms), Some(t)) = (self.second_hearing_terms(), self.services.second_hearing.clone()) {
-            self.second_ids += 1;
-            let id = self.second_ids;
-            let audio = self.last_utterance.clone();
-            let language = self.business.config.language.clone();
-            let tx = self.events.clone();
-            let started = Instant::now();
-            let call = self.info.call_sid.clone();
-            tokio::spawn(async move {
-                let heard =
-                    tokio::time::timeout(Duration::from_millis(1500), t.transcribe(&audio, &language, &terms)).await;
-                let text = match heard {
-                    Ok(Ok(text)) => Some(text),
-                    Ok(Err(e)) => {
-                        tracing::warn!(%call, error = %e, "second hearing failed");
-                        None
-                    }
-                    Err(_) => {
-                        tracing::warn!(%call, "second hearing timed out");
-                        None
-                    }
-                };
-                tracing::info!(%call, second = text.as_deref().unwrap_or(""), ms = started.elapsed().as_millis() as u64, "second hearing");
-                let _ = tx.send(Ev::SecondHearing { id, text });
-            });
-            self.second_pending = Some((id, transcript));
-            return;
-        }
-        self.engine.state.second_hearing = None;
-        self.start_agent(transcript, false);
-    }
-
-    fn adopt_speculation(&mut self) {
-        let Some(p) = self.pending_agent.as_mut() else { return };
-        p.speculative = false;
-        let held = std::mem::take(&mut p.held);
-        let done = p.done.take();
-        for sentence in held {
-            self.agent_sentence(sentence);
-        }
-        if let Some((result, rest)) = done {
-            self.finish_agent(result, rest);
-        }
-    }
-
-    fn start_agent(&mut self, transcript: String, speculative: bool) {
-        let (Some(model), Some(cfg)) = (self.services.agent.clone(), self.business.config.agent.clone()) else {
-            return;
-        };
-        self.turn += 1;
-        let turn = self.turn;
-        let request = agent::build_request(&self.business, &self.engine.state, &transcript);
-        let timeout = Duration::from_millis(cfg.timeout_ms);
-        let tx = self.events.clone();
-        let task = tokio::spawn(async move {
-            let says = tx.clone();
-            let decide = async move {
-                let mut stream = model.stream(&request).await?;
-                let mut say = SayStream::default();
-                let mut reply = String::new();
-                let mut fields_sent = false;
-                while let Some(delta) = stream.next().await {
-                    let delta = delta?;
-                    reply.push_str(&delta);
-                    let sentences = say.push(&delta);
-                    if !fields_sent {
-                        if let Some(fields) = say.fields() {
-                            fields_sent = true;
-                            let _ = says.send(Ev::AgentFields { turn, fields });
-                        }
-                    }
-                    // A read-back or a submit: the engine speaks the words with what follows.
-                    if matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit | AgentAction::EndCall))
-                    {
-                        continue;
-                    }
-                    for sentence in sentences {
-                        let _ = says.send(Ev::AgentSay { turn, sentence });
-                    }
-                }
-                let value: Value = serde_json::from_str(&reply)
-                    .map_err(|e| anyhow::anyhow!("the agent's reply is not JSON ({e}): {reply}"))?;
-                let held =
-                    matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit | AgentAction::EndCall));
-                let rest = say.rest().filter(|_| !held);
-                anyhow::Ok((value, rest))
-            };
-            let (result, rest) = match tokio::time::timeout(timeout, decide).await {
-                Ok(Ok((value, rest))) => (Ok(value), rest),
-                Ok(Err(e)) => (Err(e), None),
-                Err(_) => (Err(anyhow::anyhow!("timed out after {timeout:?}")), None),
-            };
-            let _ = tx.send(Ev::AgentDone { turn, result, rest });
-        });
-        if cfg.thinking_filler.is_some() {
-            let tx = self.events.clone();
-            let after = Duration::from_millis(cfg.filler_after_ms);
-            tokio::spawn(async move {
-                tokio::time::sleep(after).await;
-                let _ = tx.send(Ev::FillerDue { turn });
-            });
-        }
-        self.services.metrics.llm_calls_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.pending_agent = Some(PendingAgent {
-            turn,
-            transcript,
-            task,
-            started: Instant::now(),
-            speculative,
-            spoken: Vec::new(),
-            held: Vec::new(),
-            partial_phrase: None,
-            done: None,
-            hold_say: false,
-        });
-    }
-
-    /// One sentence of the agent's reply, as it streams in. A sentence that begins one of
-    /// the recorded phrases waits for the next one, so the phrase plays as its clip instead
-    /// of half of it going through live TTS.
-    fn agent_sentence(&mut self, sentence: String) {
-        let Some(p) = self.pending_agent.as_mut() else { return };
-        if p.hold_say {
-            return;
-        }
-        if let Some(start) = p.partial_phrase.take() {
-            let joined = format!("{start} {sentence}");
-            if self.continues_a_phrase(&joined) || self.library_has(&joined) {
-                return self.agent_sentence_text(joined);
-            }
-            // "הכל טוב, תודה!" then "מאיפה אוספים אותך?": two recordings, not one live TTS.
-            // The start plays now (it would only wait again), then the new sentence.
-            if let Some(p) = self.pending_agent.as_mut() {
-                p.spoken.push(start.clone());
-            }
-            self.say_now(&start);
-            return self.agent_sentence_text(sentence);
-        }
-        self.agent_sentence_text(sentence);
-    }
-
-    fn agent_sentence_text(&mut self, text: String) {
-        let Some(p) = self.pending_agent.as_mut() else { return };
-        let is_prefix = {
-            let w = words(&text);
-            self.phrase_words.iter().any(|ph| ph.len() > w.len() && ph.starts_with(&w))
-        };
-        if is_prefix {
-            p.partial_phrase = Some(text);
-            return;
-        }
-        p.spoken.push(text.clone());
-        self.say_now(&text);
-    }
-
-    fn continues_a_phrase(&self, text: &str) -> bool {
-        let w = words(text);
-        self.phrase_words.iter().any(|ph| ph.len() > w.len() && ph.starts_with(&w))
-    }
-
-    fn library_has(&self, text: &str) -> bool {
-        let delivery = self.engine.state.delivery.clone().unwrap_or_else(|| "normal".into());
-        self.library.get_loose(&delivery, text).is_some()
-    }
-
-    /// Play one sentence of the agent's reply now.
-    fn say_now(&mut self, sentence: &str) {
-        let delivery = self.engine.state.delivery.clone().unwrap_or_else(|| "normal".into());
-        let recorded = self.library.get_loose(&delivery, sentence).is_some();
-        if let Some(c) = &mut self.clock {
-            c.agent_first.get_or_insert_with(Instant::now);
-            if c.audio.is_empty() {
-                c.audio = if recorded { "recorded" } else { "live tts" };
-            }
-        }
-        self.services.store.record(CallRecord::Turn {
-            call_id: self.info.call_id,
-            speaker: "agent".into(),
-            text: sentence.to_string(),
-            detail: json!({ "responses": ["agent"] }),
-        });
-        tracing::info!(call = %self.info.call_sid, agent = %sentence, "agent");
-        self.speak(SpeechPlan::free(sentence, &delivery, self.engine.state.gain_db));
-    }
-
-    fn finish_agent(&mut self, result: anyhow::Result<Value>, rest: Option<String>) {
-        let Some(mut p) = self.pending_agent.take() else { return };
-        self.services.metrics.llm_latency.observe(p.started.elapsed().as_millis() as u64);
-        match result {
-            Ok(reply) => {
-                // Whatever is left, with the start of a phrase that was waiting for it.
-                let tail = [p.partial_phrase.take(), rest].into_iter().flatten().collect::<Vec<_>>().join(" ");
-                if !tail.is_empty() && !p.hold_say {
-                    p.spoken.push(tail.clone());
-                    self.say_now(&tail);
-                }
-                let decision = agent::parse(&self.business, &reply);
-                tracing::info!(call = %self.info.call_sid, action = ?decision.action, task = ?decision.task, fields = ?decision.fields, "agent decision");
-                let directives = self.engine.on_agent_turn(&p.transcript, decision, &p.spoken.join(" "));
-                self.execute(directives);
-            }
-            Err(error) => {
-                self.services.metrics.llm_failures_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                tracing::warn!(call = %self.info.call_sid, error = %format!("{error:#}"), "the agent failed; the rules take this turn");
-                let (mut fast, _) = fast_path(&self.business, &self.engine.context(), &p.transcript);
-                if fast.is_empty() && fast.transcript.split_whitespace().count() <= SHORT_GARBAGE_WORDS {
-                    fast.noise = true;
-                }
-                if fast.noise {
-                    return self.on_noise(&p.transcript);
-                }
-                self.understood(fast);
-            }
-        }
-    }
-
-    fn understood(&mut self, u: Understanding) {
-        self.services.store.record(CallRecord::Turn {
-            call_id: self.info.call_id,
-            speaker: "caller".into(),
-            text: u.transcript.clone(),
-            detail: serde_json::to_value(&u).unwrap_or(Value::Null),
-        });
-        let directives = self.engine.on_utterance(u);
-        self.execute(directives);
     }
 
     fn on_event(&mut self, e: Ev) {
@@ -1193,407 +622,26 @@ impl Session {
                     }
                 }
             }
-            Ev::AgentDone { turn, result, rest } => {
-                let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) else { return };
+            Ev::AgentPhrase { turn, id } => {
+                if self.pending_agent.as_ref().is_some_and(|p| p.turn == turn) {
+                    self.agent_phrase(id);
+                }
+            }
+            Ev::AgentDone { turn, result, rest, usage } => {
+                let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) else {
+                    // A decision nobody waits for any more still cost its tokens.
+                    if let Some(u) = &usage {
+                        self.usage.add(u);
+                    }
+                    return;
+                };
                 if p.speculative {
-                    p.done = Some((result, rest));
+                    p.done = Some((result, rest, usage));
                     return;
                 }
-                self.finish_agent(result, rest);
+                self.finish_agent(result, rest, usage);
             }
             Ev::TerminateNow => {}
-        }
-    }
-
-    // -----------------------------------------------------------------------------------
-    // Directives
-
-    /// Recognition hints: the city's streets when the call waits for one, then the business's
-    /// own words (the recognizer keeps the first 50).
-    fn stt_keyterms(&self, city: Option<&str>) -> Vec<String> {
-        let mut terms = Vec::new();
-        if let (Some(city), Some(g)) = (city, &self.services.gazetteer) {
-            terms.push(city.to_string());
-            terms.extend(g.street_keyterms(city, 38));
-        }
-        terms.extend(self.business.stt_keyterms());
-        let mut seen = std::collections::HashSet::new();
-        terms.retain(|t| seen.insert(t.clone()));
-        terms
-    }
-
-    /// "בני ברק" given, its street next: open a session biased with its streets beside the
-    /// live one. Recognition cannot be re-biased mid-session, and "אהרונוביץ" in an Ashkenazi
-    /// accent came back as "עונה מ-32" without the hint.
-    fn focus_stt(&mut self) {
-        let Some(city) = self.engine.street_focus() else { return };
-        if self.stt_city.as_ref() == Some(&city)
-            || self.stt_opening.as_ref() == Some(&city)
-            || self.stt_next.as_ref().is_some_and(|(c, _)| *c == city)
-            || self.services.gazetteer.is_none()
-        {
-            return;
-        }
-        self.stt_opening = Some(city.clone());
-        let stt = self.services.stt.clone();
-        let language = self.business.config.language.clone();
-        let keyterms = self.stt_keyterms(Some(&city));
-        let tx = self.events.clone();
-        tokio::spawn(async move {
-            let result = stt.open(&language, &keyterms).await;
-            let _ = tx.send(Ev::SttFocused { city, result });
-        });
-    }
-
-    /// The biased session takes over between utterances only: never while the caller is
-    /// talking or a transcript is still due from the live session.
-    fn swap_stt_if_ready(&mut self) {
-        if self.stt_next.is_none() || self.vad.is_speaking() || self.finalize_sent_at.is_some() {
-            return;
-        }
-        let Some((city, session)) = self.stt_next.take() else { return };
-        if let Some(old) = self.stt.take() {
-            let _ = old.input.try_send(SttInput::Close);
-        }
-        tracing::info!(call = %self.info.call_sid, %city, "recognition biased with the city's streets");
-        self.stt = Some(session);
-        self.stt_city = Some(city);
-    }
-
-    fn execute(&mut self, directives: Vec<Directive>) {
-        self.focus_stt();
-        for d in directives {
-            match d {
-                Directive::Speak { plan, .. } => {
-                    self.services.store.record(CallRecord::Turn {
-                        call_id: self.info.call_id,
-                        speaker: "agent".into(),
-                        text: plan.text(),
-                        detail: json!({ "responses": plan.response_ids() }),
-                    });
-                    tracing::info!(call = %self.info.call_sid, agent = %plan.text(), "agent");
-                    self.speak(plan);
-                }
-                Directive::RunAction { run_id, action, input } => {
-                    self.actions_in_flight += 1;
-                    let runner = self.services.actions.clone();
-                    let business = self.business.clone();
-                    let info = self.info.clone();
-                    let tx = self.events.clone();
-                    tokio::spawn(async move {
-                        let started = Instant::now();
-                        let result = runner.run(&business, &action, input.clone(), &info).await;
-                        let _ = tx.send(Ev::Action { run_id, action, input, result, elapsed: started.elapsed() });
-                    });
-                }
-                Directive::Handoff { summary } => {
-                    self.services
-                        .store
-                        .record(CallRecord::Handoff { call_id: self.info.call_id, summary: summary.clone() });
-                    self.after_speech = Some(AfterSpeech::Handoff(summary));
-                }
-                Directive::Hangup => self.after_speech = Some(AfterSpeech::Hangup),
-            }
-        }
-        // Nothing queued to say: the terminal action happens right away; otherwise it waits
-        // for the playout to go idle, i.e. for the goodbye to have been heard.
-        if !self.agent_busy() && self.after_speech.is_some() {
-            let _ = self.events.send(Ev::TerminateNow);
-        }
-    }
-
-    /// Queue a plan: each segment from the voice library when it is there, otherwise from
-    /// dynamic TTS (streamed, and cached for next time).
-    fn speak(&mut self, plan: SpeechPlan) {
-        // A reply that opens with live TTS would start with a second of silence.
-        if !self.agent_busy() && plan.segments.first().is_some_and(|s| self.needs_live_tts(s)) {
-            self.cover_live_tts(plan.gain_db);
-        }
-        for whole in &plan.segments {
-            // A long sentence for live TTS goes out as short pieces synthesized side by side:
-            // eleven_v3 took 6 to 31 s on a whole read-back, ~1 s on each short piece.
-            let pieces: Vec<SpeechSegment> = if self.library.get_loose(&whole.delivery, &whole.text).is_some() {
-                vec![whole.clone()]
-            } else {
-                split_for_tts(&whole.text).into_iter().map(|text| SpeechSegment { text, ..whole.clone() }).collect()
-            };
-            for seg in &pieces {
-                let id = self.next_item;
-                self.next_item += 1;
-                if let Some(clip) = self.library.get_loose(&seg.delivery, &seg.text) {
-                    self.services.metrics.segment(if seg.origin == SegmentOrigin::Template {
-                        "template"
-                    } else {
-                        "cached"
-                    });
-                    self.enqueue(PlayItem { id, source: Source::Clip(clip), gain_db: plan.gain_db });
-                    continue;
-                }
-                let (Some(tts), Some(request)) = (self.services.tts.clone(), self.tts_request(seg)) else {
-                    tracing::error!(call = %self.info.call_sid, text = %seg.text, "not in the voice library and no TTS configured; segment skipped");
-                    continue;
-                };
-                let key = request.cache_key();
-                if let Some(audio) = self.services.tts_cache.get(&key) {
-                    self.services.metrics.segment("tts_cached");
-                    self.enqueue(PlayItem { id, source: Source::Clip(audio), gain_db: plan.gain_db });
-                    continue;
-                }
-                self.services.metrics.segment("tts");
-                let (tx, rx) = mpsc::channel(64);
-                self.enqueue(PlayItem { id, source: Source::Stream(rx), gain_db: plan.gain_db });
-                spawn_tts(tts, request, key, tx, self.services.tts_cache.clone(), self.events.clone());
-            }
-        }
-    }
-
-    fn tts_request(&self, seg: &SpeechSegment) -> Option<TtsRequest> {
-        let c = &self.business.config;
-        Some(TtsRequest {
-            text: prepare_for_tts(&seg.text, &c.language, self.business.pronouncer_for(self.engine.state.address_form)),
-            voice_id: self.business.voice_id.clone()?,
-            model: self.cfg.dynamic_model.clone().unwrap_or_else(|| c.voice.dynamic_model.clone()),
-            settings: c.voice.settings_for(&seg.delivery),
-            language: c.language.clone(),
-        })
-    }
-
-    /// Neither pre-generated nor already synthesized this process: it will take a while.
-    fn needs_live_tts(&self, seg: &SpeechSegment) -> bool {
-        self.services.tts.is_some()
-            && self.library.get_loose(&seg.delivery, &seg.text).is_none()
-            && self.tts_request(seg).is_some_and(|r| self.services.tts_cache.get(&r.cache_key()).is_none())
-    }
-
-    /// The business's short opener, from the library only (it must never need TTS itself).
-    fn cover_live_tts(&mut self, gain_db: f32) {
-        let turn = self.engine.state.turns;
-        if self.cover_turn.is_some_and(|t| t + 1 >= turn) || self.filler_turn.is_some_and(|t| t + 1 >= turn) {
-            return;
-        }
-        let Some(id) = self.business.config.voice.dynamic_cover.clone() else { return };
-        self.cover_turn = Some(turn);
-        let Some(plan) = self.engine.render_response(&id) else { return };
-        for seg in &plan.segments {
-            if let Some(clip) = self.library.get(&seg.delivery, &seg.text) {
-                let id = self.next_item;
-                self.next_item += 1;
-                self.services.metrics.segment("cover");
-                self.enqueue(PlayItem { id, source: Source::Clip(clip), gain_db });
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------------------
-    // Playout
-
-    async fn on_playout(&mut self, e: PlayoutEvent) -> Option<Ending> {
-        match e {
-            PlayoutEvent::Started { at, .. } => {
-                self.speaking = true;
-                if let Some(t) = self.speech_ended_at.take() {
-                    self.services.metrics.response_latency.observe(at.saturating_duration_since(t).as_millis() as u64);
-                }
-                if let Some(c) = self.clock.take_if(|c| c.final_at.is_some()) {
-                    let ms = |a: Instant, b: Instant| b.saturating_duration_since(a).as_millis() as u64;
-                    let final_at = c.final_at.unwrap_or(c.speech_end);
-                    tracing::info!(
-                        call = %self.info.call_sid,
-                        stt_ms = ms(c.speech_end, final_at),
-                        agent_first_words_ms = c.agent_first.map(|a| ms(c.speech_end, a)),
-                        speculative_hit = c.speculative_hit,
-                        audio = c.audio,
-                        reply_ms = ms(c.speech_end, at),
-                        "turn timing (from the end of the caller's speech)"
-                    );
-                }
-            }
-            PlayoutEvent::Cancelled { ids } => {
-                self.queued_items = self.queued_items.saturating_sub(ids.len());
-                if let Some(t) = self.barge_in_started.take() {
-                    let detect = self.cfg.vad.trigger_ms;
-                    self.services.metrics.barge_in_latency.observe(detect + t.elapsed().as_millis() as u64);
-                }
-            }
-            PlayoutEvent::Idle => {
-                self.speaking = false;
-                if let Some(after) = self.after_speech.take() {
-                    return Some(self.terminate(after).await);
-                }
-                self.arm_silence();
-            }
-            PlayoutEvent::Finished { .. } => self.queued_items = self.queued_items.saturating_sub(1),
-            PlayoutEvent::Failed { .. } => {}
-        }
-        None
-    }
-
-    fn agent_busy(&self) -> bool {
-        self.queued_items > 0
-    }
-
-    fn enqueue(&mut self, item: PlayItem) {
-        self.queued_items += 1;
-        self.playout.enqueue(item);
-    }
-
-    fn arm_silence(&mut self) {
-        self.silence_generation += 1;
-        let generation = self.silence_generation;
-        let after = Duration::from_millis(self.business.config.silence.reprompt_after_ms);
-        let tx = self.events.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(after).await;
-            let _ = tx.send(Ev::Silence { generation });
-        });
-    }
-
-    async fn terminate(&mut self, after: AfterSpeech) -> Ending {
-        match after {
-            AfterSpeech::Hangup => {
-                if let Err(e) = self.services.telephony.hangup(&self.info.call_sid).await {
-                    tracing::error!(call = %self.info.call_sid, error = %e, "hangup failed");
-                }
-                Ending::AgentHungUp
-            }
-            AfterSpeech::Handoff(summary) => {
-                self.services.metrics.handoffs_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(number) = self.business.handoff_number.clone() else {
-                    let _ = self.services.telephony.hangup(&self.info.call_sid).await;
-                    return Ending::AgentHungUp;
-                };
-                let whisper = self.services.whisper.register(&self.info, &summary);
-                if let Err(e) = self.services.telephony.transfer(&self.info.call_sid, &number, whisper.as_deref()).await
-                {
-                    tracing::error!(call = %self.info.call_sid, error = %e, "transfer failed; hanging up");
-                    let _ = self.services.telephony.hangup(&self.info.call_sid).await;
-                    return Ending::AgentHungUp;
-                }
-                Ending::HandedOff
-            }
-        }
-    }
-}
-
-/// The same words, ignoring punctuation, spacing and case: a partial transcript that
-/// already says what the final one says.
-/// Pieces of a sentence short enough for fast live TTS: split after commas and sentence
-/// marks, then merged back so no piece is a lone word ("סגור.") next to a short neighbour.
-fn split_for_tts(text: &str) -> Vec<String> {
-    const SHORT: usize = 45;
-    if text.chars().count() <= SHORT {
-        return vec![text.to_string()];
-    }
-    let mut parts: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for ch in text.chars() {
-        current.push(ch);
-        if matches!(ch, ',' | '.' | '?' | '!') {
-            parts.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.trim().is_empty() {
-        parts.push(current);
-    }
-    let mut out: Vec<String> = Vec::new();
-    for p in parts.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
-        match out.last_mut() {
-            Some(last) if last.chars().count() + p.chars().count() < 20 => {
-                last.push(' ');
-                last.push_str(&p);
-            }
-            _ => out.push(p),
-        }
-    }
-    out
-}
-
-/// The recognizer's marks for a sentence the caller broke off: a trailing "..." or "-".
-fn is_unfinished(text: &str) -> bool {
-    let t = text.trim_end();
-    t.ends_with("...") || t.ends_with('…') || t.ends_with('-')
-}
-
-fn same_words(a: &str, b: &str) -> bool {
-    words(a) == words(b)
-}
-
-/// The words of a sentence, without punctuation or case.
-fn words(s: &str) -> Vec<String> {
-    s.split_whitespace()
-        .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
-        .filter(|w| !w.is_empty())
-        .collect()
-}
-
-fn spawn_tts(
-    tts: Arc<dyn Synthesizer>,
-    request: TtsRequest,
-    key: String,
-    tx: mpsc::Sender<anyhow::Result<Bytes>>,
-    cache: TtsCache,
-    events: mpsc::UnboundedSender<Ev>,
-) {
-    use futures::StreamExt;
-    tokio::spawn(async move {
-        let started = Instant::now();
-        let mut stream = match tts.synthesize(request).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(Err(e)).await;
-                return;
-            }
-        };
-        let mut all = Vec::new();
-        let mut first = true;
-        let mut listener = true;
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(bytes) => {
-                    if first {
-                        first = false;
-                        let _ = events.send(Ev::TtsFirstChunk { elapsed: started.elapsed() });
-                    }
-                    all.extend_from_slice(&bytes);
-                    // Keep synthesizing after a barge-in: the finished audio goes to the
-                    // cache, and "what?" usually asks for exactly this sentence again.
-                    if listener && tx.send(Ok(bytes)).await.is_err() {
-                        listener = false;
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e)).await;
-                    return;
-                }
-            }
-        }
-        if !all.is_empty() {
-            cache.put(key, Bytes::from(all));
-        }
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_unfinished;
-
-    #[test]
-    fn long_live_sentences_are_split_into_short_pieces() {
-        let read_back = "שלושה נוסעים מרבן יוחנן בן זכאי 45, אלעד לאהרונוביץ ראובן 42, בני ברק, עכשיו. לשלוח?";
-        let pieces = super::split_for_tts(read_back);
-        assert_eq!(pieces.join(" "), read_back, "nothing is lost");
-        assert!(pieces.len() >= 3, "{pieces:?}");
-        assert!(pieces.iter().all(|p| p.chars().count() <= 40), "{pieces:?}");
-        assert_eq!(super::split_for_tts("לאיזה רחוב בבני ברק?"), vec!["לאיזה רחוב בבני ברק?"]);
-    }
-
-    #[test]
-    fn broken_off_sentences_are_recognised() {
-        for t in ["ואני רוצה להגיע ל...", "יעני, מתל-ב-ב-ב-ב-", "אני נוסע ל… "] {
-            assert!(is_unfinished(t), "{t}");
-        }
-        for t in ["לתל אביב.", "מה המצב?", "3-4 נוסעים"] {
-            assert!(!is_unfinished(t), "{t}");
         }
     }
 }

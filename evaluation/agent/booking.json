@@ -1,0 +1,462 @@
+[
+  {
+    "id": "everything_at_once_asks_only_the_destination_street",
+    "turns": [
+      {
+        "caller": "צריך מונית מהרצל 10 ברעננה לבאר שבע, אנחנו שלושה",
+        "expect": {
+          "task": "book_ride",
+          "fields": {
+            "pickup": "הרצל",
+            "passengers": "3|שלוש"
+          },
+          "slots": {
+            "pickup": "הרצל 10, רעננה",
+            "passengers": "3"
+          },
+          "missing": [
+            "destination"
+          ],
+          "cities": {
+            "destination": "באר שבע"
+          },
+          "says_any": [
+            "לאיזה רחוב"
+          ],
+          "says_none": [
+            "כמה נוסעים"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "pickup_city_then_its_street",
+    "note": "live calls skipped the street after the city",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה",
+        "expect": {
+          "cities": {
+            "pickup": "רעננה"
+          },
+          "missing": [
+            "pickup"
+          ],
+          "says_any": [
+            "רחוב"
+          ],
+          "says_none": [
+            "לאן|כמה נוסעים"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_number_alone_is_a_house_number",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "רעננה"
+            }
+          ],
+          "say": "איזה רחוב ומספר?"
+        }
+      },
+      {
+        "caller": "ארבעים וחמש",
+        "expect": {
+          "missing": [
+            "pickup"
+          ],
+          "says_any": [
+            "רחוב"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "destination_city_is_enough_when_the_street_is_unknown",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה, הרצל 10",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "הרצל 10, רעננה"
+            }
+          ],
+          "say": "לאיזו עיר נוסעים?"
+        }
+      },
+      {
+        "caller": "לבאר שבע",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "destination",
+              "value": "באר שבע"
+            }
+          ],
+          "say": "לאיזה רחוב?"
+        }
+      },
+      {
+        "caller": "לא יודע, פשוט לבאר שבע",
+        "expect": {
+          "slots": {
+            "destination": "באר שבע"
+          },
+          "says_any": [
+            "כמה נוסעים|כמה אתם"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "putting_a_taxi_has_no_destination",
+    "note": "\"לשים מונית\" was booked to a place called \"שים\"",
+    "turns": [
+      {
+        "caller": "אפשר לשים מונית?",
+        "expect": {
+          "task": "book_ride",
+          "no_fields": [
+            "destination"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "optional_details_are_not_asked",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה, הרצל 10",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "הרצל 10, רעננה"
+            }
+          ],
+          "say": "לאיזו עיר נוסעים?"
+        }
+      },
+      {
+        "caller": "לתל אביב, דיזנגוף 50",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "destination",
+              "value": "דיזנגוף 50, תל אביב"
+            }
+          ],
+          "say": "כמה נוסעים?"
+        }
+      },
+      {
+        "caller": "שניים",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "passengers",
+              "value": "2"
+            }
+          ],
+          "say": "על שם מי ההזמנה?"
+        }
+      },
+      {
+        "caller": "דני כהן",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "customer_name",
+              "value": "דני כהן"
+            }
+          ],
+          "say": "יש משהו שהנהג צריך לדעת?"
+        }
+      },
+      {
+        "caller": "לא, אין",
+        "expect": {
+          "action": [
+            "read_back"
+          ],
+          "step": "awaiting_confirmation",
+          "says_none": [
+            "מזוודות|כיסא|רכב"
+          ],
+          "submitted": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_name_split_by_recognition",
+    "note": "live call 2026-09-25: \"בן-האיי או מנשה\" is \"בניהו מנשה\"",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה, הרצל 10",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "הרצל 10, רעננה"
+            }
+          ],
+          "say": "לאיזו עיר נוסעים?"
+        }
+      },
+      {
+        "caller": "לתל אביב, דיזנגוף 50",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "destination",
+              "value": "דיזנגוף 50, תל אביב"
+            }
+          ],
+          "say": "כמה נוסעים?"
+        }
+      },
+      {
+        "caller": "שניים",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "passengers",
+              "value": "2"
+            }
+          ],
+          "say": "על שם מי ההזמנה?"
+        }
+      },
+      {
+        "caller": "בן-האיי או מנשה",
+        "expect": {
+          "slots": {
+            "customer_name": "בניהו"
+          },
+          "says_none": [
+            "על שם מי"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "the_driver_note_is_kept",
+    "note": "a note said with the answer was lost",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה, הרצל 10",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "הרצל 10, רעננה"
+            }
+          ],
+          "say": "לאיזו עיר נוסעים?"
+        }
+      },
+      {
+        "caller": "לתל אביב, דיזנגוף 50",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "destination",
+              "value": "דיזנגוף 50, תל אביב"
+            }
+          ],
+          "say": "כמה נוסעים?"
+        }
+      },
+      {
+        "caller": "שניים",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "passengers",
+              "value": "2"
+            }
+          ],
+          "say": "על שם מי ההזמנה?"
+        }
+      },
+      {
+        "caller": "דני כהן",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "customer_name",
+              "value": "דני כהן"
+            }
+          ],
+          "say": "יש משהו שהנהג צריך לדעת?"
+        }
+      },
+      {
+        "caller": "כן, יש לי מזוודה גדולה ותתקשר כשאתה מגיע",
+        "expect": {
+          "slots": {
+            "notes": "מזוודה|תתקשר"
+          },
+          "says_none": [
+            "עוד משהו"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_known_customer_is_not_asked_their_name",
+    "customer": {
+      "id": "c1",
+      "name": "יוסי לוי"
+    },
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה, הרצל 10",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "הרצל 10, רעננה"
+            }
+          ],
+          "say": "לאיזו עיר נוסעים?"
+        }
+      },
+      {
+        "caller": "לתל אביב, דיזנגוף 50",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "destination",
+              "value": "דיזנגוף 50, תל אביב"
+            }
+          ],
+          "say": "כמה נוסעים?"
+        }
+      },
+      {
+        "caller": "שניים",
+        "expect": {
+          "slots": {
+            "passengers": "2"
+          },
+          "says_none": [
+            "על שם מי|מה השם"
+          ]
+        }
+      }
+    ]
+  }
+]

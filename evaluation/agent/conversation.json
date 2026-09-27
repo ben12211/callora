@@ -1,0 +1,141 @@
+[
+  {
+    "id": "small_talk_gets_a_short_answer",
+    "note": "live calls: \"מה המצב?\" met with silence under the rules",
+    "turns": [
+      {
+        "caller": "היי מה המצב?",
+        "expect": {
+          "action": [
+            "none"
+          ],
+          "ended": false,
+          "handoff": false,
+          "says_any": [
+            "טוב|סבבה|אהלן"
+          ],
+          "says_none": [
+            "לא הבנתי"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "small_talk_with_a_request_goes_to_the_request",
+    "turns": [
+      {
+        "caller": "מה המצב? אני יכול להזמין מונית?",
+        "expect": {
+          "task": "book_ride",
+          "says_any": [
+            "מאיזו עיר|מאיפה"
+          ],
+          "ended": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_garbled_taxi_is_a_taxi",
+    "note": "live call 2026-09-26: \"חנונית\" for \"מונית\"",
+    "turns": [
+      {
+        "caller": "חנונית בבקשה",
+        "expect": {
+          "task": "book_ride",
+          "says_any": [
+            "מאיזו עיר|מאיפה"
+          ],
+          "says_none": [
+            "לא הבנתי"
+          ],
+          "ended": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "rudeness_does_not_end_the_call",
+    "note": "live call: the agent said \"תודה, יום טוב!\" to a rude remark and hung up",
+    "turns": [
+      {
+        "caller": "אתה סתם רובוט מעצבן",
+        "expect": {
+          "ended": false,
+          "handoff": false,
+          "says_none": [
+            "יום טוב|להתראות|ביי"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "what_did_you_say_repeats",
+    "note": "live call: \"מה אמרת?\" was taken for a goodbye",
+    "turns": [
+      {
+        "caller": "מה אמרת?",
+        "expect": {
+          "ended": false,
+          "says_any": [
+            "איך אפשר לעזור"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "already_told_you_gets_an_apology",
+    "turns": [
+      {
+        "caller": "צריך מונית מרעננה, הרצל 10",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "אמרתי לך כבר, רעננה הרצל 10",
+        "expect": {
+          "says_any": [
+            "סליחה"
+          ],
+          "slots": {
+            "pickup": "הרצל 10"
+          },
+          "says_none": [
+            "מאיזו עיר"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "never_says_i_did_not_understand",
+    "note": "the rules say \"רק כדי שלא תהיה טעות\" instead",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "אממ כן מ ה ש ם של ה",
+        "expect": {
+          "says_none": [
+            "לא הבנתי"
+          ],
+          "ended": false
+        }
+      }
+    ]
+  }
+]

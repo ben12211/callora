@@ -13,7 +13,7 @@ use futures::{FutureExt, StreamExt};
 use serde_json::Value;
 
 use callora_core::llm::LlmRequest;
-use callora_runtime::ports::{LanguageModel, TextStream};
+use callora_runtime::ports::{LanguageModel, TextStream, UsageReceiver};
 
 pub struct FirstAnswer {
     models: Vec<Arc<dyn LanguageModel>>,
@@ -64,15 +64,15 @@ impl Hedged {
     }
 }
 
-/// A model's stream once its first delta is in.
-type Started = (String, TextStream);
+/// A model's stream once its first delta is in, and what it will have cost.
+type Started = (String, TextStream, UsageReceiver);
 
 fn start(model: Arc<dyn LanguageModel>, request: LlmRequest) -> BoxFuture<'static, anyhow::Result<Started>> {
     async move {
         let name = model.name();
-        let mut stream = model.stream(&request).await.map_err(|e| e.context(name))?;
+        let (mut stream, usage) = model.stream_metered(&request).await.map_err(|e| e.context(name))?;
         match stream.next().await {
-            Some(Ok(first)) => Ok((first, stream)),
+            Some(Ok(first)) => Ok((first, stream, usage)),
             Some(Err(e)) => Err(e.context(name)),
             None => Err(anyhow::anyhow!("{name}: empty reply")),
         }
@@ -80,8 +80,8 @@ fn start(model: Arc<dyn LanguageModel>, request: LlmRequest) -> BoxFuture<'stati
     .boxed()
 }
 
-fn resume((first, rest): Started) -> TextStream {
-    futures::stream::once(async move { Ok(first) }).chain(rest).boxed()
+fn resume((first, rest, usage): Started) -> (TextStream, UsageReceiver) {
+    (futures::stream::once(async move { Ok(first) }).chain(rest).boxed(), usage)
 }
 
 #[async_trait]
@@ -97,6 +97,10 @@ impl LanguageModel for Hedged {
     }
 
     async fn stream(&self, request: &LlmRequest) -> anyhow::Result<TextStream> {
+        Ok(self.stream_metered(request).await?.0)
+    }
+
+    async fn stream_metered(&self, request: &LlmRequest) -> anyhow::Result<(TextStream, UsageReceiver)> {
         let mut primary = start(self.primary.clone(), request.clone());
         tokio::select! {
             r = &mut primary => match r {

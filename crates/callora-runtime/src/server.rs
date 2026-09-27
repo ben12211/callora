@@ -1,5 +1,5 @@
-//! HTTP surface: Twilio webhooks, the media WebSocket, health, metrics and a small
-//! read-only admin API.
+//! HTTP surface: Twilio webhooks, the media WebSocket, health, metrics, and the owner's
+//! pages and admin API (calls, numbers, reviews, orders).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -40,6 +40,8 @@ pub struct ServerSettings {
     pub admin_api_key: Option<String>,
     /// Only for local development without Twilio.
     pub skip_signature_validation: bool,
+    /// Token prices, for the cost per call (`AGENT_PRICES`).
+    pub prices: crate::pricing::Prices,
 }
 
 pub struct AppState {
@@ -98,7 +100,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/calls", get(api_calls))
         .route("/api/orders", get(api_orders))
         .route("/orders", get(orders_page))
+        .route("/calls", get(calls_page))
+        .route("/api/stats", get(api_stats))
         .route("/api/calls/{id}", get(api_call))
+        .route("/api/calls/{id}/review", axum::routing::put(api_review))
+        .route("/api/calls/{id}/eval-case", get(api_eval_case))
+        .route("/api/utterances/{id}", get(api_utterance))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
         .with_state(state)
 }
@@ -353,7 +360,7 @@ async fn whisper(
 }
 
 // ---------------------------------------------------------------------------------------
-// Admin API (read-only)
+// Admin API (`X-Api-Key`): read-only, except the owner's review of a call
 
 fn authorized(s: &AppState, headers: &HeaderMap) -> bool {
     let Some(key) = &s.settings.admin_api_key else { return false };
@@ -431,6 +438,104 @@ async fn api_orders(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Respo
         Ok(rows) => Json(rows).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "listing orders failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// The owner's calls page: the numbers, every call with what the agent decided on each
+/// turn, the recorded utterances, a verdict, and the export of a call as an eval case. Like
+/// the orders page it holds no data and keeps the admin key in the browser.
+async fn calls_page() -> Response {
+    axum::response::Html(include_str!("calls.html")).into_response()
+}
+
+#[derive(Deserialize)]
+struct StatsQuery {
+    business: Option<String>,
+    days: Option<i32>,
+}
+
+async fn api_stats(State(s): State<Arc<AppState>>, headers: HeaderMap, Query(q): Query<StatsQuery>) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    let days = q.days.unwrap_or(7).clamp(1, 365);
+    match crate::store::call_facts(pool, q.business.as_deref(), days).await {
+        Ok(facts) => {
+            let mut stats = crate::review::stats(&facts, &s.settings.prices);
+            stats["days"] = json!(days);
+            Json(stats).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "call numbers failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ReviewBody {
+    verdict: String,
+    #[serde(default)]
+    note: String,
+}
+
+async fn api_review(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<uuid::Uuid>,
+    Json(body): Json<ReviewBody>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    if body.verdict != "good" && body.verdict != "bad" {
+        return (StatusCode::BAD_REQUEST, "verdict is good or bad").into_response();
+    }
+    let note: String = body.note.chars().take(2000).collect();
+    match crate::store::set_review(pool, id, &body.verdict, note.trim()).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "storing a review failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn api_eval_case(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<uuid::Uuid>) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    match crate::store::get_call(pool, id).await {
+        Ok(Some(call)) => Json(crate::review::eval_case(&call)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "reading call failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// A recorded utterance (sampled numbers only), as WAV for the browser.
+async fn api_utterance(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    match crate::store::utterance_audio(pool, id).await {
+        Ok(Some(audio)) => (
+            [(header::CONTENT_TYPE, "audio/wav"), (header::CACHE_CONTROL, "private, max-age=3600")],
+            callora_audio::mulaw::to_wav(&audio),
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "reading an utterance failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

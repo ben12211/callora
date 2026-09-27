@@ -1,0 +1,243 @@
+[
+  {
+    "id": "betar_is_betar_illit",
+    "note": "live call 2026-09-26 booked \"רימון 16, מיתר\"",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מביתר",
+        "expect": {
+          "cities": {
+            "pickup": "ביתר עילית"
+          },
+          "says_any": [
+            "רחוב"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_betar_street_lands_in_betar_illit",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מביתר",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "ביתר"
+            }
+          ],
+          "say": "איזה רחוב ומספר?"
+        }
+      },
+      {
+        "caller": "הרמב\"ן 16",
+        "expect": {
+          "slots": {
+            "pickup": "ביתר עילית"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "ashkenazi_pronunciation",
+    "note": "\"אהרוינוביטש\" is \"אהרונוביץ\" in בני ברק",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מבני ברק",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "בני ברק"
+            }
+          ],
+          "say": "איזה רחוב ומספר?"
+        }
+      },
+      {
+        "caller": "אהרוינוביטש 5",
+        "expect": {
+          "slots": {
+            "pickup": "אהרונוביץ"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_building_answers_the_street_question",
+    "note": "\"בני ינאי אומה\" is \"בנייני האומה\"",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מירושלים",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "ירושלים"
+            }
+          ],
+          "say": "איזה רחוב ומספר?"
+        }
+      },
+      {
+        "caller": "בני ינאי אומה",
+        "expect": {
+          "slots": {
+            "pickup": "בנייני האומה"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_landmark_instead_of_a_street",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה, הרצל 10",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "הרצל 10, רעננה"
+            }
+          ],
+          "say": "לאיזו עיר נוסעים?"
+        }
+      },
+      {
+        "caller": "לירושלים",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "destination",
+              "value": "ירושלים"
+            }
+          ],
+          "say": "לאיזה רחוב?"
+        }
+      },
+      {
+        "caller": "זה ליד התחנה המרכזית, לא זוכר את הרחוב",
+        "expect": {
+          "slots": {
+            "destination": "תחנה מרכזית|התחנה המרכזית"
+          },
+          "says_none": [
+            "לאיזה רחוב"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "elad_street_with_the_city",
+    "note": "\"לאלעד\" heard as \"לעדו\"; בן זכאי is a street of אלעד",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מאלעד, בן זכאי 45",
+        "expect": {
+          "slots": {
+            "pickup": "בן זכאי 45, אלעד"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_street_the_caller_never_said_is_not_booked",
+    "note": "the agent invented a street for a city",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מתל אביב",
+        "expect": {
+          "missing": [
+            "pickup"
+          ],
+          "cities": {
+            "pickup": "תל אביב"
+          },
+          "says_any": [
+            "רחוב"
+          ]
+        }
+      }
+    ]
+  }
+]

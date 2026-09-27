@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use callora_core::business::Business;
-use callora_core::engine::HandoffSummary;
+use callora_core::engine::{ActionFailure, HandoffSummary};
 use callora_core::llm::LlmRequest;
 
 /// Identity of one phone call, shared by everything that logs or stores about it.
@@ -67,6 +67,34 @@ pub trait Transcriber: Send + Sync {
 /// A reply as it is generated: text deltas.
 pub type TextStream = futures::stream::BoxStream<'static, anyhow::Result<String>>;
 
+/// What one reply cost, as the provider reported it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Usage {
+    /// The model that actually answered (a hedge may have used the backup).
+    pub model: String,
+    /// Prompt tokens, cached ones included.
+    pub input: u64,
+    /// Prompt tokens served from the provider's cache (billed lower).
+    pub cached: u64,
+    /// Generated tokens, reasoning included.
+    pub output: u64,
+}
+
+impl Usage {
+    pub fn add(&mut self, other: &Usage) {
+        if self.model.is_empty() {
+            self.model.clone_from(&other.model);
+        }
+        self.input += other.input;
+        self.cached += other.cached;
+        self.output += other.output;
+    }
+}
+
+/// Resolves to the reply's [`Usage`] once its stream has ended; closed when the provider
+/// reports none.
+pub type UsageReceiver = tokio::sync::oneshot::Receiver<Usage>;
+
 #[async_trait]
 pub trait LanguageModel: Send + Sync {
     /// Return JSON matching `request.schema`.
@@ -76,6 +104,12 @@ pub trait LanguageModel: Send + Sync {
     async fn stream(&self, request: &LlmRequest) -> anyhow::Result<TextStream> {
         let reply = self.extract(request).await?;
         Ok(Box::pin(futures::stream::once(async move { Ok(reply.to_string()) })))
+    }
+
+    /// [`LanguageModel::stream`], plus what the reply cost. By default the cost is unknown.
+    async fn stream_metered(&self, request: &LlmRequest) -> anyhow::Result<(TextStream, UsageReceiver)> {
+        let (_, unknown) = tokio::sync::oneshot::channel();
+        Ok((self.stream(request).await?, unknown))
     }
 
     /// Open the connection before the first real request needs it (a TLS handshake is
@@ -96,7 +130,7 @@ pub trait ActionRunner: Send + Sync {
         action: &str,
         input: serde_json::Value,
         call: &CallInfo,
-    ) -> Result<serde_json::Value, String>;
+    ) -> Result<serde_json::Value, ActionFailure>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -141,6 +175,9 @@ pub enum CallRecord {
         call_id: uuid::Uuid,
         outcome: String,
         state: serde_json::Value,
+        /// What the agent's decisions cost in the call.
+        #[serde(default)]
+        usage: Usage,
     },
     /// An utterance's audio and what the stream heard, from a sampled number only.
     Utterance {

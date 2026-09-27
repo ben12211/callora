@@ -40,6 +40,29 @@ pub fn encode(sample: i16) -> u8 {
     !(sign | (exponent << 4) | mantissa) as u8
 }
 
+/// μ-law audio as a 16-bit PCM WAV file, which every browser plays (for listening to
+/// recorded utterances; never on a call's path).
+pub fn to_wav(mulaw: &[u8]) -> Vec<u8> {
+    let data_len = (mulaw.len() * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + mulaw.len() * 2);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    wav.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes()); // bytes per second
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for b in mulaw {
+        wav.extend_from_slice(&decode(*b).to_le_bytes());
+    }
+    wav
+}
+
 /// Root-mean-square level on the 16-bit linear scale.
 pub fn rms(frame: &[u8]) -> f32 {
     if frame.is_empty() {
@@ -64,6 +87,16 @@ pub fn apply_gain(audio: &mut [u8], db: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wav_holds_the_decoded_samples() {
+        let wav = to_wav(&[SILENCE, encode(1000)]);
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..16], b"WAVEfmt ");
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4, "two 16-bit samples");
+        assert_eq!(i16::from_le_bytes([wav[44], wav[45]]), 0);
+        assert!((i16::from_le_bytes([wav[46], wav[47]]) - 1000).abs() < 40);
+    }
 
     #[test]
     fn round_trip_is_close() {

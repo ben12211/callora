@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use callora_core::engine::HandoffSummary;
-use callora_runtime::ports::{CallInfo, CallRecord, CallStore};
+use callora_runtime::ports::{CallInfo, CallRecord, CallStore, Usage};
 use callora_runtime::store;
 use serde_json::json;
 
@@ -65,7 +65,9 @@ async fn records_round_trip_through_postgres() {
             text: "שיחה מועברת".into(),
         },
     });
-    pg.record(CallRecord::Ended { call_id, outcome: "HandedOff".into(), state: json!({ "turns": 1 }) });
+    pg.record(CallRecord::Utterance { call_id, heard: "צריך מונית".into(), audio: vec![0xFF; 1600] });
+    let usage = Usage { model: "gpt-6-sol".into(), input: 3000, cached: 2500, output: 60 };
+    pg.record(CallRecord::Ended { call_id, outcome: "HandedOff".into(), state: json!({ "turns": 1 }), usage });
     pg.record(CallRecord::Status { call_sid: sid, status: "completed".into(), duration_seconds: Some(42) });
 
     // The writer is asynchronous by design.
@@ -86,5 +88,20 @@ async fn records_round_trip_through_postgres() {
     assert_eq!(call["actions"][0]["latency_ms"], 812);
     assert_eq!(call["handoffs"][0]["reason"], "caller_requested");
     let listed = store::list_calls(&pool, Some("taxi"), 10, 0).await.unwrap();
-    assert!(listed.iter().any(|c| c["id"] == json!(call_id)));
+    let row = listed.iter().find(|c| c["id"] == json!(call_id)).expect("listed");
+    assert_eq!(row["usage"]["input"], 3000);
+    assert_eq!(row["orders"], 0);
+    assert_eq!(call["utterances"][0]["heard"], "צריך מונית");
+
+    // The owner's verdict, replaced by a later one; unknown calls are refused.
+    assert!(store::set_review(&pool, call_id, "good", "").await.unwrap());
+    assert!(store::set_review(&pool, call_id, "bad", "asked the street twice").await.unwrap());
+    assert!(!store::set_review(&pool, uuid::Uuid::new_v4(), "bad", "").await.unwrap());
+    let call = store::get_call(&pool, call_id).await.unwrap().unwrap();
+    assert_eq!(call["review"], json!({ "verdict": "bad", "note": "asked the street twice" }));
+    let facts = store::call_facts(&pool, Some("taxi"), 1).await.unwrap();
+    assert!(facts.iter().any(|f| f.verdict.as_deref() == Some("bad") && f.outcome.as_deref() == Some("HandedOff")));
+
+    let id = call["utterances"][0]["id"].as_i64().unwrap();
+    assert_eq!(store::utterance_audio(&pool, id).await.unwrap().map(|a| a.len()), Some(1600));
 }

@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "id": "clinic",
+  "name": "מרפאת השכונה",
+  "language": "he-IL",
+  "timezone": "Asia/Jerusalem",
+  "voice": {
+    "provider": "elevenlabs",
+    "voice_id": "test-voice",
+    "library_model": "eleven_v3",
+    "dynamic_model": "eleven_v3",
+    "settings": { "stability": 0.5, "similarity_boost": 0.75, "speed": 1.0 },
+    "deliveries": { "normal": {} }
+  },
+  "greeting": "greeting",
+  "anything_else": "anything_else",
+  "goodbye": "goodbye",
+  "confirm_slot": "confirm_value",
+  "acknowledgement": "ack",
+  "lexicon": {
+    "affirm": ["כן", "נכון", "בסדר", "מאשר", "מאשרת"],
+    "deny": ["לא", "לא נכון"]
+  },
+  "meta_intents": {
+    "repeat_last": { "exact": ["מה", "סליחה"] },
+    "goodbye": { "exact": ["ביי", "להתראות", "תודה ביי"], "response": "goodbye" }
+  },
+  "intents": [
+    {
+      "id": "book_appointment",
+      "description": "קביעת תור לרופא",
+      "keywords": ["תור", "לקבוע"],
+      "pipeline": "book_appointment"
+    },
+    {
+      "id": "opening_hours",
+      "description": "שעות הפתיחה של המרפאה",
+      "keywords": ["שעות", "פתוחים"],
+      "respond": "hours_answer"
+    }
+  ],
+  "slots": {
+    "doctor": {
+      "type": "enum",
+      "description": "סוג הרופא",
+      "values": { "family": ["רופא משפחה"], "pediatrics": ["רופא ילדים"] }
+    },
+    "day": { "type": "text", "description": "היום המבוקש" },
+    "patient_name": { "type": "text", "description": "שם המטופל" },
+    "insurance": { "type": "text", "description": "קופת חולים" }
+  },
+  "pipelines": {
+    "book_appointment": {
+      "description": "קביעת תור",
+      "slots": [
+        { "slot": "doctor", "required": true, "ask": "ask_doctor" },
+        { "slot": "day", "required": true, "ask": "ask_day" },
+        { "slot": "patient_name", "required": true, "ask": "ask_name" },
+        { "slot": "insurance" }
+      ],
+      "confirm": { "response": "confirm_appointment", "ask_change": "ask_change" },
+      "action": "book_appointment",
+      "on_success": "appointment_booked",
+      "on_failure": "appointment_failed"
+    }
+  },
+  "actions": {
+    "book_appointment": {
+      "description": "קובע את התור ביומן המרפאה",
+      "backends": [{ "kind": "mock", "result": { "appointment_id": "A-7" } }],
+      "requires_confirmation": true
+    }
+  },
+  "responses": {
+    "greeting": { "variants": ["מרפאת השכונה, שלום. במה אפשר לעזור?"] },
+    "ack": { "variants": ["בסדר."] },
+    "anything_else": { "variants": ["עוד משהו?"] },
+    "goodbye": { "variants": ["תודה, יום טוב."] },
+    "confirm_value": { "variants": ["{value}, נכון?"] },
+    "ask_change": { "variants": ["מה לשנות?"] },
+    "ask_doctor": { "variants": ["לאיזה רופא?"] },
+    "ask_day": { "variants": ["לאיזה יום?"] },
+    "ask_name": { "variants": ["על שם מי התור?"] },
+    "confirm_appointment": { "variants": ["תור ל{doctor} ביום {day} על שם {patient_name}. לקבוע?"] },
+    "appointment_booked": { "variants": ["התור נקבע. נשלח תזכורת יום לפני."] },
+    "appointment_failed": { "variants": ["לא הצלחתי לקבוע את התור כרגע."] },
+    "hours_answer": { "variants": ["המרפאה פתוחה בימים ראשון עד חמישי, משמונה עד שש."] },
+    "fallback_1": { "variants": ["אפשר לחזור על זה?"] },
+    "handoff": { "variants": ["מעבירה למזכירה."] },
+    "handoff_unavailable": { "variants": ["כרגע אין מזכירה פנויה."] }
+  },
+  "fallback": { "ladder": ["fallback_1"] },
+  "handoff": { "response": "handoff", "unavailable_response": "handoff_unavailable" },
+  "agent": {
+    "persona": "את המזכירה של מרפאת השכונה: אדיבה, סבלנית וברורה.",
+    "rules": ["Appointments are Sunday to Thursday only."],
+    "prompt": { "role": "receptionist", "next_question": "\"לאיזה יום?\"" },
+    "phrases": ["ask_doctor", "ask_day", "ask_name", "ack", "anything_else"]
+  }
+}

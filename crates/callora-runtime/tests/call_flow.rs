@@ -193,6 +193,7 @@ async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
         allow_list: vec![],
         admin_api_key: None,
         skip_signature_validation: false,
+        prices: Default::default(),
     };
     let state = AppState::new(registry, libraries, services, SessionConfig::default(), settings, None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -404,6 +405,37 @@ async fn two_recorded_phrases_in_one_reply_play_as_two_clips() {
     let (frames, _) = collect(&mut ws, Duration::from_millis(500)).await;
     assert!(frames.len() >= 6, "both phrases play: {} frames", frames.len());
     assert!(frames.iter().all(|b| *b == 0x55), "recordings only: {:?}", &frames[..frames.len().min(8)]);
+}
+
+#[tokio::test]
+async fn a_phrase_id_plays_its_recording_once_and_the_agent_hears_what_was_said() {
+    // The model names a recorded phrase instead of writing its words; writing them again in
+    // `say` as well must not say them twice.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "action": "none", "fields": [{ "slot": "pickup", "value": "באר שבע" }],
+                "phrase": "ask_destination", "say": "לאן נוסעים?", "task": "book_ride" }),
+        json!({ "action": "none", "fields": [], "phrase": null, "say": "", "task": "book_ride" }),
+    ]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, "CA47", "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "connected" }).to_string().into())).await.unwrap();
+    ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ1", "start": { "streamSid": "MZ1", "callSid": "CA47", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    collect(&mut ws, Duration::from_millis(400)).await;
+
+    h.stt.say("מונית מבאר שבע").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(500)).await;
+    assert_eq!(frames.len(), 3, "one recorded clip (3 frames), said once: {frames:?}");
+    assert!(frames.iter().all(|b| *b == 0x55), "recorded, no live TTS");
+
+    h.stt.say("לתל אביב").await;
+    collect(&mut ws, Duration::from_millis(300)).await;
+    let requests = agent.requests.lock();
+    let asked = ["לאן נוסעים?", "ולאן?", "לאן צריך להגיע?"];
+    let said: Vec<&str> = requests[1].user.lines().filter(|l| l.starts_with("Agent: ")).collect();
+    assert!(said.iter().any(|l| asked.iter().any(|a| l.ends_with(a))), "the agent sees its phrase: {said:?}");
+    assert!(requests[1].user.contains("- pickup: באר שבע"), "{}", requests[1].user);
 }
 
 fn chrono_now() -> i64 {

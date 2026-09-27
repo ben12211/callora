@@ -3,6 +3,8 @@
 pub mod actions;
 pub mod metrics;
 pub mod ports;
+pub mod pricing;
+pub mod review;
 pub mod server;
 pub mod session;
 pub mod store;

@@ -64,7 +64,10 @@ services:
       # The conversation agent (businesses with an `agent` block); unset uses the defaults.
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_BACKUP_MODEL: ${AGENT_BACKUP_MODEL:-}
+      AGENT_REASONING_EFFORT: ${AGENT_REASONING_EFFORT:-}
       AGENT_HEDGE_MS: ${AGENT_HEDGE_MS:-}
+      # Token prices for the cost per call on /calls ("gpt-6-sol=2/0.2/10,...").
+      AGENT_PRICES: ${AGENT_PRICES:-}
       AGENT_SPECULATE: ${AGENT_SPECULATE:-}
       # Turn-taking tuning; unset uses the built-in defaults.
       VAD_ENDPOINT_MS: ${VAD_ENDPOINT_MS:-}

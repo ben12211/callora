@@ -177,3 +177,21 @@ docker system df
 ```
 
 Do not run `docker compose down --volumes` in production.
+
+## After a deployment: the agent and the calls page
+
+- The agent's model comes from the GitHub Variables `AGENT_MODEL`, `AGENT_BACKUP_MODEL` and
+  `AGENT_REASONING_EFFORT` (defaults `gpt-6-sol`, `gpt-6-luna`, `none`); the pipeline sends
+  them on every deployment. Compare models with the **Agent eval** workflow (Actions tab)
+  before changing them.
+- `https://<host>/calls` shows the numbers of the last day, week or month, every call with
+  the agent's decisions, the recorded utterances of the numbers in `AUDIO_SAMPLE_NUMBERS`,
+  and a verdict per call. It asks for `ADMIN_API_KEY` once and keeps it in the browser.
+  Set `AGENT_PRICES` for the cost per call.
+- A migration adds `calls.llm_usage` and the `call_reviews` table; it runs by itself when
+  the server starts.
+- Business actions now send an idempotency key (`Idempotency-Key` header and
+  `idempotency_key` in the body, the same for every attempt of one task in one call). A
+  dispatch backend that honours it books a ride once even if a timed-out attempt reached
+  it. A timeout after the request was sent hands the caller to the desk with the ride's
+  details and marks the order card "לבדוק", instead of saying no driver is available.

@@ -102,13 +102,16 @@ async fn write(pool: &PgPool, record: &CallRecord) -> sqlx::Result<()> {
                 .execute(pool)
                 .await?;
         }
-        CallRecord::Ended { call_id, outcome, state } => {
-            sqlx::query("UPDATE callora_v2.calls SET ended_at = now(), outcome = $2, final_state = $3 WHERE id = $1")
-                .bind(call_id)
-                .bind(outcome)
-                .bind(state)
-                .execute(pool)
-                .await?;
+        CallRecord::Ended { call_id, outcome, state, usage } => {
+            sqlx::query(
+                "UPDATE callora_v2.calls SET ended_at = now(), outcome = $2, final_state = $3, llm_usage = $4 WHERE id = $1",
+            )
+            .bind(call_id)
+            .bind(outcome)
+            .bind(state)
+            .bind((usage.input + usage.output > 0).then(|| serde_json::to_value(usage).unwrap_or(Value::Null)))
+            .execute(pool)
+            .await?;
         }
         CallRecord::Utterance { call_id, heard, audio } => {
             sqlx::query("INSERT INTO callora_v2.utterances (call_id, heard, audio) VALUES ($1, $2, $3)")
@@ -137,16 +140,22 @@ async fn write(pool: &PgPool, record: &CallRecord) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Delete transcripts older than `days` (0 keeps them forever). Callers' own words age out.
+/// Delete transcripts and recorded utterances older than `days` (0 keeps them forever).
+/// Callers' own words and voices age out.
 pub async fn prune_transcripts(pool: &PgPool, days: u32) -> sqlx::Result<u64> {
     if days == 0 {
         return Ok(0);
     }
-    let r = sqlx::query("DELETE FROM callora_v2.call_turns WHERE at < now() - make_interval(days => $1)")
-        .bind(i32::try_from(days).unwrap_or(i32::MAX))
+    let days = i32::try_from(days).unwrap_or(i32::MAX);
+    let turns = sqlx::query("DELETE FROM callora_v2.call_turns WHERE at < now() - make_interval(days => $1)")
+        .bind(days)
         .execute(pool)
         .await?;
-    Ok(r.rows_affected())
+    let audio = sqlx::query("DELETE FROM callora_v2.utterances WHERE at < now() - make_interval(days => $1)")
+        .bind(days)
+        .execute(pool)
+        .await?;
+    Ok(turns.rows_affected() + audio.rows_affected())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -154,9 +163,12 @@ pub async fn prune_transcripts(pool: &PgPool, days: u32) -> sqlx::Result<u64> {
 
 pub async fn list_calls(pool: &PgPool, business: Option<&str>, limit: i64, offset: i64) -> sqlx::Result<Vec<Value>> {
     let rows = sqlx::query(
-        "SELECT id, call_sid, business_id, from_number, to_number, started_at, ended_at, outcome, twilio_status, duration_seconds
-         FROM callora_v2.calls WHERE ($1::text IS NULL OR business_id = $1)
-         ORDER BY started_at DESC LIMIT $2 OFFSET $3",
+        "SELECT c.id, c.call_sid, c.business_id, c.from_number, c.to_number, c.started_at, c.ended_at, c.outcome,
+                c.twilio_status, c.duration_seconds, c.llm_usage, r.verdict,
+                (SELECT count(*) FROM callora_v2.orders o WHERE o.call_id = c.id) AS orders
+         FROM callora_v2.calls c LEFT JOIN callora_v2.call_reviews r ON r.call_id = c.id
+         WHERE ($1::text IS NULL OR c.business_id = $1)
+         ORDER BY c.started_at DESC LIMIT $2 OFFSET $3",
     )
     .bind(business)
     .bind(limit)
@@ -177,9 +189,73 @@ pub async fn list_calls(pool: &PgPool, business: Option<&str>, limit: i64, offse
                 "outcome": r.get::<Option<String>, _>("outcome"),
                 "twilio_status": r.get::<Option<String>, _>("twilio_status"),
                 "duration_seconds": r.get::<Option<i32>, _>("duration_seconds"),
+                "usage": r.get::<Option<Value>, _>("llm_usage"),
+                "verdict": r.get::<Option<String>, _>("verdict"),
+                "orders": r.get::<i64, _>("orders"),
             })
         })
         .collect())
+}
+
+/// One call, reduced to what the numbers on the calls page need.
+#[derive(Debug, Clone, Default)]
+pub struct CallFacts {
+    pub outcome: Option<String>,
+    pub duration_seconds: Option<i32>,
+    /// Tasks it completed (order cards), and how many of them are still to be checked.
+    pub orders: i64,
+    pub unverified: i64,
+    pub usage: Option<crate::ports::Usage>,
+    pub verdict: Option<String>,
+}
+
+/// The calls of the last `days` days, for the numbers on the calls page.
+pub async fn call_facts(pool: &PgPool, business: Option<&str>, days: i32) -> sqlx::Result<Vec<CallFacts>> {
+    let rows = sqlx::query(
+        "SELECT c.outcome, c.duration_seconds, c.llm_usage, r.verdict,
+                (SELECT count(*) FROM callora_v2.orders o WHERE o.call_id = c.id) AS orders,
+                (SELECT count(*) FROM callora_v2.orders o WHERE o.call_id = c.id
+                   AND coalesce((o.card->>'verify')::boolean, false)) AS unverified
+         FROM callora_v2.calls c LEFT JOIN callora_v2.call_reviews r ON r.call_id = c.id
+         WHERE c.started_at > now() - make_interval(days => $1) AND ($2::text IS NULL OR c.business_id = $2)
+         LIMIT 50000",
+    )
+    .bind(days)
+    .bind(business)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| CallFacts {
+            outcome: r.get("outcome"),
+            duration_seconds: r.get("duration_seconds"),
+            orders: r.get("orders"),
+            unverified: r.get("unverified"),
+            usage: r.get::<Option<Value>, _>("llm_usage").and_then(|v| serde_json::from_value(v).ok()),
+            verdict: r.get("verdict"),
+        })
+        .collect())
+}
+
+/// The owner's verdict on a call ("good" or "bad", with a note); replaces an earlier one.
+pub async fn set_review(pool: &PgPool, call_id: uuid::Uuid, verdict: &str, note: &str) -> sqlx::Result<bool> {
+    let r = sqlx::query(
+        "INSERT INTO callora_v2.call_reviews (call_id, verdict, note) SELECT id, $2, $3 FROM callora_v2.calls WHERE id = $1
+         ON CONFLICT (call_id) DO UPDATE SET verdict = EXCLUDED.verdict, note = EXCLUDED.note, at = now()",
+    )
+    .bind(call_id)
+    .bind(verdict)
+    .bind(note)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// A recorded utterance's audio (μ-law 8 kHz).
+pub async fn utterance_audio(pool: &PgPool, id: i64) -> sqlx::Result<Option<Vec<u8>>> {
+    let row =
+        sqlx::query("SELECT audio FROM callora_v2.utterances WHERE id = $1").bind(id).fetch_optional(pool).await?;
+    Ok(row.map(|r| r.get("audio")))
 }
 
 /// The newest order cards, with the calling number and time.
@@ -205,10 +281,14 @@ pub async fn list_orders(pool: &PgPool, limit: i64) -> sqlx::Result<Vec<Value>> 
 }
 
 pub async fn get_call(pool: &PgPool, id: uuid::Uuid) -> sqlx::Result<Option<Value>> {
-    let Some(call) = sqlx::query("SELECT id, call_sid, business_id, from_number, to_number, started_at, ended_at, outcome, final_state FROM callora_v2.calls WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?
+    let Some(call) = sqlx::query(
+        "SELECT c.id, c.call_sid, c.business_id, c.from_number, c.to_number, c.started_at, c.ended_at, c.outcome,
+                c.final_state, c.llm_usage, r.verdict, r.note
+         FROM callora_v2.calls c LEFT JOIN callora_v2.call_reviews r ON r.call_id = c.id WHERE c.id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
     else {
         return Ok(None);
     };
@@ -227,6 +307,10 @@ pub async fn get_call(pool: &PgPool, id: uuid::Uuid) -> sqlx::Result<Option<Valu
         .bind(id)
         .fetch_all(pool)
         .await?;
+    let utterances = sqlx::query("SELECT id, heard, at FROM callora_v2.utterances WHERE call_id = $1 ORDER BY id")
+        .bind(id)
+        .fetch_all(pool)
+        .await?;
     Ok(Some(serde_json::json!({
         "id": call.get::<uuid::Uuid, _>("id"),
         "call_sid": call.get::<String, _>("call_sid"),
@@ -237,6 +321,11 @@ pub async fn get_call(pool: &PgPool, id: uuid::Uuid) -> sqlx::Result<Option<Valu
         "ended_at": call.get::<Option<chrono::DateTime<chrono::Utc>>, _>("ended_at"),
         "outcome": call.get::<Option<String>, _>("outcome"),
         "final_state": call.get::<Option<Value>, _>("final_state"),
+        "usage": call.get::<Option<Value>, _>("llm_usage"),
+        "review": call.get::<Option<String>, _>("verdict").map(|v| serde_json::json!({
+            "verdict": v,
+            "note": call.get::<Option<String>, _>("note").unwrap_or_default(),
+        })),
         "turns": turns.iter().map(|t| serde_json::json!({
             "speaker": t.get::<String, _>("speaker"),
             "text": t.get::<String, _>("text"),
@@ -255,6 +344,11 @@ pub async fn get_call(pool: &PgPool, id: uuid::Uuid) -> sqlx::Result<Option<Valu
             "reason": h.get::<String, _>("reason"),
             "summary": h.get::<Value, _>("summary"),
             "at": h.get::<chrono::DateTime<chrono::Utc>, _>("at"),
+        })).collect::<Vec<_>>(),
+        "utterances": utterances.iter().map(|u| serde_json::json!({
+            "id": u.get::<i64, _>("id"),
+            "heard": u.get::<String, _>("heard"),
+            "at": u.get::<chrono::DateTime<chrono::Utc>, _>("at"),
         })).collect::<Vec<_>>(),
     })))
 }

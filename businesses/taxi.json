@@ -261,11 +261,24 @@
       "When the caller gives several details at once, take them all and ask only for what is still missing.",
       "A ride booked earlier in this call can be checked or cancelled with the matching task."
     ],
+    "prompt": {
+      "role": "dispatcher",
+      "next_question": "\"כמה נוסעים?\"",
+      "place": "\"דיזנגוף 50, תל אביב\"",
+      "not_a_place": "\"לשים מונית\" has no destination",
+      "garbled": "\"...רוצה ... מונית\" is enough to start a booking",
+      "stuck": "\"כמה אנשים נוסעים, למשל שניים?\"",
+      "address_forms": {
+        "neutral": "Speak gender-neutral Hebrew: impersonal questions (\"לאן נוסעים?\", \"מאיפה לאסוף?\", \"כמה נוסעים?\", \"לשלוח עכשיו?\", \"אפשר להמשיך?\"); no אתה/את, no second-person verbs (תרצה, תגיד) and no לך/אליך/אותך/שלך. Never ask whether the caller is a man or a woman.",
+        "masculine": "When a sentence needs it, address him in masculine (\"אתה רוצה שאשלח עכשיו?\", \"מאיפה תרצה שאאסוף אותך?\").",
+        "feminine": "When a sentence needs it, address her in feminine (\"את רוצה שאשלח עכשיו?\", \"מאיפה תרצי שאאסוף אותך?\")."
+      }
+    },
     "thinking_filler": "filler_hmm",
     "phrases": [
       "ack", "anything_else", "goodbye", "ask_change", "go_back", "fallback_1", "still_there",
       "ask_pickup", "ask_destination", "ask_passengers", "ask_item", "ask_ride_time", "small_talk_answer",
-      "small_talk_short", "ask_pickup_city", "ask_pickup_street", "ask_destination_city", "ask_destination_street", "ask_again_street", "ask_name", "ask_notes",
+      "small_talk_short", "ask_pickup_city", "ask_pickup_street", "ask_destination_city", "ask_destination_street", "ask_again_street", "ask_place_address", "ask_name", "ask_notes",
       "filler_checking", "invoice_answer", "hours_answer", "cancel_declined"
     ]
   },
@@ -308,6 +321,7 @@
       "filler": "filler_searching",
       "on_success": "ride_booked",
       "on_failure": "ride_failed",
+      "on_unknown": "ride_unconfirmed",
       "after": "continue"
     },
     "ride_status": {
@@ -422,6 +436,7 @@
     "still_there": { "variants": ["הלו, שומעים אותי?"] },
 
     "fallback_1": { "variants": ["רק כדי שלא תהיה טעות, אפשר להגיד שוב?"] },
+    "ask_place_address": { "variants": ["יש כתובת של המקום?"] },
     "ask_again_street": { "variants": ["רק כדי שלא תהיה טעות, מה שם הרחוב?", "רק לוודא שאין טעות, איזה רחוב?"] },
     "fallback_2": { "variants": ["להזמין מונית, לבדוק נסיעה קיימת, או משהו אחר?"] },
     "fallback_restart": { "variants": ["סליחה, הקו קצת לא ברור. אפשר להגיד שוב, לאט?"], "delivery": "calm" },
@@ -462,6 +477,7 @@
       "delivery": "important"
     },
     "ride_failed": { "variants": ["אוי, כרגע אין נהג פנוי באזור."], "delivery": "calm" },
+    "ride_unconfirmed": { "variants": ["רגע, אני מעביר למוקדן שיוודא שההזמנה נקלטה."], "delivery": "calm" },
     "ride_status_answer": {
       "variants": ["{status}."],
       "params": {

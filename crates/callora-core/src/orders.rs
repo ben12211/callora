@@ -9,16 +9,22 @@ use crate::business::Business;
 use crate::state::CallState;
 use crate::values::SlotValue;
 
-/// One card per task completed successfully in the call, in the order they were done.
+/// One card per task completed in the call, in the order they were done: the successful
+/// ones, and those whose outcome is unknown (the backend timed out after the request was
+/// sent), marked to be checked.
 pub fn order_cards(b: &Business, state: &CallState) -> Vec<Value> {
     state
         .completed
         .iter()
-        .filter(|run| run.outcome == "success")
+        .filter(|run| run.outcome == "success" || run.outcome == "unknown")
         .filter_map(|run| {
             let pipeline = b.pipeline(&run.pipeline)?;
+            let verify = run.outcome == "unknown";
             let mut details = Vec::new();
             let mut line = vec![pipeline.description.clone()];
+            if verify {
+                line.insert(0, "לבדוק: לא ידוע אם נקלט".to_string());
+            }
             if let Some(phone) = &state.caller_phone {
                 line.push(format!("טלפון: {phone}"));
             }
@@ -43,6 +49,7 @@ pub fn order_cards(b: &Business, state: &CallState) -> Vec<Value> {
                 "phone": state.caller_phone,
                 "details": details,
                 "result": run.result,
+                "verify": verify,
                 "summary": line.join(" | "),
             }))
         })

@@ -34,6 +34,49 @@ pub enum Directive {
     Hangup,
 }
 
+/// Why a business action returned no result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionFailure {
+    pub error: String,
+    /// The request may have reached the business before it failed (a timeout after it was
+    /// sent): the task may well have gone through, so it is neither reported as failed nor
+    /// sent again blindly.
+    #[serde(default)]
+    pub outcome_unknown: bool,
+}
+
+impl ActionFailure {
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self { error: error.into(), outcome_unknown: false }
+    }
+
+    pub fn unknown(error: impl Into<String>) -> Self {
+        Self { error: error.into(), outcome_unknown: true }
+    }
+}
+
+impl From<String> for ActionFailure {
+    fn from(error: String) -> Self {
+        Self::failed(error)
+    }
+}
+
+impl From<&str> for ActionFailure {
+    fn from(error: &str) -> Self {
+        Self::failed(error)
+    }
+}
+
+impl std::fmt::Display for ActionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.error)?;
+        if self.outcome_unknown {
+            f.write_str(" (outcome unknown)")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandoffSummary {
     pub reason: String,
@@ -189,6 +232,30 @@ impl Engine {
         self.finish(out)
     }
 
+    /// Utterances with one certain meaning skip the agent: "רגע", "מה?", "לא שמעתי", and a
+    /// plain yes to a read-back (so a booking goes out the moment the caller confirms it).
+    /// They go to [`Engine::on_utterance`] instead.
+    pub fn fast_lane(&self, u: &Understanding, needs_llm: bool) -> bool {
+        if needs_llm || u.intent.is_some() || !u.slots.is_empty() {
+            return false;
+        }
+        match u.meta {
+            Some(m) => matches!(
+                m,
+                MetaIntent::Wait
+                    | MetaIntent::RepeatLast
+                    | MetaIntent::DidNotUnderstand
+                    | MetaIntent::SpeakSlower
+                    | MetaIntent::SpeakLouder
+            ),
+            None => {
+                u.affirm == Some(true)
+                    && u.coverage >= 0.99
+                    && self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation)
+            }
+        }
+    }
+
     /// Say the last reply again, e.g. after line noise cut it off.
     pub fn replay_last(&mut self) -> Vec<Directive> {
         let mut out = Out::default();
@@ -200,8 +267,9 @@ impl Engine {
         self.finish(out)
     }
 
-    /// A decision of the LLM agent for the caller's last utterance. `spoken` is the part of
-    /// its `say` the runtime already played while the decision streamed in.
+    /// A decision of the LLM agent for the caller's last utterance. `spoken` is what the
+    /// runtime already played of it (its phrase and sentences of its `say`) while the
+    /// decision streamed in.
     ///
     /// The agent chooses; the engine enforces: values go through the typed parsers, a task
     /// runs only after its read-back was confirmed, and the call ends only on a goodbye.
@@ -227,7 +295,7 @@ impl Engine {
         // The task.
         if let Some(intent) = turn.task.as_deref().and_then(|t| self.business.intent(t)).cloned() {
             if intent.handoff {
-                self.agent_say(&mut out, &turn.say, spoken);
+                self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken);
                 self.handoff(&mut out, &format!("intent:{}", intent.id));
                 return self.finish(out);
             }
@@ -255,7 +323,7 @@ impl Engine {
         // ("יש משהו שהנהג צריך לדעת?"), when the agent skipped it.
         if matches!(action, AgentAction::ReadBack | AgentAction::Submit) && !was_confirming && rejected.is_empty() {
             if let Some(slot) = self.unasked_before_confirm() {
-                self.agent_say(&mut out, "", spoken);
+                self.agent_say(&mut out, None, "", spoken);
                 self.state.asked_before_confirm.insert(slot.clone());
                 if !spoken.trim_end().ends_with('?') {
                     self.ask(&mut out, &slot, false);
@@ -270,7 +338,7 @@ impl Engine {
         {
             if let Some(slot) = rejected.first().cloned() {
                 // The agent's "סגור." was for a read-back that is not coming.
-                self.agent_say(&mut out, "", spoken);
+                self.agent_say(&mut out, None, "", spoken);
                 if !spoken.trim_end().ends_with('?') {
                     // "רק כדי שלא תהיה טעות, כמה נוסעים? במונית עד עשרים."
                     let again = format!("ask_again_{slot}");
@@ -286,17 +354,17 @@ impl Engine {
         }
 
         match action {
-            AgentAction::None => self.agent_say(&mut out, &turn.say, spoken),
+            AgentAction::None => self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken),
             AgentAction::Transfer => {
-                self.agent_say(&mut out, &turn.say, spoken);
+                self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken);
                 self.handoff(&mut out, "caller_requested");
             }
             AgentAction::EndCall => {
                 if self.caller_said_goodbye(transcript) {
-                    if spoken.is_empty() && turn.say.is_empty() {
+                    if spoken.is_empty() && turn.say.is_empty() && turn.phrase.is_none() {
                         self.goodbye(&mut out);
                     } else {
-                        self.agent_say(&mut out, &turn.say, spoken);
+                        self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken);
                         self.state.phase = Phase::Ending;
                         out.push(Directive::Hangup);
                     }
@@ -304,7 +372,7 @@ impl Engine {
                     // Its goodbye was held back ("תודה, יום טוב!" to a rude remark, in a live
                     // call): go on with the call instead of saying it.
                     tracing::info!(transcript, "agent wanted to end the call without a goodbye; kept it open");
-                    self.agent_say(&mut out, "", spoken);
+                    self.agent_say(&mut out, None, "", spoken);
                     if self.state.run.is_some() {
                         self.read_back(&mut out, true);
                     } else {
@@ -345,14 +413,12 @@ impl Engine {
                 // And on a submit whose action says its own filler ("רגע, בודק"), the agent's
                 // "שנייה, אני בודק" would be said twice.
                 let action_fills = self.state.run.as_ref().is_some_and(|r| self.pipeline_of(r).filler.is_some());
-                let say = if (action == AgentAction::ReadBack && (turn.say.trim_end().ends_with('?') || read_back_acks))
-                    || (action == AgentAction::Submit && action_fills)
-                {
-                    ""
-                } else {
-                    turn.say.as_str()
-                };
-                self.agent_say(&mut out, say, spoken);
+                let asks =
+                    turn.say.trim_end().ends_with('?') || turn.phrase.as_deref().is_some_and(|p| self.phrase_asks(p));
+                let quiet = (action == AgentAction::ReadBack && (asks || read_back_acks))
+                    || (action == AgentAction::Submit && action_fills);
+                let (phrase, say) = if quiet { (None, "") } else { (turn.phrase.as_deref(), turn.say.as_str()) };
+                self.agent_say(&mut out, phrase, say, spoken);
                 if confirmed_now {
                     if let Some(run) = &mut self.state.run {
                         run.confirmed = true;
@@ -365,7 +431,8 @@ impl Engine {
                 } else {
                     // A submit without a confirmed read-back becomes the read-back. When a
                     // detail is still missing, ask for it unless the agent just asked something.
-                    let asked = format!("{spoken} {say}").trim_end().ends_with('?');
+                    let asked = format!("{spoken} {say}").trim_end().ends_with('?')
+                        || (say.is_empty() && phrase.is_some_and(|p| self.phrase_asks(p)));
                     self.read_back(&mut out, !asked);
                 }
             }
@@ -379,21 +446,53 @@ impl Engine {
         self.finish(out)
     }
 
-    /// Speak the agent's words (or only record them when the runtime already played them).
-    fn agent_say(&mut self, out: &mut Out, say: &str, spoken: &str) {
+    /// Speak the agent's words: its recorded phrase, then its `say`. When the runtime
+    /// already played them, only record what was played, as "the last thing said" for
+    /// repeats and context.
+    fn agent_say(&mut self, out: &mut Out, phrase: Option<&str>, say: &str, spoken: &str) {
         let delivery = self.state.delivery.clone().unwrap_or_else(|| "normal".into());
         if !spoken.is_empty() {
-            // Played already; keep it as "the last thing said" for repeats and context.
-            let plan = SpeechPlan::free(say, &delivery, self.state.gain_db);
+            let plan = SpeechPlan::free(spoken, &delivery, self.state.gain_db);
             out.recorded = Some(match out.recorded.take() {
                 Some(r) => r.then(plan),
                 None => plan,
             });
             return;
         }
+        if let Some(plan) = phrase.and_then(|p| self.render_response(p)) {
+            out.speak(plan, true);
+        }
         if !say.trim().is_empty() {
             out.speak(SpeechPlan::free(say, &delivery, self.state.gain_db), true);
         }
+    }
+
+    /// The response that asks for the street of a place slot: `<its ask>_street`
+    /// ("ask_destination_street").
+    fn street_question(&self, slot: &str) -> String {
+        let ask =
+            self.state.run.as_ref().and_then(|r| {
+                self.pipeline_of(r).slots.iter().find(|ps| ps.slot == slot).and_then(|ps| ps.ask.clone())
+            });
+        format!("{}_street", ask.unwrap_or_default())
+    }
+
+    /// How a note to the agent names one of the business's responses: by phrase id when it
+    /// is one of the agent's recorded phrases, else by its wording; nothing when it has none.
+    fn said_as(&self, response_id: &str) -> String {
+        if crate::agent::phrase_ids(&self.business).contains(&response_id) {
+            return format!(" (phrase {response_id})");
+        }
+        self.business
+            .response(response_id)
+            .and_then(|r| r.variants.first())
+            .map(|v| format!(" (\"{v}\")"))
+            .unwrap_or_default()
+    }
+
+    /// The recorded phrase is a question ("לאיזה רחוב?").
+    fn phrase_asks(&self, id: &str) -> bool {
+        self.business.response(id).and_then(|r| r.variants.first()).is_some_and(|v| v.trim_end().ends_with('?'))
     }
 
     /// Values the agent heard, through the same parsers as the fast path. Returns whether
@@ -560,9 +659,10 @@ impl Engine {
                     && a.street.is_none()
                     && self.state.place_cities.get(slot) != Some(&a.city_said) =>
             {
+                let ask = self.said_as(&self.street_question(slot));
                 notes.push(format!(
-"{slot} city {} is noted; now ask for the street there, once (\"לאיזה רחוב?\"); if the caller does \
-                     not know, pass the city again",
+                    "{slot} city {} is noted; now ask for the street there, once{ask}; if the caller does not know, \
+                     pass the city again",
                     a.city_said
                 ));
                 self.state.place_cities.insert(slot.to_string(), a.city_said);
@@ -600,12 +700,14 @@ impl Engine {
                     String::new()
                 } else {
                     format!(
-                        " (the closest streets there: {}; if one sounds like it, ask \"לרחוב X התכוונת?\")",
+                        " (the closest streets there: {}; if one sounds like it, ask whether the caller meant it)",
                         closest.join(", ")
                     )
                 };
+                let again = self.said_as("ask_again_street");
                 notes.push(format!(
-                    "{slot}: {city} has no street \"{heard}\"; it was not accepted, probably misheard. Ask for the street again (\"רק כדי שלא תהיה טעות, מה שם הרחוב?\"){hint}"
+                    "{slot}: {city} has no street \"{heard}\"; it was not accepted, probably misheard. Ask for the \
+                     street again{again}{hint}"
                 ));
                 self.state.place_cities.insert(slot.to_string(), city);
                 rejected.push(slot.to_string());
@@ -617,11 +719,15 @@ impl Engine {
                 let hint = if closest.is_empty() {
                     String::new()
                 } else {
-                    format!(" (close names there: {}; if one sounds like it, ask \"ל-X התכוונת?\")", closest.join(", "))
+                    format!(
+                        " (close names there: {}; if one sounds like it, ask whether the caller meant it)",
+                        closest.join(", ")
+                    )
                 };
                 notes.push(format!(
-                    "{slot}: \"{heard}\" is not a street or a known place in {city}{hint}. Ask for its address \
-                     (\"יש כתובת של המקום?\"); if the caller does not know it, pass the place again as they said it"
+                    "{slot}: \"{heard}\" is not a street or a known place in {city}{hint}. Ask for its address{}; if \
+                     the caller does not know it, pass the place again as they said it",
+                    self.said_as("ask_place_address")
                 ));
                 self.state.place_cities.insert(slot.to_string(), city);
                 rejected.push(slot.to_string());
@@ -1057,7 +1163,7 @@ impl Engine {
             }
             let run_id = self.state.next_action_run;
             self.state.next_action_run += 1;
-            let input = self.action_input();
+            let input = self.action_input(run_id);
             if let Some(run) = &mut self.state.run {
                 run.step = Step::Executing { action_run: run_id };
                 run.attempts = 1;
@@ -1101,11 +1207,14 @@ impl Engine {
         run
     }
 
-    fn action_input(&self) -> serde_json::Value {
+    /// What a business action receives. `run_id` is the same on every attempt of one run, so
+    /// the backend can tell a retry from a new request (see the idempotency key).
+    fn action_input(&self, run_id: u64) -> serde_json::Value {
         let Some(run) = &self.state.run else { return json!({}) };
         let slots: serde_json::Map<String, serde_json::Value> =
             run.slots.iter().map(|(k, v)| (k.clone(), v.value.to_action_json())).collect();
         json!({
+            "run_id": run_id,
             "pipeline": run.pipeline,
             "intent": run.intent,
             "slots": slots,
@@ -1115,7 +1224,11 @@ impl Engine {
     }
 
     /// Result of a [`Directive::RunAction`].
-    pub fn on_action_result(&mut self, run_id: u64, result: Result<serde_json::Value, String>) -> Vec<Directive> {
+    pub fn on_action_result(
+        &mut self,
+        run_id: u64,
+        result: Result<serde_json::Value, ActionFailure>,
+    ) -> Vec<Directive> {
         let mut out = Out::default();
         let current = self.state.run.as_ref().map(|r| r.step.clone());
         if current != Some(Step::Executing { action_run: run_id }) {
@@ -1135,17 +1248,36 @@ impl Engine {
                 }
                 self.finish_run(&mut out, "success", Some(value));
             }
-            Err(error) => {
-                tracing::warn!(action = %action_id, %error, "business action failed");
+            Err(failure) => {
+                tracing::warn!(action = %action_id, %failure, "business action failed");
                 let attempts = run.attempts;
+                // A retry carries the same run id, so a backend that honours the idempotency
+                // key does the task once even when the first attempt went through.
                 if attempts < max_attempts {
-                    let input = self.action_input();
+                    let input = self.action_input(run_id);
                     if let Some(run) = &mut self.state.run {
                         run.attempts += 1;
                     }
                     out.push(Directive::RunAction { run_id, action: action_id, input });
                     return self.finish(out);
                 }
+                if failure.outcome_unknown {
+                    // The ride may be on its way: never "no driver available" for it. A person
+                    // checks, with the details in the handoff summary.
+                    if let Some(r) = &pipeline.on_unknown {
+                        let ctx = self.render_ctx(None);
+                        self.say(&mut out, r, ctx, true);
+                    }
+                    let result = json!({ "error": failure.error, "outcome_unknown": true, "run_id": run_id });
+                    if self.business.handoff_number.is_some() {
+                        self.handoff(&mut out, "action_outcome_unknown");
+                        self.close_run("unknown", Some(result));
+                    } else {
+                        self.finish_run(&mut out, "unknown", Some(result));
+                    }
+                    return self.finish(out);
+                }
+                let error = failure.error;
                 self.state.action_failures += 1;
                 if let Some(r) = &pipeline.on_failure {
                     let ctx = self.render_ctx(None);
@@ -1362,6 +1494,17 @@ impl Engine {
         let r = self.business.config.anything_else.clone();
         self.say(out, &r, ctx, true);
         self.offered_more = true;
+    }
+
+    /// Record the current run as done, saying nothing (the call is being handed off).
+    fn close_run(&mut self, outcome: &str, result: Option<serde_json::Value>) {
+        let Some(run) = self.state.run.take() else { return };
+        self.state.completed.push(CompletedRun {
+            pipeline: run.pipeline.clone(),
+            outcome: outcome.to_string(),
+            slots: run.slots.iter().map(|(k, v)| (k.clone(), v.value.clone())).collect(),
+            result,
+        });
     }
 
     fn finish_run(&mut self, out: &mut Out, outcome: &str, result: Option<serde_json::Value>) {
