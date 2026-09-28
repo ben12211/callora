@@ -44,10 +44,12 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?TWILIO_ACCOUNT_SID is required}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
       STREAM_TOKEN_SECRET: ${STREAM_TOKEN_SECRET:-}
-      # Speech: ElevenLabs Scribe hears (Cartesia with STT_PROVIDER=cartesia), ElevenLabs
-      # speaks (library + dynamic), the LLMs only help understanding. Each one missing
-      # degrades the service instead of stopping it.
+      # Speech: Deepgram Nova-3 hears (Scribe or Cartesia with STT_PROVIDER=scribe|cartesia),
+      # ElevenLabs speaks (library + dynamic), the LLMs only help understanding. Each one
+      # missing degrades the service instead of stopping it.
       STT_PROVIDER: ${STT_PROVIDER:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      DEEPGRAM_STT_MODEL: ${DEEPGRAM_STT_MODEL:-}
       CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
       CARTESIA_STT_MODEL: ${CARTESIA_STT_MODEL:-}
       CARTESIA_VERSION: ${CARTESIA_VERSION:-}

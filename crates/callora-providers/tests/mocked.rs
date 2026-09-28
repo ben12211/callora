@@ -1,5 +1,6 @@
-//! Providers against local mock servers: the OpenAI-compatible understanding path and the
-//! ElevenLabs voice-library build, end to end, without network access or keys.
+//! Providers against local mock servers: the OpenAI-compatible understanding path, the
+//! ElevenLabs voice-library build and Deepgram's streaming recognition, end to end, without
+//! network access or keys.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -8,9 +9,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Path, State};
-use axum::routing::post;
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, RawQuery, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use bytes::Bytes;
 use serde_json::{json, Value};
 
 use callora_audio::library::{LibraryBuilder, VoiceLibrary};
@@ -21,9 +26,10 @@ use callora_core::llm::{build_request, parse_response};
 use callora_core::render::library_entries;
 use callora_core::understanding::{fast_path, merge};
 use callora_core::values::SlotValue;
+use callora_providers::deepgram::Deepgram;
 use callora_providers::elevenlabs::ElevenLabs;
 use callora_providers::openai::OpenAi;
-use callora_runtime::ports::LanguageModel;
+use callora_runtime::ports::{LanguageModel, SpeechToText, SttEvent, SttInput, SttSession};
 
 const TAXI: &str = include_str!("../../../businesses/taxi.json");
 
@@ -177,4 +183,67 @@ async fn voice_library_builds_incrementally_and_loads() {
     );
     assert!(VoiceLibrary::load(&dir, &other).unwrap().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Deepgram's side of a session: an interim result per audio frame, and on `Finalize` the
+/// utterance in two finals, the second marked `from_finalize`.
+async fn deepgram_listen(ws: WebSocketUpgrade, headers: HeaderMap, RawQuery(query): RawQuery) -> Response {
+    let query = query.unwrap_or_default();
+    let authorized = headers.get("authorization").and_then(|v| v.to_str().ok()) == Some("Token dg-key");
+    let configured = ["model=nova-3", "language=he", "encoding=mulaw", "sample_rate=8000", "endpointing=false"]
+        .iter()
+        .all(|p| query.contains(p));
+    if !authorized || !configured {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    ws.on_upgrade(deepgram_session)
+}
+
+async fn deepgram_session(mut socket: WebSocket) {
+    let result = |text: &str, is_final: bool, from_finalize: bool| {
+        WsMessage::Text(
+            json!({"type": "Results", "is_final": is_final, "from_finalize": from_finalize,
+                   "channel": {"alternatives": [{"transcript": text}]}})
+            .to_string()
+            .into(),
+        )
+    };
+    while let Some(Ok(msg)) = socket.recv().await {
+        let replies = match msg {
+            WsMessage::Binary(_) => vec![result("צריך", false, false)],
+            WsMessage::Text(t) if t.as_str().contains("CloseStream") => break,
+            WsMessage::Text(t) if t.as_str().contains("Finalize") => {
+                vec![result("צריך מונית", true, false), result("לתל אביב", true, true)]
+            }
+            _ => Vec::new(),
+        };
+        for reply in replies {
+            if socket.send(reply).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+async fn next_event(session: &mut SttSession) -> SttEvent {
+    tokio::time::timeout(std::time::Duration::from_secs(5), session.events.recv()).await.unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn deepgram_hears_one_utterance_per_finalize() {
+    let addr = serve(Router::new().route("/v1/listen", get(deepgram_listen))).await;
+    let deepgram = Deepgram::new("dg-key".into(), Some(format!("ws://{addr}")), None);
+    let mut session = deepgram.open("he-IL", &["תל אביב".to_string()]).await.unwrap();
+
+    session.input.send(SttInput::Audio(Bytes::from_static(&[0xff; 160]))).await.unwrap();
+    assert_eq!(next_event(&mut session).await, SttEvent::Partial("צריך".into()));
+
+    session.input.send(SttInput::Finalize).await.unwrap();
+    assert_eq!(next_event(&mut session).await, SttEvent::Final("צריך מונית לתל אביב".into()));
+
+    session.input.send(SttInput::Close).await.unwrap();
+    assert_eq!(next_event(&mut session).await, SttEvent::Closed);
+
+    let stranger = Deepgram::new("another-key".into(), Some(format!("ws://{addr}")), None);
+    assert!(stranger.open("he-IL", &[]).await.is_err(), "a refused handshake is an error, not a silent session");
 }

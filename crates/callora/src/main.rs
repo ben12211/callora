@@ -17,6 +17,7 @@ use callora_core::render::library_entries;
 use callora_core::understanding::{fast_path, merge};
 use callora_providers::{
     cartesia::Cartesia,
+    deepgram::Deepgram,
     elevenlabs::ElevenLabs,
     openai::OpenAi,
     race::{FirstAnswer, Hedged},
@@ -232,8 +233,14 @@ fn load_gazetteer() -> Option<Arc<callora_core::gazetteer::Gazetteer>> {
     (!g.is_empty()).then(|| Arc::new(g))
 }
 
-/// Speech recognition: Scribe (ElevenLabs) unless STT_PROVIDER=cartesia; either needs its key.
+/// Speech recognition: Deepgram Nova-3 unless STT_PROVIDER names Scribe (ElevenLabs) or
+/// Cartesia. Each needs its key; without the chosen one's, the next one with a key hears.
 fn speech_to_text() -> Arc<dyn SpeechToText> {
+    let deepgram = || {
+        env("DEEPGRAM_API_KEY").map(|key| {
+            Arc::new(Deepgram::new(key, env("DEEPGRAM_STT_URL"), env("DEEPGRAM_STT_MODEL"))) as Arc<dyn SpeechToText>
+        })
+    };
     let scribe = || {
         env("ELEVENLABS_API_KEY").map(|key| {
             Arc::new(Scribe::new(key, env("ELEVENLABS_STT_URL"), env("ELEVENLABS_STT_MODEL"))) as Arc<dyn SpeechToText>
@@ -246,12 +253,13 @@ fn speech_to_text() -> Arc<dyn SpeechToText> {
         })
     };
     let chosen = match env("STT_PROVIDER").as_deref() {
-        Some("cartesia") => cartesia().or_else(scribe),
-        _ => scribe().or_else(cartesia),
+        Some("cartesia") => cartesia().or_else(deepgram).or_else(scribe),
+        Some("scribe") => scribe().or_else(deepgram).or_else(cartesia),
+        _ => deepgram().or_else(scribe).or_else(cartesia),
     };
     chosen.unwrap_or_else(|| {
         tracing::error!(
-            "neither ELEVENLABS_API_KEY nor CARTESIA_API_KEY is set: calls cannot be understood and will be handed off"
+            "none of DEEPGRAM_API_KEY, ELEVENLABS_API_KEY or CARTESIA_API_KEY is set: calls cannot be understood and will be handed off"
         );
         Arc::new(NoStt)
     })

@@ -2,6 +2,7 @@
 //! `callora-audio` for TTS), so the runtime never depends on a specific vendor.
 
 pub mod cartesia;
+pub mod deepgram;
 pub mod elevenlabs;
 pub mod openai;
 pub mod race;

@@ -275,7 +275,7 @@ impl Session {
     // Recognition hints
 
     /// Recognition hints: the city's streets when the call waits for one, then the business's
-    /// own words (the recognizer keeps the first 50).
+    /// own words (the recognizer keeps as many from the front as it takes).
     pub(super) fn stt_keyterms(&self, city: Option<&str>) -> Vec<String> {
         let mut terms = Vec::new();
         if let (Some(city), Some(g)) = (city, &self.services.gazetteer) {

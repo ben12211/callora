@@ -19,8 +19,9 @@ secrets already configured in GitHub keep working.
 | `TWILIO_ACCOUNT_SID` | yes | Twilio REST: hang up, transfer to a human. *legacy* |
 | `TWILIO_AUTH_TOKEN` | yes | Validates every Twilio webhook signature; signs media-stream tokens when `STREAM_TOKEN_SECRET` is unset. *legacy* |
 | `STREAM_TOKEN_SECRET` | recommended | Separate key for media-stream tokens (≥16 chars), so rotating the Twilio token does not change it. *legacy name* |
-| `CARTESIA_API_KEY` | optional | Backup speech-to-text (Cartesia `ink-whisper`), used with `STT_PROVIDER=cartesia` or when there is no ElevenLabs key. *legacy* |
-| `ELEVENLABS_API_KEY` | yes | Speech-to-text (Scribe v2 Realtime), voice library generation and dynamic TTS. Without it calls cannot be understood. *legacy* |
+| `DEEPGRAM_API_KEY` | yes | Speech-to-text (Deepgram Nova-3, Hebrew). Without it recognition falls back to Scribe, then Cartesia. |
+| `CARTESIA_API_KEY` | optional | Backup speech-to-text (Cartesia `ink-whisper`), used with `STT_PROVIDER=cartesia` or when neither Deepgram nor ElevenLabs has a key. *legacy* |
+| `ELEVENLABS_API_KEY` | yes | Voice library generation and dynamic TTS, and speech-to-text (Scribe v2 Realtime) with `STT_PROVIDER=scribe` or when there is no Deepgram key. *legacy* |
 | `ELEVENLABS_VOICE_ID` | yes for audio | The business voice (also accepted as a Variable, which is preferred). |
 | `OPENAI_API_KEY` | yes | The agent's backup model (`gpt-6-luna`), OpenAI agent models, and understanding for businesses without an agent. *legacy* |
 | `GEMINI_API_KEY` | yes | The conversation agent (default `gemini-3.8-flash`). A free-tier key is rate limited to a few requests a minute: use a paid one. Also understanding for businesses without an agent. |
@@ -49,7 +50,7 @@ secrets already configured in GitHub keep working.
 | `TEXT_LLM_MODEL` | optional | OpenAI-side model for understanding without an agent (default `gpt-4o-mini`). *legacy* |
 | `GEMINI_MODEL` | optional | Gemini model for understanding (default `gemini-3.8-flash`). |
 | `TEXT_LLM_REASONING_EFFORT` | optional | Gemini thinking level, sent as `reasoning_effort` (default `low`; `gemini-3.8-flash` rejects `minimal`). |
-| `STT_PROVIDER` | optional | `scribe` (default) or `cartesia`. |
+| `STT_PROVIDER` | optional | `deepgram` (default), `scribe` or `cartesia`. |
 | `TAXI_PHONE_NUMBERS`, `TAXI_HANDOFF_NUMBER` | see above | May be Variables instead of Secrets. |
 
 ## Host-only settings (`/opt/callora/.env` on the VM, never sent by the pipeline)
@@ -66,7 +67,7 @@ generated on the VM and never leaves it, and `PUBLIC_BASE_URL` comes from the Va
 `RUST_LOG`, `LOG_FORMAT`, `HOST`, `PORT`, `BUSINESS_CONFIG_DIR`, `AUDIO_LIBRARY_DIR`,
 `TRANSCRIPT_RETENTION_DAYS` (*legacy*), `TTS_CACHE_ENTRIES`, `VAD_TRIGGER_MS`,
 `VAD_ENDPOINT_MS`, `ELEVENLABS_API_BASE_URL` (*legacy*), `ELEVENLABS_LIBRARY_MODEL`,
-`CARTESIA_STT_URL`, `CARTESIA_STT_MODEL` (*legacy*), `CARTESIA_VERSION` (*legacy*),
+`DEEPGRAM_STT_URL`, `DEEPGRAM_STT_MODEL` (default `nova-3`), `CARTESIA_STT_URL`, `CARTESIA_STT_MODEL` (*legacy*), `CARTESIA_VERSION` (*legacy*),
 `TEXT_LLM_BASE_URL` (*legacy*), `TWILIO_SKIP_SIGNATURE_VALIDATION` (local development only).
 
 ## Retired with the legacy implementation

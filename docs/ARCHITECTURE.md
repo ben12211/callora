@@ -140,7 +140,9 @@ and merges its answer with the rules'.
 - **Dynamic TTS** (ElevenLabs, `ulaw_8000`) streams into playout; a long sentence is split
   into short pieces synthesized side by side; finished syntheses go into an LRU cache. A
   reply that opens with live TTS starts with a recorded cover ("אממ, כן.").
-- **Speech recognition**: ElevenLabs Scribe (realtime), Cartesia as the backup. Its
+- **Speech recognition**: Deepgram Nova-3 in Hebrew (`STT_PROVIDER=scribe` for ElevenLabs
+  Scribe, `cartesia` for Cartesia), with the runtime's VAD deciding when an utterance
+  ends (`endpointing=false`, then `Finalize`). Its
   keyterms are biased with the streets of the city the caller is in (a second session
   opens beside the live one and takes over between utterances). A second, slower,
   hinted transcription (`SECOND_HEARING=1`) is off until measured.

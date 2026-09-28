@@ -1,6 +1,6 @@
 [package]
 name = "callora-providers"
-description = "Adapters to external services: ElevenLabs (TTS and Scribe streaming STT), Cartesia (streaming STT), OpenAI-compatible LLMs (structured understanding) and Twilio REST."
+description = "Adapters to external services: Deepgram (Nova-3 streaming STT), ElevenLabs (TTS and Scribe streaming STT), Cartesia (streaming STT), OpenAI-compatible LLMs (structured understanding) and Twilio REST."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

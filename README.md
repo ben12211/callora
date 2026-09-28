@@ -39,8 +39,8 @@ database all live in containers and named volumes. Behind a TLS-inspecting proxy
 git-ignored `docker-compose.local.yml` that mounts your CA into the `toolchain` and `app`
 services (`./dev` picks it up automatically).
 
-To make real calls: copy `.env.example` to `.env`, fill in the Twilio, ElevenLabs and
-OpenAI settings, expose port 3000 over HTTPS (for example with a tunnel), set
+To make real calls: copy `.env.example` to `.env`, fill in the Twilio, Deepgram, ElevenLabs,
+Gemini and OpenAI settings, expose port 3000 over HTTPS (for example with a tunnel), set
 `PUBLIC_BASE_URL` and `TWILIO_SKIP_SIGNATURE_VALIDATION=false`, and point the Twilio
 number's voice webhook at `https://<host>/webhooks/twilio/voice`. Generate the voice
 library once (and again after adding responses):
@@ -69,7 +69,7 @@ should have happened ([`evaluation/README.md`](evaluation/README.md)).
 | `callora-core` | The generic runtime with no I/O: the Business JSON schema and validation, the agent's prompt and reply parsing, the deterministic understanding, explicit call state, the engine (tasks, slots, rules, read-back, fallback, handoff), response planning, Israel's places list, Hebrew numbers and spoken-text normalization |
 | `callora-audio` | μ-law, VAD (barge-in + endpointing), the pre-generated voice library and its builder, the TTS cache, and paced, cancellable playout |
 | `callora-runtime` | Twilio webhooks and the media WebSocket, the per-call actor (`session` with `hearing`, `agent_turn`, `speech`), business actions (with idempotency keys), Postgres call history, metrics, token pricing, and the owner's pages and admin API |
-| `callora-providers` | OpenAI-compatible LLMs (the agent, with streaming and token usage; understanding), ElevenLabs (TTS, Scribe STT), Cartesia (STT), Twilio REST, and the hedge/race between models |
+| `callora-providers` | OpenAI-compatible LLMs (the agent, with streaming and token usage; understanding), Deepgram (Nova-3 STT), ElevenLabs (TTS, Scribe STT), Cartesia (STT), Twilio REST, and the hedge/race between models |
 | `callora` | The binary: `serve`, `migrate`, `healthcheck`, `config validate`, `voice-library build/status`, `simulate`, `understand`, `agent-prompt`, `eval` |
 
 ## Endpoints

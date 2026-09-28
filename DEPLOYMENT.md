@@ -25,7 +25,7 @@ No manual work happens on the VM. The deploy workflow bootstraps it itself, over
 
 1. **Oracle Cloud** (console, not the VM): allow inbound TCP 22, 80 and 443 in the VCN security list or NSG. Keep 3000 and 5432 closed.
 2. **DNS:** point the `PUBLIC_BASE_URL` hostname's A record at the VM.
-3. **GitHub:** create the Secrets and Variables in [SECRETS.md](SECRETS.md). At minimum: `IP`, `USER` (`opc`), `KEY_PEM`, `DOCKER_HUB_TOKEN`, `DOCKER_HUB_USERNAME`, `PUBLIC_BASE_URL`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TAXI_PHONE_NUMBERS`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`. Pinning the host key in `SSH_KNOWN_HOSTS` is recommended.
+3. **GitHub:** create the Secrets and Variables in [SECRETS.md](SECRETS.md). At minimum: `IP`, `USER` (`opc`), `KEY_PEM`, `DOCKER_HUB_TOKEN`, `DOCKER_HUB_USERNAME`, `PUBLIC_BASE_URL`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TAXI_PHONE_NUMBERS`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`. Pinning the host key in `SSH_KNOWN_HOSTS` is recommended.
 4. **Run the workflow.** Push to `main`, or, from **Actions → Callora CI/CD → Run workflow** on `main`:
    - `bootstrap`: prepare and validate the VM only;
    - `deploy`: a full release;
@@ -81,7 +81,7 @@ The workflow sends `NAME=VALUE` lines to `deploy.sh update-secrets` over the SSH
 
 The complete list, names only, is in [SECRETS.md](SECRETS.md). The minimum for a working deployment:
 
-- Secrets: `IP`, `USER`, `KEY_PEM`, `DOCKER_HUB_TOKEN`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, and `TAXI_PHONE_NUMBERS` (Secret or Variable).
+- Secrets: `IP`, `USER`, `KEY_PEM`, `DOCKER_HUB_TOKEN`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, and `TAXI_PHONE_NUMBERS` (Secret or Variable).
 - Variables: `DOCKER_HUB_USERNAME`, `ELEVENLABS_VOICE_ID`.
 - Recommended: `GEMINI_API_KEY` or `OPENAI_API_KEY` (LLM understanding when the rules are unsure; Gemini wins when both are set), `TAXI_HANDOFF_NUMBER` (the human desk), `STREAM_TOKEN_SECRET`.
 

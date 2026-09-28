@@ -15,6 +15,7 @@ fixed questions from the voice library.
 | Item | State |
 | --- | --- |
 | **Measure the new agent model** | The default moved from `gpt-4o` to `gemini-3.8-flash` (thinking `low`, hedged by `gpt-6-luna`) for price. Not yet measured on the eval: no model key in the build environment. Run the **Agent eval** workflow (or `./dev callora eval --model gemini-3.8-flash --model gpt-4o`) and check first-words latency on live calls (`turn timing` in the logs) before relying on it. |
+| **Deepgram Nova-3 hears the caller** | Speech recognition moved from ElevenLabs Scribe to Deepgram Nova-3 (Hebrew, keyterms within its 500-token budget, the runtime's VAD ends each utterance). Tested against its message format, not yet on live calls: listen to the owner's test calls on `/calls` and compare with Scribe (`STT_PROVIDER=scribe` switches back). |
 | Recorded phrases by id | The agent now names a recording (`phrase`) instead of writing its words. Verified in tests with a scripted model; watch the audio-source mix (`callora_audio_segments_total`) on live calls: recorded should rise, live TTS fall. |
 | New voice library clips | `ask_place_address` and `ride_unconfirmed` were added: run `voice-library build` (they play through live TTS until then). |
 | Dispatch backend idempotency | Callora sends the key; whether `TAXI_DISPATCH_URL` honours it is up to that backend. `create_ride` keeps `max_attempts: 1` until it does. |
