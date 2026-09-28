@@ -1592,3 +1592,21 @@ fn a_street_its_city_does_not_have_holds_the_words_before_they_play() {
     assert!(!call.engine.rejects_any("בן זכאי 45", &street("בן זכאי 45, אלעד")));
     assert_eq!(call.slot("pickup"), None, "the check changes nothing");
 }
+
+#[test]
+fn words_that_were_not_made_out_get_the_question_again() {
+    // The owner: not "I didn't hear" or "say it again?", just the question once more.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "מאלעד בן זכאי 45 לירושלים",
+        decide(
+            AgentAction::None,
+            "סגור. כמה נוסעים?",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 45, אלעד"), ("destination", "ירושלים")],
+        ),
+        "",
+    );
+    let said = spoken(&call.engine.on_unheard());
+    assert_eq!(said, "כמה נוסעים?", "the question alone, without the \"סגור.\" before it");
+}

@@ -46,7 +46,8 @@ mod speech;
 const SHORT_GARBAGE_WORDS: usize = 3;
 /// How long an unfinished sentence waits for the caller to go on.
 const UNFINISHED_WAIT: Duration = Duration::from_millis(1200);
-/// After words taken for line noise and nothing more, how long before "say it again?": a
+/// After words taken for line noise and nothing more, how long before the question is asked
+/// again: a
 /// live call waited 11 seconds in silence after its "שלום" (likely "שלוש") was dropped.
 const UNHEARD_WAIT: Duration = Duration::from_millis(2000);
 
@@ -192,7 +193,7 @@ enum Ev {
     },
     /// A hangup or handoff with nothing left to say.
     TerminateNow,
-    /// Words taken for noise, then nothing: ask the caller to say it again.
+    /// Words taken for noise, then nothing: ask the question again.
     Unheard {
         generation: u64,
     },

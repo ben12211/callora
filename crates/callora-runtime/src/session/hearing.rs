@@ -267,7 +267,7 @@ impl Session {
             let directives = self.engine.replay_last();
             self.execute(directives);
         } else {
-            // The silence reprompt as a backstop; "say it again?" first, unless the caller
+            // The silence reprompt as a backstop; the question again first, unless the caller
             // goes on talking.
             self.arm_silence();
             let generation = self.silence_generation;

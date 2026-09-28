@@ -461,7 +461,7 @@ async fn a_reply_that_starts_with_live_tts_opens_with_a_recorded_cover() {
 }
 
 #[tokio::test]
-async fn words_taken_for_noise_are_followed_by_say_it_again_not_a_long_silence() {
+async fn words_taken_for_noise_are_followed_by_the_question_again_not_a_long_silence() {
     // A live call waited 11 seconds after its "שלום" (likely "שלוש") was dropped as noise.
     let h = start_server().await;
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
@@ -475,5 +475,5 @@ async fn words_taken_for_noise_are_followed_by_say_it_again_not_a_long_silence()
     let (frames, _) = collect(&mut ws, Duration::from_millis(1500)).await;
     assert!(frames.is_empty(), "nothing at once: the caller may go on");
     let (frames, _) = collect(&mut ws, Duration::from_millis(1200)).await;
-    assert!(!frames.is_empty(), "then \"say it again?\", well before the 5 s silence reprompt");
+    assert!(!frames.is_empty(), "then the question again, well before the 5 s silence reprompt");
 }

@@ -1497,8 +1497,10 @@ impl Engine {
 
     /// The caller said nothing for the configured silence.
     /// The caller said something that could not be made out (it was taken for line noise)
-    /// and then nothing more: "to avoid a mistake, say it again?" instead of the silence the
-    /// caller would otherwise wait out. The question stays the last thing said, for repeats.
+    /// and then nothing more: the question again ("כמה נוסעים?"), as a person would ask it,
+    /// instead of the silence the caller would otherwise wait out. The owner wanted neither
+    /// "I didn't hear" nor "say it again?". With no question pending, the business's first
+    /// fallback.
     pub fn on_unheard(&mut self) -> Vec<Directive> {
         let mut out = Out::default();
         if self.state.phase != Phase::Active
@@ -1506,9 +1508,24 @@ impl Engine {
         {
             return Vec::new();
         }
-        if let Some(r) = self.business.config.fallback.ladder.first().cloned() {
-            let ctx = self.render_ctx(None);
-            self.say(&mut out, &r, ctx, false);
+        // The question alone: "לאן נוסעים?", not the "סגור." said before it.
+        let question = self.state.last_plan.as_ref().and_then(|p| {
+            let last = p.segments.last().filter(|s| s.text.trim_end().ends_with('?'))?;
+            let text = last.text.trim_end();
+            let start = text[..text.len() - 1].rfind(['.', '!', '?']).map_or(0, |i| i + 1);
+            Some(match text[start..].trim() {
+                tail if start > 0 => SpeechPlan::free(tail, &last.delivery, p.gain_db),
+                _ => SpeechPlan { segments: vec![last.clone()], gain_db: p.gain_db },
+            })
+        });
+        match question {
+            Some(question) => out.speak(question, false),
+            None => {
+                if let Some(r) = self.business.config.fallback.ladder.first().cloned() {
+                    let ctx = self.render_ctx(None);
+                    self.say(&mut out, &r, ctx, false);
+                }
+            }
         }
         self.finish(out)
     }
