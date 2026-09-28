@@ -670,7 +670,8 @@ fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
         "the action, the fields and what the question asks, then the words: all are checked before a word plays"
     );
     // Phrases are offered by id, with their wording, and only those with nothing to fill in.
-    assert!(system.contains("- ask_destination_street: \"לאיזה רחוב צריך להגיע?\""), "{system}");
+    assert!(system.contains("- ask_destination: \"לאן נוסעים?\""), "{system}");
+    assert!(!system.contains("- ask_destination_street:"), "it names the city, so it is no instant phrase: {system}");
     let ids = request.schema["properties"]["phrase"]["enum"].as_array().unwrap();
     assert!(ids.contains(&serde_json::json!("ask_name")) && ids.contains(&serde_json::Value::Null));
     // Nothing of the taxi business is written in the generic prompt: its words come from its file.
@@ -1250,7 +1251,7 @@ fn the_agent_is_told_the_street_question_comes_after_a_city() {
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "ירושלים");
     assert!(
         next.user.contains("NOW: the caller is giving the destination city")
-            && next.user.contains("\"לאיזה רחוב צריך להגיע?\""),
+            && next.user.contains("\"לאן ב<the city>?\""),
         "{}",
         next.user
     );
@@ -1511,7 +1512,7 @@ fn a_question_that_moves_on_past_an_unanswered_one_asks_it_again() {
     );
     let said = spoken(&d);
     assert_eq!(call.slot("passengers").map(|v| v.spoken()).as_deref(), Some("3"), "what they did say is kept");
-    assert!(said.contains("מאיזה רחוב ומספר לאסוף"), "the street again, by its own question: {said}");
+    assert!(said.contains("איפה באלעד לאסוף"), "the street again, by its own question, in its city: {said}");
     assert!(!said.contains("על שם מי"), "not the next question: {said}");
 
     // The street given: the open question is closed and the call goes on.
@@ -1662,4 +1663,40 @@ fn a_street_its_city_lacks_is_read_back_and_taken_when_confirmed() {
         "",
     );
     assert!(place(call.slot("destination")).contains("ארנוביץ 32"), "kept once confirmed");
+}
+
+#[test]
+fn the_street_question_names_the_city_and_a_wrong_city_is_corrected() {
+    // The call of 18:30: "לבני ברק" heard as "לברקת"; "איפה בברקת?" lets the caller hear it.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "6100	בני ברק	301	ז'בוטינסקי	official
+1302	ברקת	9001	הזית	official
+",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "לברקת",
+        asking(&["destination"], decide(AgentAction::None, "", Some("book_ride"), &[("destination", "ברקת")])),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "כמה נוסעים? אנחנו שניים",
+        asking(&["customer_name"], decide(AgentAction::None, "", None, &[("passengers", "2")])),
+        "",
+    );
+    assert!(spoken(&d).contains("לאן בברקת?"), "the destination's street, in the city understood: {}", spoken(&d));
+
+    call.engine.on_agent_turn(
+        "לא ברקת, בני ברק",
+        asking(&["destination"], decide(AgentAction::None, "לאן בבני ברק?", None, &[("destination", "בני ברק")])),
+        "",
+    );
+    assert_eq!(call.engine.state.place_cities.get("destination").map(String::as_str), Some("בני ברק"));
+    call.engine.on_agent_turn(
+        "ז'בוטינסקי 22",
+        asking(&["customer_name"], decide(AgentAction::None, "", None, &[("destination", "ז'בוטינסקי 22")])),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), "ז'בוטינסקי 22, בני ברק");
 }

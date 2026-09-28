@@ -356,7 +356,10 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                 });
                 let street_ask = |ps: &crate::config::PipelineSlot| {
                     let id = format!("{}_street", ps.ask.as_ref()?);
-                    as_phrase(b, &id).or_else(|| b.response(&id)?.variants.first().map(|v| format!("\"{v}\"")))
+                    as_phrase(b, &id).or_else(|| {
+                        let city = state.place_cities.get(&ps.slot).map_or("<the city>", String::as_str);
+                        b.response(&id)?.variants.first().map(|v| format!("\"{}\"", v.replace("{city}", city)))
+                    })
                 };
                 let place_with_street = |ps: &crate::config::PipelineSlot| {
                     b.config.slots.get(&ps.slot).is_some_and(|c| c.precise || c.street_once) && street_ask(ps).is_some()

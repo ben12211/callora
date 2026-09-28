@@ -581,6 +581,16 @@ impl Engine {
         }
     }
 
+    /// A place's city as understood. Another city than before is a correction ("לא ברקת,
+    /// בני ברק"): what was doubted about a street of the other city no longer holds.
+    fn note_city(&mut self, slot: &str, city: String) {
+        if self.state.place_cities.get(slot).is_some_and(|before| *before != city) {
+            self.state.doubted_streets.remove(slot);
+            self.state.doubt_confirm.remove(slot);
+        }
+        self.state.place_cities.insert(slot.to_string(), city);
+    }
+
     /// The response that asks for the city of a place slot: `<its ask>_city`.
     fn city_question(&self, slot: &str) -> String {
         let run = self.state.run.as_ref();
@@ -602,13 +612,18 @@ impl Engine {
     /// How a note to the agent names one of the business's responses: by phrase id when it
     /// is one of the agent's recorded phrases, else by its wording; nothing when it has none.
     fn said_as(&self, response_id: &str) -> String {
+        self.said_as_in(response_id, None)
+    }
+
+    /// The same, with a question about a place in a city worded for that city ("לאן בבני ברק?").
+    fn said_as_in(&self, response_id: &str, city: Option<&str>) -> String {
         if crate::agent::phrase_ids(&self.business).contains(&response_id) {
             return format!(" (phrase {response_id})");
         }
         self.business
             .response(response_id)
             .and_then(|r| r.variants.first())
-            .map(|v| format!(" (\"{v}\")"))
+            .map(|v| format!(" (\"{}\")", v.replace("{city}", city.unwrap_or("<the city>"))))
             .unwrap_or_default()
     }
 
@@ -879,21 +894,22 @@ impl Engine {
                     && a.street.is_none()
                     && self.state.place_cities.get(slot) != Some(&a.city_said) =>
             {
-                let ask = self.said_as(&self.street_question(slot));
+                let ask = self.said_as_in(&self.street_question(slot), Some(&a.city_said));
                 notes.push(format!(
                     "{slot} city {} is noted; now ask for the street there, once{ask}; if the caller does not know, \
                      pass the city again",
                     a.city_said
                 ));
-                self.state.place_cities.insert(slot.to_string(), a.city_said);
+                self.note_city(slot, a.city_said);
                 return None;
             }
             Lookup::Found(a) if precise && a.street.is_none() => {
+                let ask = self.said_as_in(&self.street_question(slot), Some(&a.city_said));
                 notes.push(format!(
-                    "{slot} city {} is noted; now ask for the street and house number (or a landmark) there",
+                    "{slot} city {} is noted; now ask for the street and house number (or a landmark) there{ask}",
                     a.city_said
                 ));
-                self.state.place_cities.insert(slot.to_string(), a.city_said);
+                self.note_city(slot, a.city_said);
                 return None;
             }
             Lookup::Found(a) => {
@@ -1813,7 +1829,11 @@ impl Engine {
                 self.say(out, &ack, ctx, true);
             }
         }
-        let ctx = self.render_ctx(None);
+        // "לאן בבני ברק?": the city as understood, so a misheard one is heard and corrected.
+        let mut ctx = self.render_ctx(None);
+        if let Some(city) = self.state.place_cities.get(slot) {
+            ctx.extra.insert("city".into(), city.clone());
+        }
         self.say(out, &ask, ctx, true);
         self.note_asked(&[slot.to_string()]);
     }
