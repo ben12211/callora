@@ -125,9 +125,10 @@ pub enum Ending {
 
 enum Ev {
     SttReady(anyhow::Result<SttSession>),
-    /// A recognition session biased with a city's streets, opened beside the live one.
+    /// A recognition session biased with a city's streets (or, with no city, with the
+    /// business's words only), opened beside the live one.
     SttFocused {
-        city: String,
+        city: Option<String>,
         result: anyhow::Result<SttSession>,
     },
     /// The second hearing of an utterance (or its failure / timeout).
@@ -284,8 +285,8 @@ pub struct Session {
     last_utterance: Vec<u8>,
     second_pending: Option<(u64, String)>,
     second_ids: u64,
-    stt_opening: Option<String>,
-    stt_next: Option<(String, SttSession)>,
+    stt_opening: Option<Option<String>>,
+    stt_next: Option<(Option<String>, SttSession)>,
     pending_agent: Option<PendingAgent>,
     /// The recognizer's latest partial text for the utterance in progress.
     last_partial: String,
@@ -503,16 +504,23 @@ impl Session {
                 self.start_agent(transcript, false);
             }
             Ev::SttFocused { city, result } => {
-                if self.stt_opening.as_deref() == Some(city.as_str()) {
+                if self.stt_opening.as_ref() == Some(&city) {
                     self.stt_opening = None;
                 }
                 match result {
+                    // The question moved on while it opened: not the session wanted now.
+                    Ok(session) if city != self.engine.street_focus() => {
+                        let _ = session.input.try_send(SttInput::Close);
+                        self.focus_stt();
+                    }
                     Ok(session) => {
-                        self.stt_next = Some((city, session));
+                        if let Some((_, stale)) = self.stt_next.replace((city, session)) {
+                            let _ = stale.input.try_send(SttInput::Close);
+                        }
                         self.swap_stt_if_ready();
                     }
                     Err(error) => {
-                        tracing::warn!(call = %self.info.call_sid, %city, %error, "city recognition hints unavailable")
+                        tracing::warn!(call = %self.info.call_sid, city = ?city, %error, "city recognition hints unavailable")
                     }
                 }
             }

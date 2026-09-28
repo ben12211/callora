@@ -285,5 +285,39 @@
         }
       }
     ]
+  },
+  {
+    "id": "no_pickup_is_guessed_from_two_destinations",
+    "note": "live call CAb65e03 2026-09-28: \"מבן זכאי 45 אלעד לירושלים\" was heard \"לאילת באמת זכאי 45 לירושלים\"; the agent made \"בן זכאי 45, ירושלים\" the pickup and Eilat the destination. With no מ and two ל, the pickup is asked for.",
+    "turns": [
+      {
+        "caller": "היי אני רוצה ונמנית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "asks": [
+            "pickup",
+            "destination"
+          ],
+          "phrase": "ask_route",
+          "say": ""
+        }
+      },
+      {
+        "caller": "אני צריך לאילת באמת זכאי 45 לירושלים",
+        "expect": {
+          "no_fields": [
+            "pickup"
+          ],
+          "missing": [
+            "pickup"
+          ],
+          "says_any": [
+            "מאיפה"
+          ]
+        }
+      }
+    ]
   }
 ]

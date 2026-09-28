@@ -183,6 +183,10 @@ pub struct Lexicon {
     /// Phrases that mean "now" for time slots.
     #[serde(default)]
     pub now: Vec<String>,
+    /// Words of a caller correcting a detail already given ("לא", "טעיתי"): only then does a
+    /// detail change while the question was about another.
+    #[serde(default)]
+    pub correct: Vec<String>,
 }
 
 /// The meta intents the runtime understands. Their *behaviour* is built in; their

@@ -1162,22 +1162,81 @@ fn the_city_waiting_for_its_street_is_the_recognition_focus() {
     assert_eq!(call.engine.street_focus(), None);
     call.engine.on_agent_turn(
         "מאלעד",
-        decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", Some("book_ride"), &[("pickup", "אלעד")]),
+        asking(
+            &["pickup"],
+            decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", Some("book_ride"), &[("pickup", "אלעד")]),
+        ),
         "",
     );
     assert_eq!(call.engine.street_focus().as_deref(), Some("אלעד"));
     call.engine.on_agent_turn(
         "רבי עקיבא 3",
-        decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "רבי עקיבא 3, אלעד")]),
+        asking(
+            &["destination"],
+            decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "רבי עקיבא 3, אלעד")]),
+        ),
         "",
     );
     assert_eq!(call.engine.street_focus(), None);
     call.engine.on_agent_turn(
         "בני ברק",
-        decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", None, &[("destination", "בני ברק")]),
+        asking(
+            &["destination"],
+            decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", None, &[("destination", "בני ברק")]),
+        ),
         "",
     );
     assert_eq!(call.engine.street_focus().as_deref(), Some("בני ברק"));
+    // Once the question is about something else, the streets stop biasing recognition: a
+    // live call heard the caller's name as a street of the city.
+    call.engine.on_agent_turn(
+        "אהרונוביץ 5",
+        asking(
+            &["passengers"],
+            decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "אהרונוביץ 5, בני ברק")]),
+        ),
+        "",
+    );
+    assert_eq!(call.engine.street_focus(), None);
+}
+
+#[test]
+fn an_answer_to_one_question_does_not_change_another_detail() {
+    // The live call: asked for the name, "בן איוב" was heard and passed as the destination.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "מבן זכאי 45 באלעד לירושלים, שניים",
+        asking(
+            &["customer_name"],
+            decide(
+                AgentAction::None,
+                "על שם מי לרשום את ההזמנה?",
+                Some("book_ride"),
+                &[("pickup", "בן זכאי 45, אלעד"), ("destination", "ירושלים"), ("passengers", "2")],
+            ),
+        ),
+        "",
+    );
+    let before = place(call.slot("destination"));
+    call.engine.on_agent_turn(
+        "בן איוב",
+        asking(
+            &["notes"],
+            decide(AgentAction::None, "יש משהו שהנהג צריך לדעת?", None, &[("destination", "בן איוב, ירושלים")]),
+        ),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), before, "the destination stays");
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "בן");
+    assert!(next.user.contains("destination is already"), "the agent is told: {}", next.user);
+
+    // A correction the caller says as one is taken.
+    call.engine.on_agent_turn(
+        "לא, לבני ברק",
+        asking(&["notes"], decide(AgentAction::None, "יש משהו שהנהג צריך לדעת?", None, &[("destination", "בני ברק")])),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), "בני ברק");
 }
 
 #[test]

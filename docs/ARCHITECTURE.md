@@ -119,6 +119,9 @@ and merges its answer with the rules'.
 - **Slot filling** asks only for the next missing required slot and fills defaults and
   customer-known values. An `ask_before_confirm` slot (the note for the driver) is asked
   once before the first read-back.
+- **An answer goes to its question.** A value for a detail already given, passed while
+  the question was about another, is not taken unless the caller is correcting
+  (`lexicon.correct`: "לא", "טעיתי", ...); the agent is told why.
 - **Places** are checked against Israel's localities and streets (`gazetteer.rs`): a city
   alone for a precise slot notes the city and asks for the street; a street the city does
   not have is asked again once; a place that is neither is asked for its address once.
@@ -144,8 +147,11 @@ and merges its answer with the rules'.
 - **Speech recognition**: Deepgram Nova-3 in Hebrew (`STT_PROVIDER=scribe` for ElevenLabs
   Scribe, `cartesia` for Cartesia), with the runtime's VAD deciding when an utterance
   ends (`endpointing=false`, then `Finalize`). Its
-  keyterms are biased with the streets of the city the caller is in (a second session
-  opens beside the live one and takes over between utterances). A second, slower,
+  keyterms are biased with the streets of a city while its street is the question (a
+  second session opens beside the live one and takes over between utterances), and go
+  back to the business's words once the question moves on: left on, a city's streets
+  turned the caller's name into one of them. Keyterms stay within Deepgram's 500-token
+  budget (900 characters); a session refused for them opens without them. A second, slower,
   hinted transcription (`SECOND_HEARING=1`) is off until measured.
 - **Playout** sends 20 ms frames about 60 ms ahead of real time. Cancel drops everything
   and sends Twilio `clear`. Barge-in: energy VAD on the caller's track after ~100 ms.

@@ -157,11 +157,16 @@ impl Engine {
         Self { business, state, chooser: SeededChooser(seed | 1), offered_more: false, gazetteer: None }
     }
 
-    /// The city whose street the call is waiting for ("מאיזו עיר?" "בני ברק" ... "איזה
-    /// רחוב?"), in the task's order: the runtime biases recognition with its streets.
+    /// The city whose street the question just asked for ("מאיזו עיר?" "בני ברק" ... "איזה
+    /// רחוב?"): the runtime biases recognition with its streets. Only while the street is
+    /// asked: kept on, a live call heard the caller's name as a street of that city.
     pub fn street_focus(&self) -> Option<String> {
         let run = self.state.run.as_ref()?;
-        self.pipeline_of(run).slots.iter().find_map(|ps| self.state.place_cities.get(&ps.slot).cloned())
+        self.pipeline_of(run)
+            .slots
+            .iter()
+            .filter(|ps| self.state.last_asks.contains(&ps.slot))
+            .find_map(|ps| self.state.place_cities.get(&ps.slot).cloned())
     }
 
     /// The call is about to hear a place's city ("מאיזו עיר לאסוף?"): the task's next
@@ -214,8 +219,10 @@ impl Engine {
         open.into_iter().next()
     }
 
-    /// Details a question just asked for: each required one stays open until it is given.
+    /// The details the question just asked for: each required one stays open until it is
+    /// given, and the caller's next answer is taken as the answer to it.
     fn note_asked(&mut self, slots: &[String]) {
+        self.state.last_asks = slots.to_vec();
         for slot in slots {
             if !self.state.open_questions.contains(slot) {
                 self.state.open_questions.push(slot.clone());
@@ -370,7 +377,8 @@ impl Engine {
             }
         }
         let was_confirming = self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
-        let (changed, rejected) = self.apply_agent_fields(&turn.fields);
+        let fields = self.answer_in_place(transcript, &turn.fields);
+        let (changed, rejected) = self.apply_agent_fields(&fields);
         // A detail changed after the read-back ("לא 40, 45"): read it back again, so the next
         // "יאללה" sends the corrected task instead of meeting another read-back.
         let action = if turn.action == AgentAction::None && changed && was_confirming {
@@ -445,6 +453,9 @@ impl Engine {
                 return self.finish(out);
             }
         }
+
+        // Before the engine's own questions below, which replace it.
+        self.note_asked(&asks);
 
         match action {
             AgentAction::None => self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken),
@@ -530,7 +541,6 @@ impl Engine {
                 }
             }
         }
-        self.note_asked(&asks);
         if out.pending.is_none() && out.directives.is_empty() && spoken.is_empty() {
             // The model said nothing: never leave the caller in silence.
             let r = self.business.config.fallback.ladder[0].clone();
@@ -633,6 +643,40 @@ impl Engine {
 
     /// Values the agent heard, through the same parsers as the fast path. Returns whether
     /// any value of the current task changed.
+    /// Values for details already given, passed while the question was about something
+    /// else, are not taken unless the caller is correcting ("לא, ל..."): in a live call the
+    /// answer to "על שם מי לרשום?" replaced the destination with a street of the wrong city.
+    fn answer_in_place(&mut self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {
+        let asked = self.state.last_asks.clone();
+        let Some(run) = self.state.run.as_ref() else { return fields.to_vec() };
+        if asked.is_empty()
+            || !matches!(run.step, Step::Collecting { .. })
+            || self.business.correct.find(&crate::text::normalize(transcript)).is_some()
+        {
+            return fields.to_vec();
+        }
+        let mut kept = Vec::new();
+        let mut notes = Vec::new();
+        for (slot, raw) in fields {
+            match run.slots.get(slot) {
+                Some(current) if !asked.contains(slot) => {
+                    let current = current.value.spoken();
+                    let same = crate::text::normalize(&current).contains(&crate::text::normalize(raw));
+                    if !same {
+                        tracing::info!(transcript, %slot, raw, %current, ?asked, "a value for a detail not asked about; kept the one given");
+                        notes.push(format!(
+                            "{slot} is already \"{current}\" and your question was about {}: it was not changed.                              Change a detail only when the caller corrects it.",
+                            asked.join(", ")
+                        ));
+                    }
+                }
+                _ => kept.push((slot.clone(), raw.clone())),
+            }
+        }
+        self.state.agent_notes.extend(notes);
+        kept
+    }
+
     fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> (bool, Vec<String>) {
         let customer = self.state.customer.clone();
         let mut notes = Vec::new();

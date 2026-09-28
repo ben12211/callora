@@ -196,6 +196,10 @@ async fn deepgram_listen(ws: WebSocketUpgrade, headers: HeaderMap, RawQuery(quer
     if !authorized || !configured {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    // Deepgram's answer to keyterms over its token budget.
+    if query.contains("keyterm=too-many") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     ws.on_upgrade(deepgram_session)
 }
 
@@ -243,6 +247,11 @@ async fn deepgram_hears_one_utterance_per_finalize() {
 
     session.input.send(SttInput::Close).await.unwrap();
     assert_eq!(next_event(&mut session).await, SttEvent::Closed);
+
+    // Keyterms refused: the session opens without them instead of leaving the call deaf.
+    let mut session = deepgram.open("he-IL", &["too-many".to_string()]).await.unwrap();
+    session.input.send(SttInput::Audio(Bytes::from_static(&[0xff; 160]))).await.unwrap();
+    assert_eq!(next_event(&mut session).await, SttEvent::Partial("צריך".into()));
 
     let stranger = Deepgram::new("another-key".into(), Some(format!("ws://{addr}")), None);
     assert!(stranger.open("he-IL", &[]).await.is_err(), "a refused handshake is an error, not a silent session");

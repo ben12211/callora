@@ -23,11 +23,11 @@ use callora_runtime::ports::{SpeechToText, SttEvent, SttInput, SttSession};
 
 pub const DEFAULT_BASE_URL: &str = "wss://api.deepgram.com";
 pub const DEFAULT_MODEL: &str = "nova-3";
-/// Keyterms share a budget of 500 tokens per session, and a session over it is refused,
-/// which would leave a live call deaf. A token is at least one character, so counting
-/// characters (and one per term for the separator) stays under it whatever the tokenizer
-/// makes of Hebrew.
-const KEYTERM_CHAR_BUDGET: usize = 450;
+/// Keyterms share a budget of 500 tokens per session, and a session over it is refused.
+/// Measured on the taxi's words and Jerusalem's streets: 1,054 characters went through and
+/// 1,801 did not, so 900 keeps a margin for other cities' names. A refused session is
+/// opened again without keyterms (see `open`).
+const KEYTERM_CHAR_BUDGET: usize = 900;
 const MAX_KEYTERM_CHARS: usize = 50;
 /// Deepgram closes a session that hears nothing for 10 s. A session opened ahead of time
 /// (biased with a city's streets, waiting to take over) gets no audio until it does.
@@ -45,7 +45,16 @@ pub struct Deepgram {
     model: String,
 }
 
+type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
 impl Deepgram {
+    async fn connect(&self, language: &str, keyterms: &[String]) -> anyhow::Result<Socket> {
+        let mut request = self.url(language, keyterms)?.into_client_request()?;
+        request.headers_mut().insert("Authorization", format!("Token {}", self.api_key).parse()?);
+        let (ws, _) = tokio::time::timeout(Duration::from_secs(8), tokio_tungstenite::connect_async(request)).await??;
+        Ok(ws)
+    }
+
     pub fn new(api_key: String, base_url: Option<String>, model: Option<String>) -> Self {
         let nonblank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
         Self {
@@ -142,9 +151,16 @@ impl Utterance {
 #[async_trait]
 impl SpeechToText for Deepgram {
     async fn open(&self, language: &str, keyterms: &[String]) -> anyhow::Result<SttSession> {
-        let mut request = self.url(language, keyterms)?.into_client_request()?;
-        request.headers_mut().insert("Authorization", format!("Token {}", self.api_key).parse()?);
-        let (ws, _) = tokio::time::timeout(Duration::from_secs(8), tokio_tungstenite::connect_async(request)).await??;
+        let ws = match self.connect(language, keyterms).await {
+            Ok(ws) => ws,
+            // Keyterms over the budget are refused with a 400: hear without them rather than
+            // not at all.
+            Err(e) if !keyterms.is_empty() && e.to_string().contains("400") => {
+                tracing::warn!(error = %e, terms = keyterms.len(), "deepgram refused the keyterms; listening without them");
+                self.connect(language, &[]).await?
+            }
+            Err(e) => return Err(e),
+        };
         let (mut sink, mut stream) = ws.split();
         let (in_tx, mut in_rx) = mpsc::channel::<SttInput>(512);
         let (ev_tx, ev_rx) = mpsc::channel::<SttEvent>(64);
@@ -266,7 +282,7 @@ mod tests {
             .collect();
         let chars: usize = sent.iter().map(|t| t.chars().count() + 1).sum();
         assert!(chars <= KEYTERM_CHAR_BUDGET);
-        assert_eq!(sent.len(), KEYTERM_CHAR_BUDGET / 14);
+        assert_eq!(sent.len(), 64, "900 characters of 14-character terms");
         assert_eq!(sent.first().map(String::as_str), Some("רחוב מספר 000"));
     }
 

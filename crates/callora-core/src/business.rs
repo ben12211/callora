@@ -83,6 +83,7 @@ pub struct Business {
     pub deny: PhraseSet,
     pub fillers: PhraseSet,
     pub now: PhraseSet,
+    pub correct: PhraseSet,
     pub meta: Vec<CompiledMeta>,
     pub intent_keywords: Vec<(String, PhraseSet)>,
     pub slots: BTreeMap<SlotId, CompiledSlot>,
@@ -161,6 +162,7 @@ impl Business {
         let deny = phrase("lexicon.deny".into(), &config.lexicon.deny, false);
         let fillers = phrase("lexicon.fillers".into(), &config.lexicon.fillers, false);
         let now = phrase("lexicon.now".into(), &config.lexicon.now, true);
+        let correct = phrase("lexicon.correct".into(), &config.lexicon.correct, false);
 
         let mut meta = Vec::new();
         for (key, m) in &config.meta_intents {
@@ -278,6 +280,7 @@ impl Business {
             deny,
             fillers,
             now,
+            correct,
             meta,
             intent_keywords,
             slots,

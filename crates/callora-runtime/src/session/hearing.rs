@@ -288,22 +288,24 @@ impl Session {
         terms
     }
 
-    /// "בני ברק" given, its street next: open a session biased with its streets beside the
-    /// live one. Recognition cannot be re-biased mid-session, and "אהרונוביץ" in an Ashkenazi
-    /// accent came back as "עונה מ-32" without the hint.
+    /// "בני ברק" given, its street asked next: open a session biased with its streets beside
+    /// the live one; once the question is about something else, one with the business's
+    /// words only. Recognition cannot be re-biased mid-session, and "אהרונוביץ" in an
+    /// Ashkenazi accent came back as "עונה מ-32" without the hint, while a city's streets
+    /// left on turned the caller's name into one of them.
     pub(super) fn focus_stt(&mut self) {
-        let Some(city) = self.engine.street_focus() else { return };
-        if self.stt_city.as_ref() == Some(&city)
+        let city = self.engine.street_focus();
+        if self.services.gazetteer.is_none()
+            || self.stt_city == city
             || self.stt_opening.as_ref() == Some(&city)
             || self.stt_next.as_ref().is_some_and(|(c, _)| *c == city)
-            || self.services.gazetteer.is_none()
         {
             return;
         }
         self.stt_opening = Some(city.clone());
         let stt = self.services.stt.clone();
         let language = self.business.config.language.clone();
-        let keyterms = self.stt_keyterms(Some(&city));
+        let keyterms = self.stt_keyterms(city.as_deref());
         let tx = self.events.clone();
         tokio::spawn(async move {
             let result = stt.open(&language, &keyterms).await;
@@ -321,9 +323,14 @@ impl Session {
         if let Some(old) = self.stt.take() {
             let _ = old.input.try_send(SttInput::Close);
         }
-        tracing::info!(call = %self.info.call_sid, %city, "recognition biased with the city's streets");
+        match &city {
+            Some(city) => {
+                tracing::info!(call = %self.info.call_sid, %city, "recognition biased with the city's streets")
+            }
+            None => tracing::info!(call = %self.info.call_sid, "recognition back to the business's words"),
+        }
         self.stt = Some(session);
-        self.stt_city = Some(city);
+        self.stt_city = city;
     }
 }
 
