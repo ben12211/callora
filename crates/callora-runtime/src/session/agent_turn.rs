@@ -200,6 +200,7 @@ impl Session {
             held: Vec::new(),
             held_phrase: None,
             phrase: None,
+            fields: Vec::new(),
             partial_phrase: None,
             done: None,
             hold_say: false,
@@ -214,13 +215,9 @@ impl Session {
         if p.hold_say {
             return;
         }
-        // The phrase's own words written again in `say`: they were said already.
-        let repeats_phrase = p
-            .phrase
-            .as_deref()
-            .and_then(|id| self.business.response(id))
-            .is_some_and(|r| r.variants.iter().any(|v| same_words(v, &sentence)));
-        if repeats_phrase {
+        // The phrase said it already: its words again, or a second question.
+        if p.phrase.as_deref().is_some_and(|id| !agent::say_after_phrase(&self.business, id, &sentence)) {
+            tracing::info!(call = %self.info.call_sid, said = %sentence, "dropped: the recorded phrase already asked");
             return;
         }
         let Some(p) = self.pending_agent.as_mut() else { return };
@@ -272,6 +269,13 @@ impl Session {
         }
         if p.speculative {
             p.held_phrase = Some(id);
+            return;
+        }
+        // It asks for a value this same reply passes: the engine decides once the value is
+        // checked (the next question if it was taken, this one if it was not).
+        let answered = self.engine.slot_asked_by(&id).is_some_and(|slot| p.fields.iter().any(|(s, _)| *s == slot));
+        if answered {
+            p.hold_say = true;
             return;
         }
         let Some(plan) = self.engine.render_response(&id) else { return };
@@ -333,7 +337,9 @@ impl Session {
             Ok(reply) => {
                 // Whatever is left, with the start of a phrase that was waiting for it.
                 let tail = [p.partial_phrase.take(), rest].into_iter().flatten().collect::<Vec<_>>().join(" ");
-                if !tail.is_empty() && !p.hold_say {
+                let after_phrase =
+                    p.phrase.as_deref().is_none_or(|id| agent::say_after_phrase(&self.business, id, &tail));
+                if !tail.is_empty() && !p.hold_say && after_phrase {
                     p.spoken.push(tail.clone());
                     self.say_now(&tail);
                 }

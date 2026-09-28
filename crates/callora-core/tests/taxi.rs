@@ -1380,3 +1380,26 @@ fn a_ride_that_may_have_gone_through_is_checked_by_a_person_not_called_failed() 
     assert_eq!(cards[0]["verify"], true);
     assert!(cards[0]["summary"].as_str().unwrap().starts_with("לבדוק"), "{}", cards[0]["summary"]);
 }
+
+#[test]
+fn a_question_the_caller_just_answered_is_not_asked_again() {
+    // A live call: "בן זכאי, אה, 32." stored as the destination, and "לאיזה רחוב?" again.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "מונית מהרצל 10 רעננה",
+        decide(AgentAction::None, "לאן נוסעים?", Some("book_ride"), &[("pickup", "הרצל 10, רעננה")]),
+        "",
+    );
+    let mut again = decide(AgentAction::None, "", None, &[("destination", "עזריאלי")]);
+    again.phrase = Some("ask_destination_street".into());
+    let d = call.engine.on_agent_turn("לעזריאלי", again, "");
+    let text = spoken(&d);
+    assert!(!text.contains("רחוב"), "{text}");
+    assert!(text.contains("נוסעים") || text.contains("כמה אתם"), "the next question: {text}");
+
+    // A value that was not taken: the question stands.
+    let mut still = decide(AgentAction::None, "", None, &[("passengers", "ארבעים ושבע")]);
+    still.phrase = Some("ask_passengers".into());
+    let d = call.engine.on_agent_turn("ארבעים ושבע", still, "");
+    assert!(spoken(&d).contains("נוסעים"), "{}", spoken(&d));
+}

@@ -108,6 +108,10 @@ enum Command {
         /// Exit with status 1 when a model's pass rate is below this (0 to 1).
         #[arg(long)]
         min_pass: Option<f64>,
+        /// At most this many model requests a minute (a free-tier key allows only a few;
+        /// past it every request fails with 429 and the cases fail for nothing).
+        #[arg(long)]
+        rpm: Option<u32>,
     },
 }
 
@@ -332,12 +336,12 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::json!({ "system": request.system, "schema": request.schema }));
             Ok(())
         }
-        Command::Eval { cases, models, reasoning, repeat, only, concurrency, json, check, min_pass } => {
+        Command::Eval { cases, models, reasoning, repeat, only, concurrency, json, check, min_pass, rpm } => {
             let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into());
             tracing_subscriber::fmt().with_env_filter(filter).with_target(false).init();
             run_eval(
                 &cli.businesses,
-                EvalArgs { cases, models, reasoning, repeat, only, concurrency, json, check, min_pass },
+                EvalArgs { cases, models, reasoning, repeat, only, concurrency, json, check, min_pass, rpm },
             )
             .await
         }
@@ -640,6 +644,7 @@ struct EvalArgs {
     json: Option<PathBuf>,
     check: bool,
     min_pass: Option<f64>,
+    rpm: Option<u32>,
 }
 
 async fn run_eval(dir: &Path, args: EvalArgs) -> anyhow::Result<()> {
@@ -690,6 +695,10 @@ async fn run_eval(dir: &Path, args: EvalArgs) -> anyhow::Result<()> {
         gazetteer: load_gazetteer(),
         // Mock backends only: an eval never books a real ride.
         actions: Arc::new(ConfiguredActions::new(client, HashMap::new())),
+        pacer: args
+            .rpm
+            .filter(|r| *r > 0)
+            .map(|rpm| Arc::new(eval::Pacer::new(Duration::from_millis(60_000 / u64::from(rpm))))),
     });
     let prices =
         callora_runtime::pricing::parse_prices(&env("EVAL_PRICES").or_else(|| env("AGENT_PRICES")).unwrap_or_default());

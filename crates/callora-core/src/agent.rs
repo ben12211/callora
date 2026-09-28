@@ -70,6 +70,20 @@ pub fn phrases(b: &Business) -> Vec<String> {
     phrase_ids(b).iter().filter_map(|id| b.config.responses.get(*id)).flat_map(|r| r.variants.iter().cloned()).collect()
 }
 
+/// Whether `sentence` of the agent's `say` is still said after its recorded `phrase`: never
+/// the phrase's words again, and never a second question after a phrase that asks one. Live
+/// calls asked every question twice: the model put the question in the phrase ("מאיפה
+/// לאסוף?") and again, reworded, in `say` ("מאיזו עיר לאסוף?").
+pub fn say_after_phrase(b: &Business, phrase: &str, sentence: &str) -> bool {
+    let Some(r) = b.response(phrase) else { return true };
+    let said = crate::text::normalize(sentence);
+    if said.is_empty() || r.variants.iter().any(|v| crate::text::normalize(v) == said) {
+        return false;
+    }
+    let phrase_asks = r.variants.first().is_some_and(|v| v.trim_end().ends_with('?'));
+    !(phrase_asks && sentence.contains('?'))
+}
+
 /// The ids of the business's instant phrases: responses with nothing to fill in, so every
 /// variant is a recorded clip.
 pub fn phrase_ids(b: &Business) -> Vec<&str> {
@@ -202,7 +216,12 @@ pub fn system_prompt(b: &Business) -> String {
          {role}. Never repeat the greeting, never list options unless the caller is lost, never say you did not \
          understand and then ask something else in the same turn. Unless the caller is saying goodbye, the turn \
          moves the call on: after taking a detail it asks the next question{}, never just an acknowledgement.\n",
-        if instant.is_empty() { "now" } else { "after the phrase, or instead of one (usually \"\" with a phrase)" },
+        if instant.is_empty() {
+            "now"
+        } else {
+            "instead of a phrase. With a phrase, say is \"\" (never the phrase again in other words, never a \
+             second question)"
+        },
         eg(words.and_then(|w| w.next_question.as_ref())),
     ));
     s.push_str("- task: the task the caller is on now, or null.\n");
@@ -612,6 +631,16 @@ mod tests {
         let mut none = SayStream::default();
         none.push("{\"action\": \"none\", \"fields\": [], \"phrase\": null, \"say\": \"שלום.\"}");
         assert_eq!(none.phrase(), None);
+    }
+
+    #[test]
+    fn nothing_after_a_question_phrase_asks_again() {
+        let b = Business::from_json(include_str!("../../../businesses/taxi.json"), "taxi.json", &|_| None).unwrap();
+        assert!(!say_after_phrase(&b, "ask_pickup", "מאיזו עיר לאסוף?"), "the same question reworded");
+        assert!(!say_after_phrase(&b, "ask_pickup", "מאיפה אוספים?"), "another variant of the phrase");
+        assert!(say_after_phrase(&b, "ack", "מאיזו עיר לאסוף?"), "an acknowledgement, then the question");
+        assert!(say_after_phrase(&b, "small_talk_short", "צריך מונית?"), "no question in the phrase");
+        assert!(!say_after_phrase(&b, "ack", "סגור."), "the acknowledgement twice");
     }
 
     #[test]

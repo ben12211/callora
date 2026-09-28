@@ -215,6 +215,8 @@ struct PendingAgent {
     held_phrase: Option<String>,
     /// The recorded phrase already played.
     phrase: Option<String>,
+    /// The values the reply passes (known before its words).
+    fields: Vec<(String, String)>,
     /// The start of what may be a recorded phrase ("הכל טוב, תודה!" of "הכל טוב, תודה!
     /// איך אפשר לעזור?"), waiting for its next sentence so the whole clip plays.
     partial_phrase: Option<String>,
@@ -616,6 +618,7 @@ impl Session {
             Ev::AgentFields { turn, fields } => {
                 let rejects = self.engine.rejects_any(&fields);
                 if let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) {
+                    p.fields.clone_from(&fields);
                     if rejects {
                         tracing::info!(call = %self.info.call_sid, ?fields, "a value will be rejected; the agent's words are held");
                         p.hold_say = true;

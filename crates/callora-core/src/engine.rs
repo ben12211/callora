@@ -353,6 +353,22 @@ impl Engine {
             }
         }
 
+        // The model took the answer and asked the same question again (a live call: "בן זכאי,
+        // 32" stored as the destination, then "לאיזה רחוב?"). The question was answered: ask
+        // the next one instead.
+        let answered = spoken.is_empty() && action == AgentAction::None && {
+            let asked = turn.phrase.as_deref().and_then(|p| self.slot_asked_by(p));
+            asked.is_some_and(|slot| {
+                turn.fields.iter().any(|(s, _)| *s == slot)
+                    && self.state.run.as_ref().is_some_and(|r| r.slots.contains_key(&slot))
+            })
+        };
+        if answered {
+            tracing::info!(transcript, phrase = ?turn.phrase, "the agent asked again for what the caller just gave; asking the next question");
+            self.next_question(&mut out);
+            return self.finish(out);
+        }
+
         match action {
             AgentAction::None => self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken),
             AgentAction::Transfer => {
@@ -462,6 +478,9 @@ impl Engine {
         if let Some(plan) = phrase.and_then(|p| self.render_response(p)) {
             out.speak(plan, true);
         }
+        if phrase.is_some_and(|p| !crate::agent::say_after_phrase(&self.business, p, say)) {
+            return;
+        }
         if !say.trim().is_empty() {
             out.speak(SpeechPlan::free(say, &delivery, self.state.gain_db), true);
         }
@@ -488,6 +507,45 @@ impl Engine {
             .and_then(|r| r.variants.first())
             .map(|v| format!(" (\"{v}\")"))
             .unwrap_or_default()
+    }
+
+    /// The slot of the current task a phrase asks for: its `ask`, or that ask's street or
+    /// city question ("ask_destination_street" asks for the destination).
+    pub fn slot_asked_by(&self, phrase: &str) -> Option<String> {
+        let run = self.state.run.as_ref()?;
+        self.pipeline_of(run)
+            .slots
+            .iter()
+            .find(|ps| {
+                ps.ask
+                    .as_deref()
+                    .is_some_and(|a| phrase == a || phrase == format!("{a}_street") || phrase == format!("{a}_city"))
+            })
+            .map(|ps| ps.slot.clone())
+    }
+
+    /// The task's next question, in its order (what the agent is told under NOW), or the
+    /// read-back when nothing is left to ask.
+    fn next_question(&mut self, out: &mut Out) {
+        let Some(run) = &self.state.run else { return };
+        let pipeline = self.pipeline_of(run).clone();
+        self.fill_defaults(&pipeline);
+        let Some(run) = &self.state.run else { return };
+        let next = pipeline.slots.iter().find(|ps| {
+            !run.slots.contains_key(&ps.slot)
+                && ps.default.is_none()
+                && (ps.required || ps.ask.is_some())
+                && !(ps.ask_before_confirm && self.state.asked_before_confirm.contains(&ps.slot))
+        });
+        match next.map(|ps| (ps.slot.clone(), ps.ask_before_confirm)) {
+            Some((slot, before_confirm)) => {
+                if before_confirm {
+                    self.state.asked_before_confirm.insert(slot.clone());
+                }
+                self.ask(out, &slot, true);
+            }
+            None => self.read_back(out, true),
+        }
     }
 
     /// The recorded phrase is a question ("לאיזה רחוב?").

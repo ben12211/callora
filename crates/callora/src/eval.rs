@@ -261,6 +261,7 @@ pub struct Runner {
     pub registry: Arc<BusinessRegistry>,
     pub gazetteer: Option<Arc<Gazetteer>>,
     pub actions: Arc<dyn ActionRunner>,
+    pub pacer: Option<Arc<Pacer>>,
 }
 
 /// What the directives of one turn did.
@@ -320,6 +321,9 @@ impl Runner {
                 } else {
                     engine.state.second_hearing = t.second_hearing.clone();
                     let request = agent::build_request(&b, &engine.state, &t.caller);
+                    if let Some(p) = &self.pacer {
+                        p.wait_turn().await;
+                    }
                     match ask(model, &request).await {
                         Ok(asked) => {
                             turn.first_words_ms = asked.first_words_ms;
@@ -461,6 +465,10 @@ fn check(
         AgentAction::Transfer => "transfer",
         AgentAction::EndCall => "end_call",
     };
+    // On every turn the model decided: one question at a time.
+    if route == Route::Agent && heard.matches('?').count() >= 2 {
+        f.push(format!("asked two questions: \"{heard}\""));
+    }
     let needs_model = !e.action.is_empty() || e.task.is_some() || !e.fields.is_empty();
     match decision {
         None if needs_model => {
@@ -532,6 +540,25 @@ fn check(
     flag(&mut f, "ended", e.ended, fx.ended);
     flag(&mut f, "handed off", e.handoff, fx.handoff);
     f
+}
+
+/// At most one model request every `gap` (`callora eval --rpm`). The wait happens before
+/// a request is timed, so latency stays the model's own.
+pub struct Pacer {
+    gap: std::time::Duration,
+    next: tokio::sync::Mutex<tokio::time::Instant>,
+}
+
+impl Pacer {
+    pub fn new(gap: std::time::Duration) -> Self {
+        Self { gap, next: tokio::sync::Mutex::new(tokio::time::Instant::now()) }
+    }
+
+    async fn wait_turn(&self) {
+        let mut next = self.next.lock().await;
+        tokio::time::sleep_until(*next).await;
+        *next = tokio::time::Instant::now() + self.gap;
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -713,6 +740,7 @@ mod tests {
             registry: registry(),
             gazetteer: None,
             actions: Arc::new(ConfiguredActions::new(reqwest::Client::new(), Default::default())),
+            pacer: None,
         }
     }
 
