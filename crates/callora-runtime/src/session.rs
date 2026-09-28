@@ -633,7 +633,8 @@ impl Session {
                 self.agent_sentence(sentence);
             }
             Ev::AgentFields { turn, fields } => {
-                let rejects = self.engine.rejects_any(&fields);
+                let transcript = self.pending_agent.as_ref().map(|p| p.transcript.clone()).unwrap_or_default();
+                let rejects = self.engine.rejects_any(&transcript, &fields);
                 if let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) {
                     p.fields.clone_from(&fields);
                     if rejects {

@@ -183,19 +183,21 @@ impl Engine {
         })
     }
 
-    /// Whether any of these values would be rejected (47 passengers when the most is 20):
-    /// the runtime then holds the agent's words back, since they move on without it.
-    pub fn rejects_any(&self, fields: &[(String, String)]) -> bool {
-        let customer = self.state.customer.as_ref();
-        fields.iter().any(|(slot, raw)| {
-            let Some(cfg) = self.business.config.slots.get(slot) else { return false };
-            if cfg.kind == crate::config::SlotKind::Place {
-                return false;
-            }
-            parse_slot_value(&self.business, slot, cfg, raw, true, customer)
-                .filter(|(_, c)| *c >= cfg.reject_below)
-                .is_none()
-        })
+    /// Whether any of these values would be rejected (47 passengers when the most is 20, a
+    /// street its city does not have): the runtime then holds the agent's words back, since
+    /// they move on without it. The same checks as the turn itself, on a copy of the call: a
+    /// live call's "מהשערה 18, אפרת" was refused only after "לאיזה רחוב נוסעים?" had played.
+    pub fn rejects_any(&self, transcript: &str, fields: &[(String, String)]) -> bool {
+        let mut probe = Engine {
+            business: self.business.clone(),
+            state: self.state.clone(),
+            chooser: self.chooser.clone(),
+            offered_more: self.offered_more,
+            gazetteer: self.gazetteer.clone(),
+        };
+        probe.state.remember(Speaker::Caller, transcript);
+        let fields = probe.answer_in_place(transcript, fields);
+        !probe.apply_agent_fields(&fields).1.is_empty()
     }
 
     /// The required detail a reply would move on past: asked for earlier, not in this reply's
@@ -209,14 +211,12 @@ impl Engine {
         if !matches!(run.step, Step::Collecting { .. } | Step::ConfirmingSlot { .. }) {
             return None;
         }
-        let open: Vec<String> = open_questions(&self.business, &self.state)
-            .into_iter()
-            .filter(|s| !fields.iter().any(|(f, v)| f == s && !v.trim().is_empty()))
-            .collect();
+        let open = open_questions(&self.business, &self.state);
+        // Still on an open detail: its street after its city ("מאפרת" → "מאיזה רחוב?") goes on.
         if asks.iter().any(|a| open.contains(a)) {
             return None;
         }
-        open.into_iter().next()
+        open.into_iter().find(|s| !fields.iter().any(|(f, v)| f == s && !v.trim().is_empty()))
     }
 
     /// The details the question just asked for: each required one stays open until it is

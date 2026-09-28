@@ -25,6 +25,9 @@ pub struct Address {
     pub city: String,
     /// The street's official name, when a street was given.
     pub street: Option<String>,
+    /// The street's name as the caller said it, when that is one of its names ("רמב\"ן" of
+    /// אפרת, officially "העומר"; "רמב\"ם" of ירושלים, officially "שד בן מימון"), for speech.
+    pub street_said: Option<String>,
     pub number: Option<String>,
     /// For a place that is not a street (`street` holds its name): its street address when
     /// mapped, and where it is ("31.78570,35.20160").
@@ -38,9 +41,11 @@ pub struct PlaceInfo {
 }
 
 impl Address {
-    /// "ז'בוטינסקי 5, רמת גן" — how the place is read back.
+    /// "ז'בוטינסקי 5, רמת גן" — how the place is read back: in the caller's own names, so
+    /// "רמב\"ן 19" is not read back as "העומר 19".
     pub fn spoken(&self) -> String {
-        self.format(&self.city_said)
+        let street = self.street_said.as_ref().or(self.street.as_ref());
+        Self::format_parts(street, self.number.as_ref(), &self.city_said)
     }
 
     /// "ז'בוטינסקי 5, רמת גן" with the official locality name — what dispatch receives. For
@@ -56,7 +61,11 @@ impl Address {
     }
 
     fn format(&self, city: &str) -> String {
-        match (&self.street, &self.number) {
+        Self::format_parts(self.street.as_ref(), self.number.as_ref(), city)
+    }
+
+    fn format_parts(street: Option<&String>, number: Option<&String>, city: &str) -> String {
+        match (street, number) {
             (Some(s), Some(n)) => format!("{s} {n}, {city}"),
             (Some(s), None) => format!("{s}, {city}"),
             (None, _) => city.to_string(),
@@ -85,6 +94,8 @@ struct City {
     streets: Vec<String>,
     /// Normalized street name (official or alternative) → index in `streets`.
     street_keys: HashMap<String, usize>,
+    /// Normalized street name → that name as written.
+    street_written: HashMap<String, String>,
     /// Each street's shortest name as written ("אהרונוביץ" of "אהרונוביץ ראובן"), for
     /// recognition hints.
     short: Vec<String>,
@@ -337,6 +348,7 @@ impl Gazetteer {
                     name: city_name.to_string(),
                     streets: Vec::new(),
                     street_keys: HashMap::new(),
+                    street_written: HashMap::new(),
                     short: Vec::new(),
                     places: Vec::new(),
                     place_keys: HashMap::new(),
@@ -359,6 +371,7 @@ impl Gazetteer {
                 city.streets[si] = street_name.to_string();
             }
             city.street_keys.entry(norm(street_name)).or_insert(si);
+            city.street_written.entry(norm(street_name)).or_insert_with(|| street_name.to_string());
         }
         for (ci, city) in g.cities.iter().enumerate() {
             // "תל אביב - יפו" is also "תל אביב" and "יפו"; "אבו גוש" is itself.
@@ -479,6 +492,7 @@ impl Gazetteer {
                 city_said: alias.clone(),
                 city: city.name.clone(),
                 street,
+                street_said: None,
                 number: number.clone(),
                 place: None,
             })
@@ -494,7 +508,9 @@ impl Gazetteer {
         }
         for c in &candidates {
             if let Some(&si) = city.street_keys.get(c.as_str()) {
-                return found(Some(city.streets[si].clone()));
+                let Lookup::Found(mut a) = found(Some(city.streets[si].clone())) else { unreachable!() };
+                a.street_said = city.street_written.get(c.as_str()).cloned();
+                return Lookup::Found(a);
             }
         }
         let place = |pi: usize| {
@@ -503,6 +519,7 @@ impl Gazetteer {
                 city_said: alias.clone(),
                 city: city.name.clone(),
                 street: Some(p.name.clone()),
+                street_said: None,
                 number: None,
                 place: Some(PlaceInfo { address: p.address.clone(), point: p.point.clone() }),
             })
@@ -548,6 +565,7 @@ impl Gazetteer {
                 city_said: other.name.clone(),
                 city: other.name.clone(),
                 street: Some(other.streets[si].clone()),
+                street_said: None,
                 number,
                 place: None,
             });
@@ -855,9 +873,25 @@ mod tests {
             "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
              2066\tבן זכאי\t9000\tבן זכאי\tofficial\n",
         );
-        assert_eq!(found(g.resolve("אלעד בן זכאי 45")).spoken(), "רבן יוחנן בן זכאי 45, אלעד");
-        assert_eq!(found(g.resolve("בן זכאי 45, אלעד")).spoken(), "רבן יוחנן בן זכאי 45, אלעד");
+        assert_eq!(found(g.resolve("אלעד בן זכאי 45")).official(), "רבן יוחנן בן זכאי 45, אלעד");
+        assert_eq!(found(g.resolve("בן זכאי 45, אלעד")).official(), "רבן יוחנן בן זכאי 45, אלעד");
         assert_eq!(found(g.resolve("מושב בן זכאי")).city, "בן זכאי");
+    }
+
+    #[test]
+    fn a_street_is_read_back_by_the_name_the_caller_used() {
+        // אפרת's "רמב\"ן" is officially "העומר": the caller hears the name they said, dispatch
+        // gets the official one. A live call read "רמב\"ן 19" back as "העומר 19".
+        let g = Gazetteer::from_tsv(
+            "3650	אפרת	160	העומר	official
+3650	אפרת	160	רמב\"ן	synonym
+3650	אפרת	160	רמבן	synonym
+",
+        );
+        let a = found(g.resolve_within("רמב״ן 19", "אפרת").unwrap());
+        assert_eq!(a.spoken(), "רמב\"ן 19, אפרת");
+        assert_eq!(a.official(), "העומר 19, אפרת");
+        assert_eq!(found(g.resolve_within("העומר 19", "אפרת").unwrap()).spoken(), "העומר 19, אפרת");
     }
 
     #[test]

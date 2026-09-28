@@ -529,7 +529,7 @@ fn city_first_then_street_builds_one_address() {
         decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "בן זכאי 45")]),
         "",
     );
-    assert_eq!(place(call.slot("pickup")), "רבן יוחנן בן זכאי 45, אלעד", "the street, in the city given before");
+    assert_eq!(place(call.slot("pickup")), "בן זכאי 45, אלעד", "the street, in the city given before");
 
     call.engine.on_agent_turn(
         "לבאר שבע",
@@ -1040,7 +1040,7 @@ fn a_house_number_corrected_after_the_read_back_is_taken_in_the_same_city() {
         decide(AgentAction::ReadBack, "סגור.", None, &[("pickup", "בן זכאי 45")]),
         "",
     );
-    assert_eq!(place(call.slot("pickup")), "רבן יוחנן בן זכאי 45, אלעד");
+    assert_eq!(place(call.slot("pickup")), "בן זכאי 45, אלעד");
     assert!(spoken(&d).contains("45") && !spoken(&d).contains("40"), "{}", spoken(&d));
     let d = call.engine.on_agent_turn("יאללה", decide(AgentAction::Submit, "", None, &[]), "");
     assert!(action(&d).is_some(), "the corrected ride is sent: {}", spoken(&d));
@@ -1354,8 +1354,8 @@ fn an_impossible_value_is_asked_again_before_anything_else() {
     let (mut call, _) = Call::new(business(&[]));
     call.engine.on_agent_turn("מונית", decide(AgentAction::None, "כמה נוסעים?", Some("book_ride"), &[]), "");
     let fields = vec![("passengers".to_string(), "47".to_string())];
-    assert!(call.engine.rejects_any(&fields));
-    assert!(!call.engine.rejects_any(&[("passengers".to_string(), "3".to_string())]));
+    assert!(call.engine.rejects_any("ארבעים ושבע", &fields));
+    assert!(!call.engine.rejects_any("שלושה", &[("passengers".to_string(), "3".to_string())]));
     // The runtime held the agent's "על שם מי לרשום את ההזמנה?": nothing was spoken.
     let d = call.engine.on_agent_turn(
         "47",
@@ -1572,4 +1572,23 @@ fn an_unknown_destination_street_lets_the_call_go_on() {
         "",
     );
     assert!(spoken(&d).contains("כמה נוסעים"), "{}", spoken(&d));
+}
+
+#[test]
+fn a_street_its_city_does_not_have_holds_the_words_before_they_play() {
+    // The live call: "מהשערה 18, אפרת" was refused only after the next question had played.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_and_tel_aviv()));
+    call.engine.on_agent_turn(
+        "מאלעד",
+        asking(
+            &["pickup"],
+            decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", Some("book_ride"), &[("pickup", "אלעד")]),
+        ),
+        "",
+    );
+    let street = |s: &str| vec![("pickup".to_string(), s.to_string())];
+    assert!(call.engine.rejects_any("מהשערה 18", &street("השערה 18, אלעד")), "no such street in אלעד");
+    assert!(!call.engine.rejects_any("בן זכאי 45", &street("בן זכאי 45, אלעד")));
+    assert_eq!(call.slot("pickup"), None, "the check changes nothing");
 }
