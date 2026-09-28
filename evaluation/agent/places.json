@@ -239,5 +239,51 @@
         }
       }
     ]
+  },
+  {
+    "id": "an_unanswered_street_is_asked_again_before_the_next_question",
+    "note": "Live calls: the pickup street was not understood, the agent asked for the passengers, and came back to the street later. The street stays open until it is given.",
+    "turns": [
+      {
+        "caller": "צריך מונית מאלעד",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "אלעד"
+            }
+          ],
+          "asks": [
+            "pickup"
+          ],
+          "phrase": "ask_pickup_street",
+          "say": ""
+        }
+      },
+      {
+        "caller": "אנחנו שלושה",
+        "expect": {
+          "slots": {
+            "passengers": "3"
+          },
+          "missing": [
+            "pickup"
+          ],
+          "cities": {
+            "pickup": "אלעד"
+          },
+          "says_any": [
+            "רחוב"
+          ],
+          "says_none": [
+            "על שם",
+            "לאן",
+            "לאיזו עיר"
+          ]
+        }
+      }
+    ]
   }
 ]

@@ -23,6 +23,7 @@ fn turn(action: AgentAction, fields: &[(&str, &str)], phrase: Option<&str>) -> A
         action,
         task: Some("book_appointment".into()),
         fields: fields.iter().map(|(s, v)| (s.to_string(), v.to_string())).collect(),
+        asks: Vec::new(),
     }
 }
 

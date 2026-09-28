@@ -80,6 +80,7 @@ streams in:
 | --- | --- |
 | `action` | `none`, `read_back`, `submit`, `transfer`, `end_call`. Known after a few tokens: a read-back, submit or goodbye holds the words for the engine. |
 | `fields` | Values the caller gave, in their words. Checked against the parsers *before* a word plays: a value that will be rejected silences the reply, and the engine asks for it again. |
+| `asks` | The details the turn's question asks for. A required detail asked for earlier and still missing stays open: a reply whose question asks only for other details is held before a word plays, and the engine asks for the open one again. |
 | `phrase` | The id of a recorded phrase (`agent.phrases`), or null. It plays the moment the id is complete: no Hebrew text to generate, no TTS. |
 | `say` | Anything else to say, spoken sentence by sentence as it streams (a sentence that is a recording plays as its clip). Usually empty with a phrase. |
 | `task` | The task the caller is on. |

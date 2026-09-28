@@ -63,6 +63,8 @@ pub struct AgentTurn {
     pub task: Option<String>,
     /// (slot, value in the caller's words) given in this utterance.
     pub fields: Vec<(String, String)>,
+    /// The details this turn's question asks for (slots), empty when it asks nothing.
+    pub asks: Vec<String>,
 }
 
 /// The fixed wording of the business's instant phrases.
@@ -204,6 +206,11 @@ pub fn system_prompt(b: &Business) -> String {
         ));
     }
     s.push('\n');
+    s.push_str(
+        "- asks: the details (slot names) your question this turn asks for, [] when you ask nothing. A detail \
+         you asked for and did not get stays open: ask for it again, in other words, before asking for anything \
+         else; the system holds back a question that moves on without it.\n",
+    );
     if !instant.is_empty() {
         s.push_str(
             "- phrase: the id of an INSTANT PHRASE (below) that says what you mean, or null. A phrase starts \
@@ -389,6 +396,14 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
              said if it answers something else. If it is optional, skip it.\n"
         ));
     }
+    let open = crate::engine::open_questions(b, state);
+    if !open.is_empty() {
+        u.push_str(&format!(
+            "\nOPEN QUESTION: you asked for {} and the caller has not given it yet. Unless they give it now, ask \
+             for it again (in other words) before anything else.\n",
+            open.join(", ")
+        ));
+    }
     if !state.agent_notes.is_empty() {
         u.push_str("\nSYSTEM NOTES on the details you passed last turn (act on them now):\n");
         for n in &state.agent_notes {
@@ -410,10 +425,10 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
     let tasks: Vec<Value> = c.intents.iter().map(|i| json!(i.id)).chain([Value::Null]).collect();
     let slots: Vec<Value> = c.slots.keys().map(|k| json!(k)).collect();
     let actions: Vec<&str> = AgentAction::ALL.iter().map(|(n, _)| *n).collect();
-    // `action` (a few tokens), `fields`, then `phrase` and `say`: the runtime knows whether
-    // this turn reads back or submits, and whether its values will be accepted, before any
-    // words arrive; a phrase plays as soon as its id is complete, and `say` is spoken while
-    // it is still being generated.
+    // `action` (a few tokens), `fields`, `asks`, then `phrase` and `say`: the runtime knows
+    // whether this turn reads back or submits, whether its values will be accepted and
+    // whether it moves on past an unanswered question, before any words arrive; a phrase
+    // plays as soon as its id is complete, and `say` is spoken while it is still generated.
     let mut properties = serde_json::Map::new();
     properties.insert("action".into(), json!({ "type": "string", "enum": actions }));
     properties.insert(
@@ -431,6 +446,7 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
             }
         }),
     );
+    properties.insert("asks".into(), json!({ "type": "array", "items": { "type": "string", "enum": slots } }));
     let phrases: Vec<Value> = phrase_ids(b).into_iter().map(|id| json!(id)).collect();
     if !phrases.is_empty() {
         let options: Vec<Value> = phrases.into_iter().chain([Value::Null]).collect();
@@ -466,7 +482,16 @@ pub fn parse(b: &Business, reply: &Value) -> AgentTurn {
             (b.config.slots.contains_key(slot) && !value.is_empty()).then(|| (slot.to_string(), value.to_string()))
         })
         .collect();
-    AgentTurn { phrase, say, action, task, fields }
+    let asks = reply
+        .get("asks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|s| b.config.slots.contains_key(*s))
+        .map(str::to_string)
+        .collect();
+    AgentTurn { phrase, say, action, task, fields, asks }
 }
 
 /// Pulls finished sentences of the `say` value out of a JSON reply while it streams in, so
@@ -518,13 +543,14 @@ impl SayStream {
         Some(AgentAction::parse(&value[..close]))
     }
 
-    /// The fields, once the reply has got past them (to `phrase` or `say`): the runtime
-    /// checks them before a word is spoken. "47" passengers was rejected after the agent had
-    /// already asked the next question, and the call went out of step.
+    /// The fields, once the reply has got past them (to `asks`, `phrase` or `say`): the
+    /// runtime checks them before a word is spoken. "47" passengers was rejected after the
+    /// agent had already asked the next question, and the call went out of step.
     pub fn fields(&self) -> Option<Vec<(String, String)>> {
         let key = self.raw.find("\"fields\"")?;
         let after = &self.raw[key..];
-        let end = [after.find("\"phrase\""), after.find("\"say\"")].into_iter().flatten().min()?;
+        let end =
+            [after.find("\"asks\""), after.find("\"phrase\""), after.find("\"say\"")].into_iter().flatten().min()?;
         let head = &after[..end];
         let open = head.find('[')?;
         let close = head.rfind(']')?;
@@ -535,6 +561,20 @@ impl SayStream {
                 .filter_map(|f| Some((f.get("slot")?.as_str()?.to_string(), f.get("value")?.as_str()?.to_string())))
                 .collect(),
         )
+    }
+
+    /// What the question asks for, once its list is complete; empty when the reply has no
+    /// `asks` and has got past it.
+    pub fn asks(&self) -> Option<Vec<String>> {
+        let Some(key) = self.raw.find("\"asks\"") else {
+            let past = self.raw.contains("\"phrase\"") || self.raw.contains("\"say\"");
+            return past.then(Vec::new);
+        };
+        let after = &self.raw[key + 6..];
+        let open = after.find('[')?;
+        let close = open + after[open..].find(']')?;
+        let items: Vec<Value> = serde_json::from_str(&after[open..=close]).ok()?;
+        Some(items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
     }
 
     /// The recorded phrase to play, once its id is complete (`None` for null or not yet).
@@ -615,6 +655,23 @@ mod tests {
         assert_eq!(s.action(), None, "not complete yet");
         s.push("back\", \"say\": \"סג");
         assert_eq!(s.action(), Some(AgentAction::ReadBack));
+    }
+
+    #[test]
+    fn what_the_question_asks_is_known_before_its_words() {
+        let mut s = SayStream::default();
+        s.push("{\"action\": \"none\", \"fields\": [{\"slot\": \"passengers\", \"value\": \"3\"}], \"asks\": [\"pick");
+        assert_eq!(s.fields(), Some(vec![("passengers".to_string(), "3".to_string())]), "fields end at asks");
+        assert_eq!(s.asks(), None, "not complete yet");
+        s.push("up\", \"customer_name\"], \"phrase\": null, \"say\": \"");
+        assert_eq!(s.asks(), Some(vec!["pickup".to_string(), "customer_name".to_string()]));
+
+        // A reply without `asks` asks nothing, once it is past where the list would be.
+        let mut s = SayStream::default();
+        s.push("{\"action\": \"none\", \"fields\": [], ");
+        assert_eq!(s.asks(), None);
+        s.push("\"phrase\": \"ask_name\"");
+        assert_eq!(s.asks(), Some(Vec::new()));
     }
 
     #[test]

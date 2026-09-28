@@ -128,6 +128,19 @@ impl Out {
     }
 }
 
+/// Required details of the current task asked for and still not given, in the order asked.
+pub fn open_questions(b: &Business, state: &CallState) -> Vec<String> {
+    let Some(run) = &state.run else { return Vec::new() };
+    let Some(pipeline) = b.pipeline(&run.pipeline) else { return Vec::new() };
+    state
+        .open_questions
+        .iter()
+        .filter(|s| pipeline.slots.iter().any(|ps| ps.slot == **s && ps.required && ps.default.is_none()))
+        .filter(|s| !run.slots.contains_key(*s))
+        .cloned()
+        .collect()
+}
+
 pub struct Engine {
     business: Arc<Business>,
     pub state: CallState,
@@ -178,6 +191,52 @@ impl Engine {
                 .filter(|(_, c)| *c >= cfg.reject_below)
                 .is_none()
         })
+    }
+
+    /// The required detail a reply would move on past: asked for earlier, not in this reply's
+    /// values, while its question asks only for other details. Live calls asked for the
+    /// passengers with the street still unknown, then went back to the street.
+    pub fn moves_on(&self, fields: &[(String, String)], asks: &[String]) -> Option<String> {
+        if asks.is_empty() {
+            return None;
+        }
+        let run = self.state.run.as_ref()?;
+        if !matches!(run.step, Step::Collecting { .. } | Step::ConfirmingSlot { .. }) {
+            return None;
+        }
+        let open: Vec<String> = open_questions(&self.business, &self.state)
+            .into_iter()
+            .filter(|s| !fields.iter().any(|(f, v)| f == s && !v.trim().is_empty()))
+            .collect();
+        if asks.iter().any(|a| open.contains(a)) {
+            return None;
+        }
+        open.into_iter().next()
+    }
+
+    /// Details a question just asked for: each required one stays open until it is given.
+    fn note_asked(&mut self, slots: &[String]) {
+        for slot in slots {
+            if !self.state.open_questions.contains(slot) {
+                self.state.open_questions.push(slot.clone());
+            }
+        }
+        let open = open_questions(&self.business, &self.state);
+        self.state.open_questions.retain(|s| open.contains(s));
+    }
+
+    /// Ask again for a detail the caller has not given: the street of a place whose city is
+    /// known by its own question ("לאיזה רחוב צריך להגיע?", never a bare "which street?"
+    /// with two places open), other details by their "to avoid a mistake" wording.
+    fn ask_again(&mut self, out: &mut Out, slot: &str) {
+        let again = format!("ask_again_{slot}");
+        if !self.state.place_cities.contains_key(slot) && self.business.response(&again).is_some() {
+            let ctx = self.render_ctx(None);
+            self.say(out, &again, ctx, true);
+            self.note_asked(&[slot.to_string()]);
+        } else {
+            self.ask(out, slot, false);
+        }
     }
 
     pub fn set_caller_phone(&mut self, phone: Option<String>) {
@@ -369,6 +428,24 @@ impl Engine {
             return self.finish(out);
         }
 
+        // What this turn's question asks for, with its recorded phrase's detail.
+        let mut asks = turn.asks.clone();
+        if let Some(slot) = turn.phrase.as_deref().and_then(|p| self.slot_asked_by(p)) {
+            if !asks.contains(&slot) {
+                asks.push(slot);
+            }
+        }
+        // A question that moves on while a detail asked for is still missing: ask for that
+        // detail again instead (the runtime held the words back, so nothing was said).
+        if action == AgentAction::None && spoken.is_empty() {
+            if let Some(slot) = self.moves_on(&turn.fields, &asks) {
+                tracing::info!(transcript, %slot, ?asks, "the agent moved on past an open question; asking it again");
+                self.agent_say(&mut out, None, "", spoken);
+                self.ask_again(&mut out, &slot);
+                return self.finish(out);
+            }
+        }
+
         match action {
             AgentAction::None => self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken),
             AgentAction::Transfer => {
@@ -453,6 +530,7 @@ impl Engine {
                 }
             }
         }
+        self.note_asked(&asks);
         if out.pending.is_none() && out.directives.is_empty() && spoken.is_empty() {
             // The model said nothing: never leave the caller in silence.
             let r = self.business.config.fallback.ladder[0].clone();
@@ -1603,6 +1681,7 @@ impl Engine {
         }
         let ctx = self.render_ctx(None);
         self.say(out, &ask, ctx, true);
+        self.note_asked(&[slot.to_string()]);
     }
 
     fn infer_pipeline(&self, fills: &[SlotFill]) -> Option<(String, String)> {

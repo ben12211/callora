@@ -83,7 +83,7 @@ pub fn eval_case(call: &Value) -> Value {
         }
         if detail["route"] == "agent" {
             if let Some(reply) = detail["reply"].as_object() {
-                let keep = ["action", "task", "fields", "phrase", "say"];
+                let keep = ["action", "task", "fields", "asks", "phrase", "say"];
                 let scripted: serde_json::Map<String, Value> = reply
                     .iter()
                     .filter(|(k, _)| keep.contains(&k.as_str()))

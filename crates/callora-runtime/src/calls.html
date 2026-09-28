@@ -189,6 +189,7 @@ function turnView(t) {
       if (f) parts.push(f);
       meta.append(el("span", parts.join(" · ")));
       if (detail.second_hearing) meta.append(el("div", "שמיעה שנייה: " + detail.second_hearing));
+      if (detail.held_for_open_question) meta.append(el("div", "עבר לשאלה אחרת בלי תשובה על " + detail.held_for_open_question + ": נשאל שוב", "err"));
       if (detail.error) meta.append(el("div", "שגיאה: " + detail.error, "err"));
     } else if (detail.transcript != null) {
       meta.append(el("span", "נענה בחוקים, בלי הסוכן"));

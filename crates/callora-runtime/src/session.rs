@@ -159,6 +159,10 @@ enum Ev {
         turn: u64,
         fields: Vec<(String, String)>,
     },
+    AgentAsks {
+        turn: u64,
+        asks: Vec<String>,
+    },
     AgentDone {
         turn: u64,
         result: anyhow::Result<Value>,
@@ -225,6 +229,11 @@ struct PendingAgent {
     /// A value in the reply will be rejected: its words move on without it, so none play
     /// and the engine asks for the value again.
     hold_say: bool,
+    /// What the reply's question asks for (known before its words).
+    asks: Vec<String>,
+    /// The detail asked for earlier and still missing that this reply moved on past: its
+    /// words were held and the engine asks for the detail again.
+    held_for: Option<String>,
 }
 
 /// Where one reply's time went, from the end of the caller's speech to the first audio.
@@ -622,6 +631,19 @@ impl Session {
                     if rejects {
                         tracing::info!(call = %self.info.call_sid, ?fields, "a value will be rejected; the agent's words are held");
                         p.hold_say = true;
+                    }
+                }
+            }
+            Ev::AgentAsks { turn, asks } => {
+                let held = self
+                    .engine
+                    .moves_on(&self.pending_agent.as_ref().map(|p| p.fields.clone()).unwrap_or_default(), &asks);
+                if let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) {
+                    p.asks.clone_from(&asks);
+                    if let Some(slot) = held {
+                        tracing::info!(call = %self.info.call_sid, %slot, ?asks, "the reply moves on past an open question; its words are held");
+                        p.hold_say = true;
+                        p.held_for = Some(slot);
                     }
                 }
             }

@@ -181,6 +181,10 @@ pub struct CallState {
     /// Optional slots already asked before a read-back.
     #[serde(default)]
     pub asked_before_confirm: BTreeSet<String>,
+    /// Required details asked for and not given yet, in the order asked: the call does not
+    /// move on to other questions until each is given (or the task changes).
+    #[serde(default)]
+    pub open_questions: Vec<String>,
     /// This turn's second transcript of the caller's words (see the runtime's second hearing).
     #[serde(default)]
     pub second_hearing: Option<String>,
@@ -219,6 +223,7 @@ impl CallState {
             doubted_streets: BTreeSet::new(),
             unheard_rejections: BTreeMap::new(),
             asked_before_confirm: BTreeSet::new(),
+            open_questions: Vec::new(),
             second_hearing: None,
             address_form: AddressForm::Unknown,
             caller_phone: None,

@@ -172,7 +172,7 @@ pub fn check_case(case: &Case, registry: &BusinessRegistry) -> Vec<String> {
         let at = format!("{} turn {}", case.id, i + 1);
         if let Some(s) = &t.scripted {
             for key in s.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
-                if !["action", "task", "fields", "say", "phrase"].contains(&key.as_str()) {
+                if !["action", "task", "fields", "asks", "say", "phrase"].contains(&key.as_str()) {
                     problems.push(format!("{at}: scripted has an unknown key `{key}`"));
                 }
             }

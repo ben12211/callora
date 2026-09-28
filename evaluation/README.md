@@ -53,7 +53,7 @@ calls page (`/calls`), press **הורדה כמקרה בדיקה (eval)**, and sa
 ```
 
 - `caller` is what the recognizer heard; `second_hearing` what a second transcription heard.
-- A `scripted` turn is a fixed decision (`action`, `task`, `fields`, `say`, `phrase`) that
+- A `scripted` turn is a fixed decision (`action`, `task`, `fields`, `asks`, `say`, `phrase`) that
   sets the scene without calling the model. Only the unscripted turns are tested.
 - `customer` (on the case) is a known caller, as the customer lookup would return them.
 

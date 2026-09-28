@@ -280,6 +280,7 @@ fn decide(action: AgentAction, say: &str, task: Option<&str>, fields: &[(&str, &
         action,
         task: task.map(Into::into),
         fields: fields.iter().map(|(s, v)| (s.to_string(), v.to_string())).collect(),
+        asks: Vec::new(),
     }
 }
 
@@ -665,8 +666,8 @@ fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
     let order: Vec<&str> = request.schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(
         order,
-        ["action", "fields", "phrase", "say", "task"],
-        "the action and the fields, then the words: values are checked before a word plays"
+        ["action", "fields", "asks", "phrase", "say", "task"],
+        "the action, the fields and what the question asks, then the words: all are checked before a word plays"
     );
     // Phrases are offered by id, with their wording, and only those with nothing to fill in.
     assert!(system.contains("- ask_destination_street: \"לאיזה רחוב צריך להגיע?\""), "{system}");
@@ -1411,4 +1412,105 @@ fn a_question_the_caller_just_answered_is_not_asked_again() {
     still.phrase = Some("ask_passengers".into());
     let d = call.engine.on_agent_turn("ארבעים ושבע", still, "");
     assert!(spoken(&d).contains("נוסעים"), "{}", spoken(&d));
+}
+
+fn asking(asks: &[&str], turn: AgentTurn) -> AgentTurn {
+    AgentTurn { asks: asks.iter().map(|s| s.to_string()).collect(), ..turn }
+}
+
+fn elad_and_tel_aviv() -> Arc<callora_core::gazetteer::Gazetteer> {
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         5000\tתל אביב - יפו\t130\tדיזנגוף\tofficial\n",
+    ))
+}
+
+#[test]
+fn a_question_that_moves_on_past_an_unanswered_one_asks_it_again() {
+    // Live calls: the street was not understood, the agent asked for the passengers, and the
+    // street came back two questions later.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_and_tel_aviv()));
+    call.engine.on_agent_turn(
+        "מאלעד",
+        asking(
+            &["pickup"],
+            decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", Some("book_ride"), &[("pickup", "אלעד")]),
+        ),
+        "",
+    );
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "אנחנו שלושה");
+    assert!(next.user.contains("OPEN QUESTION: you asked for pickup"), "{}", next.user);
+
+    let d = call.engine.on_agent_turn(
+        "אנחנו שלושה",
+        asking(
+            &["customer_name"],
+            decide(AgentAction::None, "על שם מי לרשום את ההזמנה?", None, &[("passengers", "3")]),
+        ),
+        "",
+    );
+    let said = spoken(&d);
+    assert_eq!(call.slot("passengers").map(|v| v.spoken()).as_deref(), Some("3"), "what they did say is kept");
+    assert!(said.contains("מאיזה רחוב ומספר לאסוף"), "the street again, by its own question: {said}");
+    assert!(!said.contains("על שם מי"), "not the next question: {said}");
+
+    // The street given: the open question is closed and the call goes on.
+    let d = call.engine.on_agent_turn(
+        "בן זכאי 45",
+        asking(
+            &["customer_name"],
+            decide(AgentAction::None, "על שם מי לרשום את ההזמנה?", None, &[("pickup", "בן זכאי 45")]),
+        ),
+        "",
+    );
+    assert!(spoken(&d).contains("על שם מי"), "{}", spoken(&d));
+    assert!(callora_core::engine::open_questions(call.engine.business(), &call.engine.state).is_empty());
+}
+
+#[test]
+fn a_question_that_keeps_one_open_detail_goes_on() {
+    // "מאיפה לאן?" answered with the destination only: asking for the pickup is not moving on.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_and_tel_aviv()));
+    call.engine.on_agent_turn(
+        "צריך מונית",
+        AgentTurn {
+            phrase: Some("ask_route".into()),
+            ..asking(&["pickup", "destination"], decide(AgentAction::None, "", Some("book_ride"), &[]))
+        },
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "לדיזנגוף 10 בתל אביב",
+        asking(&["pickup"], decide(AgentAction::None, "מאיפה לאסוף?", None, &[("destination", "דיזנגוף 10, תל אביב")])),
+        "",
+    );
+    assert!(spoken(&d).contains("מאיפה לאסוף"), "{}", spoken(&d));
+}
+
+#[test]
+fn an_unknown_destination_street_lets_the_call_go_on() {
+    // "לא יודע" to the destination's street: the city is enough, nothing stays open.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_and_tel_aviv()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 45 באלעד לתל אביב",
+        asking(
+            &["destination"],
+            decide(
+                AgentAction::None,
+                "לאיזה רחוב צריך להגיע?",
+                Some("book_ride"),
+                &[("pickup", "בן זכאי 45, אלעד"), ("destination", "תל אביב")],
+            ),
+        ),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "לא יודע",
+        asking(&["passengers"], decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "תל אביב")])),
+        "",
+    );
+    assert!(spoken(&d).contains("כמה נוסעים"), "{}", spoken(&d));
 }

@@ -137,6 +137,7 @@ impl Session {
                 let mut say = SayStream::default();
                 let mut reply = String::new();
                 let mut fields_sent = false;
+                let mut asks_sent = false;
                 let mut phrase_sent = false;
                 while let Some(delta) = stream.next().await {
                     let delta = delta?;
@@ -148,14 +149,22 @@ impl Session {
                             let _ = says.send(Ev::AgentFields { turn, fields });
                         }
                     }
+                    // What the question asks for, before its words: a question that moves on
+                    // past an unanswered one is held.
+                    if fields_sent && !asks_sent {
+                        if let Some(asks) = say.asks() {
+                            asks_sent = true;
+                            let _ = says.send(Ev::AgentAsks { turn, asks });
+                        }
+                    }
                     // A read-back or a submit: the engine speaks the words with what follows.
                     if matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit | AgentAction::EndCall))
                     {
                         continue;
                     }
-                    // A recorded phrase plays the moment its id is complete (after the fields,
-                    // which were checked first).
-                    if fields_sent && !phrase_sent {
+                    // A recorded phrase plays the moment its id is complete (after the fields
+                    // and what the question asks for, which were checked first).
+                    if asks_sent && !phrase_sent {
                         if let Some(id) = say.phrase() {
                             phrase_sent = true;
                             let _ = says.send(Ev::AgentPhrase { turn, id });
@@ -204,6 +213,8 @@ impl Session {
             partial_phrase: None,
             done: None,
             hold_say: false,
+            asks: Vec::new(),
+            held_for: None,
         });
     }
 
@@ -273,10 +284,23 @@ impl Session {
         }
         // It asks for a value this same reply passes: the engine decides once the value is
         // checked (the next question if it was taken, this one if it was not).
-        let answered = self.engine.slot_asked_by(&id).is_some_and(|slot| p.fields.iter().any(|(s, _)| *s == slot));
+        let asked = self.engine.slot_asked_by(&id);
+        let answered = asked.as_ref().is_some_and(|slot| p.fields.iter().any(|(s, _)| s == slot));
         if answered {
             p.hold_say = true;
             return;
+        }
+        // A phrase that asks for another detail while one asked earlier is still missing (a
+        // reply whose `asks` did not say so).
+        if p.asks.is_empty() {
+            if let Some(slot) = asked.and_then(|a| self.engine.moves_on(&p.fields, &[a])) {
+                tracing::info!(call = %self.info.call_sid, %slot, phrase = %id, "the phrase moves on past an open question; held");
+                if let Some(p) = self.pending_agent.as_mut() {
+                    p.hold_say = true;
+                    p.held_for = Some(slot);
+                }
+                return;
+            }
         }
         let Some(plan) = self.engine.render_response(&id) else { return };
         if let Some(p) = self.pending_agent.as_mut() {
@@ -331,6 +355,7 @@ impl Session {
                 "second_hearing": self.engine.state.second_hearing,
                 "decision_ms": elapsed,
                 "usage": usage,
+                "held_for_open_question": p.held_for,
             }),
         });
         match result {
