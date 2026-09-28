@@ -22,6 +22,7 @@ impl Session {
         }
         let text = self.last_partial.trim().to_string();
         if text.is_empty() {
+            tracing::info!(call = %self.info.call_sid, "no partial transcript at the end of speech; not speculating");
             return;
         }
         let (u, needs_llm) = fast_path(&self.business, &self.engine.context(), &text);
@@ -43,6 +44,9 @@ impl Session {
                 }
                 self.pending_agent = Some(p);
                 return self.adopt_speculation();
+            }
+            if p.speculative {
+                tracing::info!(call = %self.info.call_sid, partial = %p.transcript, r#final = %transcript, "speculation missed");
             }
             p.task.abort();
             // A new sentence while the agent was still thinking about the previous one:

@@ -247,7 +247,7 @@
       "Pass a place's city as soon as it is said (\"אלעד\"), and its street with the city (\"בן זכאי 45, אלעד\").",
       "A place that is not a street (a building, a mall, a hospital, a school, a neighbourhood) is a fine answer to the street question: pass it with the city (\"בנייני האומה, ירושלים\"); the system knows the places of each city. If it says it does not know the place, ask \"יש כתובת של המקום?\"; if the caller does not know, pass the place again and go on.",
       "Many callers (especially in בני ברק, אלעד, ביתר עילית, מודיעין עילית, ירושלים, בית שמש) speak with an Ashkenazi pronunciation that recognition garbles: ת sounds like ס (\"שבעס\" is \"שבת\"), o like oy (\"אהרוינוביטש\" is \"אהרונוביץ\"), and names are said the Yiddish way (\"יאנקל\" is \"יעקב\"). Write the real street or name it obviously is; if unsure, ask.",
-      "When you did not catch a detail, never say \"לא הבנתי\"; say it is to avoid a mistake: \"רק כדי שלא תהיה טעות, מה שם הרחוב?\" (or the detail you need).",
+      "When you did not understand, ask your question again in other words, or for the one detail you missed (\"רק כדי שלא תהיה טעות, מה שם הרחוב?\"). Never \"לא הבנתי\", never \"אפשר להגיד שוב?\", never the same sentence twice in a row. With nothing understood yet at the start: \"צריך מונית?\".",
       "YOUR GOAL: a sent ride in as few turns as possible, ideally under a minute. Every turn asks for what is still missing, two details at once when they go together; no small talk beyond one word, no explanations; when everything is in, read_back at once.",
       "After the ride was sent, a correction cannot change it here: never promise to fix it (\"אני אתקן\"). Say \"רגע, אני מעביר למוקדן שיתקן את ההזמנה\" and use action transfer.",
       "Submit only on a clear yes (\"כן\", \"יאללה\", \"תשלח\", \"סבבה\"). A word you cannot make sense of is not a yes: ask \"לשלוח את ההזמנה?\".",
@@ -279,7 +279,7 @@
     },
     "thinking_filler": "filler_hmm",
     "phrases": [
-      "ack", "anything_else", "goodbye", "ask_change", "go_back", "fallback_1", "still_there",
+      "ack", "anything_else", "goodbye", "ask_change", "go_back", "still_there",
       "ask_route", "ask_pickup", "ask_destination", "ask_passengers", "ask_item", "ask_ride_time", "small_talk_answer",
       "small_talk_short", "ask_pickup_city", "ask_pickup_street", "ask_destination_city", "ask_destination_street", "ask_again_street", "ask_place_address", "ask_name", "ask_notes",
       "filler_checking", "invoice_answer", "hours_answer", "cancel_declined"

@@ -188,6 +188,14 @@ pub struct CallState {
     /// The details the last question asked for.
     #[serde(default)]
     pub last_asks: Vec<String>,
+    /// A street and number given without its city ("בן זכאי 45"), kept until the city
+    /// comes: slot → the words.
+    #[serde(default)]
+    pub place_streets: BTreeMap<String, String>,
+    /// A street its city does not have, to read back for the caller to confirm or correct
+    /// ("ארנוביץ 32, ירושלים, נכון?"): slot → the words.
+    #[serde(default)]
+    pub doubt_confirm: BTreeMap<String, String>,
     /// This turn's second transcript of the caller's words (see the runtime's second hearing).
     #[serde(default)]
     pub second_hearing: Option<String>,
@@ -228,6 +236,8 @@ impl CallState {
             asked_before_confirm: BTreeSet::new(),
             open_questions: Vec::new(),
             last_asks: Vec::new(),
+            place_streets: BTreeMap::new(),
+            doubt_confirm: BTreeMap::new(),
             second_hearing: None,
             address_form: AddressForm::Unknown,
             caller_phone: None,

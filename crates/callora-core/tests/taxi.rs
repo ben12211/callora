@@ -645,7 +645,7 @@ fn speech_already_streamed_is_recorded_not_repeated() {
 fn an_empty_decision_never_leaves_the_caller_in_silence() {
     let (mut call, _) = Call::new(business(&[]));
     let d = call.engine.on_agent_turn("...", decide(AgentAction::None, "", None, &[]), "");
-    assert!(spoken(&d).contains("כדי שלא תהיה טעות"), "{}", spoken(&d));
+    assert_eq!(spoken(&d), "אהלן, איך אפשר לעזור?", "the question again, not \"say it again?\"");
 }
 
 #[test]
@@ -1071,7 +1071,7 @@ fn a_detail_rejected_in_a_read_back_turn_is_asked_for_not_read_back() {
     );
     let said = spoken(&d);
     assert!(!said.contains("לשלוח"), "no read-back of the old pickup: {said}");
-    assert!(said.contains("איזה רחוב ומספר"), "asks for the street: {said}");
+    assert!(said.contains("בית דחה 45") && said.contains("נכון?"), "what was heard, to confirm: {said}");
     assert!(!said.contains("סגור"), "{said}");
 }
 
@@ -1609,4 +1609,57 @@ fn words_that_were_not_made_out_get_the_question_again() {
     );
     let said = spoken(&call.engine.on_unheard());
     assert_eq!(said, "כמה נוסעים?", "the question alone, without the \"סגור.\" before it");
+}
+
+#[test]
+fn a_street_without_its_city_is_kept_while_the_city_is_asked() {
+    // The live call of 18:05: "בן זכאי 45" with no city was taken for the moshav בן זכאי.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309	אלעד	110	רבן יוחנן בן זכאי	official
+1309	אלעד	110	בן זכאי	synonym
+         2066	בן זכאי	9000	בן זכאי	official
+",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    let d = call.engine.on_agent_turn(
+        "בן זכאי 45",
+        asking(&["destination"], decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "בן זכאי 45")])),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None, "not the moshav");
+    assert!(spoken(&d).contains("מאיזו עיר לאסוף"), "{}", spoken(&d));
+    call.engine.on_agent_turn(
+        "מאלעד",
+        asking(&["destination"], decide(AgentAction::None, "לאן נוסעים?", None, &[("pickup", "אלעד")])),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "בן זכאי 45, אלעד", "the street kept, in the city given after it");
+}
+
+#[test]
+fn a_street_its_city_lacks_is_read_back_and_taken_when_confirmed() {
+    // The live call of 18:05: "ארנוביץ 32" in ירושלים (it is a street of בני ברק), asked
+    // "לאיזה רחוב צריך להגיע?" right after the caller had said it; they hung up.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_and_tel_aviv()));
+    let d = call.engine.on_agent_turn(
+        "לתל אביב, ארנוביץ 32",
+        asking(
+            &["passengers"],
+            decide(AgentAction::None, "", Some("book_ride"), &[("destination", "ארנוביץ 32, תל אביב")]),
+        ),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("ארנוביץ 32") && said.contains("נכון?"), "{said}");
+    call.engine.on_agent_turn(
+        "כן",
+        asking(
+            &["passengers"],
+            decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "ארנוביץ 32, תל אביב")]),
+        ),
+        "",
+    );
+    assert!(place(call.slot("destination")).contains("ארנוביץ 32"), "kept once confirmed");
 }
