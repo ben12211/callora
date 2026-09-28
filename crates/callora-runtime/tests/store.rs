@@ -100,7 +100,10 @@ async fn records_round_trip_through_postgres() {
     let call = store::get_call(&pool, call_id).await.unwrap().unwrap();
     assert_eq!(call["review"], json!({ "verdict": "bad", "note": "asked the street twice" }));
     let facts = store::call_facts(&pool, Some("taxi"), 1).await.unwrap();
-    assert!(facts.iter().any(|f| f.verdict.as_deref() == Some("bad") && f.outcome.as_deref() == Some("HandedOff")));
+    assert!(facts.iter().any(|f| f.verdict.as_deref() == Some("bad")
+        && f.outcome.as_deref() == Some("HandedOff")
+        && f.booking_seconds.is_none()
+        && f.booking_turns.is_none()));
 
     let id = call["utterances"][0]["id"].as_i64().unwrap();
     assert_eq!(store::utterance_audio(&pool, id).await.unwrap().map(|a| a.len()), Some(1600));

@@ -30,6 +30,14 @@ pub fn stats(facts: &[CallFacts], prices: &Prices) -> Value {
         }
     }
     tokens.model.clear();
+    // How fast a task gets done: the median over the calls that did one.
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        let n = v.len();
+        (n > 0).then(|| if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 })
+    };
+    let booking_seconds = median(facts.iter().filter_map(|f| f.booking_seconds).collect());
+    let booking_turns = median(facts.iter().filter_map(|f| f.booking_turns.map(|n| n as f64)).collect());
     let share = |n: usize| if calls == 0 { None } else { Some(n as f64 / calls as f64) };
     json!({
         "calls": calls,
@@ -41,6 +49,8 @@ pub fn stats(facts: &[CallFacts], prices: &Prices) -> Value {
         "to_verify": unverified,
         "reviewed_good": reviewed("good"),
         "reviewed_bad": reviewed("bad"),
+        "booking_seconds_median": booking_seconds,
+        "booking_turns_median": booking_turns,
         "avg_duration_seconds": (!durations.is_empty())
             .then(|| durations.iter().map(|d| f64::from(*d)).sum::<f64>() / durations.len() as f64),
         "tokens": tokens,
@@ -116,6 +126,7 @@ mod tests {
         ];
         let prices = parse_prices("gpt-6-sol=2/0.2/10");
         let s = stats(&day, &prices);
+        assert!(s["booking_seconds_median"].is_null(), "no call says when its task was done");
         assert_eq!(s["calls"], 4);
         assert_eq!(s["done_without_a_person"], 2);
         assert_eq!(s["done_without_a_person_share"], 0.5);
@@ -129,6 +140,24 @@ mod tests {
         let s = stats(&[facts("AgentHungUp", 1, u("gpt-6-sol")), facts("AgentHungUp", 1, u("other"))], &prices);
         assert!(s["cost"].is_null());
         assert!(stats(&[], &prices)["done_without_a_person_share"].is_null());
+    }
+
+    #[test]
+    fn how_fast_a_ride_gets_booked() {
+        let booked = |secs: f64, turns: i64| CallFacts {
+            orders: 1,
+            booking_seconds: Some(secs),
+            booking_turns: Some(turns),
+            ..CallFacts::default()
+        };
+        let s = stats(
+            &[booked(40.0, 4), booked(70.0, 7), booked(55.0, 5), facts("CallerHungUp", 0, None)],
+            &Prices::default(),
+        );
+        assert_eq!(s["booking_seconds_median"], 55.0);
+        assert_eq!(s["booking_turns_median"], 5.0);
+        let s = stats(&[booked(40.0, 4), booked(60.0, 6)], &Prices::default());
+        assert_eq!(s["booking_seconds_median"], 50.0);
     }
 
     #[test]

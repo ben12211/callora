@@ -207,6 +207,9 @@ pub struct CallFacts {
     pub unverified: i64,
     pub usage: Option<crate::ports::Usage>,
     pub verdict: Option<String>,
+    /// From the call's start to its first completed task, and the caller turns until then.
+    pub booking_seconds: Option<f64>,
+    pub booking_turns: Option<i64>,
 }
 
 /// The calls of the last `days` days, for the numbers on the calls page.
@@ -215,8 +218,12 @@ pub async fn call_facts(pool: &PgPool, business: Option<&str>, days: i32) -> sql
         "SELECT c.outcome, c.duration_seconds, c.llm_usage, r.verdict,
                 (SELECT count(*) FROM callora_v2.orders o WHERE o.call_id = c.id) AS orders,
                 (SELECT count(*) FROM callora_v2.orders o WHERE o.call_id = c.id
-                   AND coalesce((o.card->>'verify')::boolean, false)) AS unverified
+                   AND coalesce((o.card->>'verify')::boolean, false)) AS unverified,
+                extract(epoch FROM f.at - c.started_at)::float8 AS booking_seconds,
+                (SELECT count(*) FROM callora_v2.call_turns t
+                   WHERE t.call_id = c.id AND t.speaker = 'caller' AND t.at <= f.at) AS booking_turns
          FROM callora_v2.calls c LEFT JOIN callora_v2.call_reviews r ON r.call_id = c.id
+         LEFT JOIN LATERAL (SELECT min(o.at) AS at FROM callora_v2.orders o WHERE o.call_id = c.id) f ON true
          WHERE c.started_at > now() - make_interval(days => $1) AND ($2::text IS NULL OR c.business_id = $2)
          LIMIT 50000",
     )
@@ -233,6 +240,9 @@ pub async fn call_facts(pool: &PgPool, business: Option<&str>, days: i32) -> sql
             unverified: r.get("unverified"),
             usage: r.get::<Option<Value>, _>("llm_usage").and_then(|v| serde_json::from_value(v).ok()),
             verdict: r.get("verdict"),
+            booking_seconds: r.get("booking_seconds"),
+            // Transcripts past their retention leave no turns to count.
+            booking_turns: Some(r.get::<i64, _>("booking_turns")).filter(|n| *n > 0),
         })
         .collect())
 }

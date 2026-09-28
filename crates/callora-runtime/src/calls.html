@@ -132,6 +132,7 @@ async function loadStats() {
     tile("הועבר למוקדן", pct(s.handed_off_share), s.handed_off + " שיחות"),
     tile("בלי תוצאה", String(s.nothing_done), "ניתקו לפני שהושלם משהו", s.nothing_done ? "warn" : ""),
     tile("לבדוק", String(s.to_verify), "הזמנות שלא ידוע אם נקלטו", s.to_verify ? "bad" : ""),
+    tile("זמן עד הזמנה", secs(s.booking_seconds_median), s.booking_turns_median == null ? "חציון" : "חציון · " + s.booking_turns_median + " תורות של המתקשר"),
     tile("משך ממוצע", secs(s.avg_duration_seconds)),
     tile("עלות לשיחה", dollars(s.cost_per_call), s.cost == null ? "הגדירו AGENT_PRICES" : "סה״כ " + dollars(s.cost)),
     tile("סומנו לא תקין", String(s.reviewed_bad), s.reviewed_good + " סומנו תקין", s.reviewed_bad ? "bad" : ""),

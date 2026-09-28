@@ -175,8 +175,8 @@ and the audio-source mix `callora_audio_segments_total{source=...}`.
   actions, and reports the pass rate, first-words and decision latency, tokens and cost
   per turn, per model. It is how a prompt, rule or model change is judged.
 - **`/calls`** (admin key) shows the numbers of the last day / week / month (calls, the
-  share done without a person, handoffs, calls with nothing done, orders to check, cost
-  per call, reviewed calls), every call with each caller turn's decision (route, latency,
+  share done without a person, handoffs, calls with nothing done, orders to check, the
+  median time and caller turns to a completed task, cost per call, reviewed calls), every call with each caller turn's decision (route, latency,
   action, phrase, values), the caller's recorded utterances (sampled numbers only), a
   good / bad verdict with a note, and the export of a call as an eval case.
 

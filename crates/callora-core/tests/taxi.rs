@@ -921,7 +921,11 @@ fn the_address_form_follows_what_the_caller_says_about_themselves() {
     // Impersonal "צריך" says nothing; "אני צריכה" does, and it stays for the rest of the call.
     call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "מאיזו עיר לאסוף?", Some("book_ride"), &[]), "");
     assert_eq!(call.engine.state.address_form, AddressForm::Unknown);
-    call.engine.on_agent_turn("מרעננה, אני צריכה מונית", decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", None, &[]), "");
+    call.engine.on_agent_turn(
+        "מרעננה, אני צריכה מונית",
+        decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", None, &[]),
+        "",
+    );
     assert_eq!(call.engine.state.address_form, AddressForm::Feminine);
     call.engine.on_agent_turn("אחוזה 12", decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[]), "");
     assert_eq!(call.engine.state.address_form, AddressForm::Feminine, "kept when nothing new is said");
@@ -929,7 +933,11 @@ fn the_address_form_follows_what_the_caller_says_about_themselves() {
     assert!(feminine.user.contains("ADDRESS FORM: feminine"), "{}", feminine.user);
 
     // A correction wins.
-    call.engine.on_agent_turn("סליחה, אני מתכוון לתל אביב", decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", None, &[]), "");
+    call.engine.on_agent_turn(
+        "סליחה, אני מתכוון לתל אביב",
+        decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", None, &[]),
+        "",
+    );
     assert_eq!(call.engine.state.address_form, AddressForm::Masculine);
     // The rules path listens too.
     call.say("אני אישה, דברו אליי בלשון נקבה");
@@ -1181,7 +1189,8 @@ fn the_agent_is_told_the_street_question_comes_after_a_city() {
     );
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "ירושלים");
     assert!(
-        next.user.contains("NOW: the caller is giving the destination city") && next.user.contains("\"לאיזה רחוב צריך להגיע?\""),
+        next.user.contains("NOW: the caller is giving the destination city")
+            && next.user.contains("\"לאיזה רחוב צריך להגיע?\""),
         "{}",
         next.user
     );

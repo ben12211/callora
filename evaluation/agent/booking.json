@@ -31,6 +31,24 @@
     ]
   },
   {
+    "id": "a_request_asks_where_from_and_where_to_at_once",
+    "note": "Goal over order: the opening question asks for both places, so a caller who knows them says them in one turn.",
+    "turns": [
+      {
+        "caller": "שלום, אני צריך מונית",
+        "expect": {
+          "task": "book_ride",
+          "action": [
+            "none"
+          ],
+          "says_any": [
+            "לאן"
+          ]
+        }
+      }
+    ]
+  },
+  {
     "id": "pickup_city_then_its_street",
     "note": "live calls skipped the street after the city",
     "turns": [

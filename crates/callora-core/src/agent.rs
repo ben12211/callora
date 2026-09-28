@@ -232,7 +232,8 @@ pub fn system_prompt(b: &Business) -> String {
          Never guess a value{}, never end the call because of it.\n\
          - Greetings and small talk get a short friendly answer, then offer help.\n\
          - Prices, arrival times and availability come only from the system. Never promise them yourself.\n\
-         - Ask for one missing required detail at a time, the most important first.\n\
+         - Ask only for what is still missing, the most important first; one short question may ask for two \
+         missing details that go together.\n\
          - If the caller corrects a detail while details are being confirmed, take the correction and choose \
          read_back again.\n",
         eg(words.and_then(|w| w.garbled.as_ref())),
@@ -339,9 +340,9 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                     }
                 }
             }
-            // The step the caller is on and the question after it, from the task's order: the
-            // model skipped the street after a destination city in several calls, asked for the
-            // passengers and then talked past the caller's street.
+            // The street a place still needs: the model skipped the street after a destination
+            // city in several calls, asked for the passengers and then talked past the caller's
+            // street. Another missing detail may share the question.
             if let Some(p) = b.pipeline(&run.pipeline) {
                 let pending = p.slots.iter().find(|ps| {
                     !run.slots.contains_key(&ps.slot) && ps.default.is_none() && (ps.required || ps.ask.is_some())
@@ -362,7 +363,7 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                     } else if place_with_street(ps) {
                         u.push_str(&format!(
                             "NOW: the caller is giving the {} city. When they say only a city, your next question \
-                             is its street: {}, nothing else.\n",
+                             asks for its street ({}); it may also ask for one other missing detail.\n",
                             ps.slot,
                             street_ask(ps).unwrap_or_default()
                         ));
