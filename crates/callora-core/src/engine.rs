@@ -1496,6 +1496,23 @@ impl Engine {
     }
 
     /// The caller said nothing for the configured silence.
+    /// The caller said something that could not be made out (it was taken for line noise)
+    /// and then nothing more: "to avoid a mistake, say it again?" instead of the silence the
+    /// caller would otherwise wait out. The question stays the last thing said, for repeats.
+    pub fn on_unheard(&mut self) -> Vec<Directive> {
+        let mut out = Out::default();
+        if self.state.phase != Phase::Active
+            || matches!(self.state.run.as_ref().map(|r| &r.step), Some(Step::Executing { .. }))
+        {
+            return Vec::new();
+        }
+        if let Some(r) = self.business.config.fallback.ladder.first().cloned() {
+            let ctx = self.render_ctx(None);
+            self.say(&mut out, &r, ctx, false);
+        }
+        self.finish(out)
+    }
+
     pub fn on_silence(&mut self) -> Vec<Directive> {
         let mut out = Out::default();
         if self.state.phase != Phase::Active

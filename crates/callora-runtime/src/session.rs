@@ -46,6 +46,9 @@ mod speech;
 const SHORT_GARBAGE_WORDS: usize = 3;
 /// How long an unfinished sentence waits for the caller to go on.
 const UNFINISHED_WAIT: Duration = Duration::from_millis(1200);
+/// After words taken for line noise and nothing more, how long before "say it again?": a
+/// live call waited 11 seconds in silence after its "שלום" (likely "שלוש") was dropped.
+const UNHEARD_WAIT: Duration = Duration::from_millis(2000);
 
 /// Consecutive speech recognition reconnects (with no transcript in between) before the
 /// call is handed off.
@@ -189,6 +192,10 @@ enum Ev {
     },
     /// A hangup or handoff with nothing left to say.
     TerminateNow,
+    /// Words taken for noise, then nothing: ask the caller to say it again.
+    Unheard {
+        generation: u64,
+    },
 }
 
 enum AfterSpeech {
@@ -609,6 +616,19 @@ impl Session {
                     && self.after_speech.is_none()
                 {
                     let d = self.engine.on_silence();
+                    self.execute(d);
+                }
+            }
+            Ev::Unheard { generation } => {
+                if generation == self.silence_generation
+                    && !self.vad.is_speaking()
+                    && !self.agent_busy()
+                    && self.pending_agent.is_none()
+                    && self.pending_llm.is_none()
+                    && self.actions_in_flight == 0
+                    && self.after_speech.is_none()
+                {
+                    let d = self.engine.on_unheard();
                     self.execute(d);
                 }
             }

@@ -267,7 +267,15 @@ impl Session {
             let directives = self.engine.replay_last();
             self.execute(directives);
         } else {
+            // The silence reprompt as a backstop; "say it again?" first, unless the caller
+            // goes on talking.
             self.arm_silence();
+            let generation = self.silence_generation;
+            let tx = self.events.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(UNHEARD_WAIT).await;
+                let _ = tx.send(Ev::Unheard { generation });
+            });
         }
     }
 
@@ -334,10 +342,18 @@ impl Session {
     }
 }
 
-/// The recognizer's marks for a sentence the caller broke off: a trailing "..." or "-".
+/// A sentence the caller broke off: the recognizer's trailing "..." or "-", or a last word
+/// that is a lone Hebrew letter, a prefix waiting for its word ("מ", "אני צריך ל"), which
+/// recognizers that mark nothing (Deepgram) return when the caller hesitates: a live call
+/// answered "מ" with a question while the caller was saying "...בן זכאי 45".
 pub(super) fn is_unfinished(text: &str) -> bool {
     let t = text.trim_end();
-    t.ends_with("...") || t.ends_with('…') || t.ends_with('-')
+    let lone_letter = t
+        .trim_end_matches(['.', ',', '?', '!'])
+        .split_whitespace()
+        .last()
+        .is_some_and(|w| w.chars().count() == 1 && w.chars().all(|c| ('א'..='ת').contains(&c)));
+    t.ends_with("...") || t.ends_with('…') || t.ends_with('-') || lone_letter
 }
 
 #[cfg(test)]
@@ -346,10 +362,11 @@ mod tests {
 
     #[test]
     fn broken_off_sentences_are_recognised() {
-        for t in ["ואני רוצה להגיע ל...", "יעני, מתל-ב-ב-ב-ב-", "אני נוסע ל… "] {
+        for t in ["ואני רוצה להגיע ל...", "יעני, מתל-ב-ב-ב-ב-", "אני נוסע ל… ", "מ", "אני צריך ל", "מ."]
+        {
             assert!(is_unfinished(t), "{t}");
         }
-        for t in ["לתל אביב.", "מה המצב?", "3-4 נוסעים"] {
+        for t in ["לתל אביב.", "מה המצב?", "3-4 נוסעים", "לא", "כן", "12"] {
             assert!(!is_unfinished(t), "{t}");
         }
     }

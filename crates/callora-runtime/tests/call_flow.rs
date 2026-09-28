@@ -459,3 +459,21 @@ async fn a_reply_that_starts_with_live_tts_opens_with_a_recorded_cover() {
     assert_eq!(frames.first(), Some(&0x55), "the recorded cover plays at once: {:?}", &frames[..frames.len().min(5)]);
     assert!(frames.contains(&0x33), "then the live read-back");
 }
+
+#[tokio::test]
+async fn words_taken_for_noise_are_followed_by_say_it_again_not_a_long_silence() {
+    // A live call waited 11 seconds after its "שלום" (likely "שלוש") was dropped as noise.
+    let h = start_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, "CA43", "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "connected" }).to_string().into())).await.unwrap();
+    ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ1", "start": { "streamSid": "MZ1", "callSid": "CA43", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    let (frames, _) = collect(&mut ws, Duration::from_millis(400)).await;
+    assert!(!frames.is_empty(), "greeting");
+
+    h.stt.say("אה").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(1500)).await;
+    assert!(frames.is_empty(), "nothing at once: the caller may go on");
+    let (frames, _) = collect(&mut ws, Duration::from_millis(1200)).await;
+    assert!(!frames.is_empty(), "then \"say it again?\", well before the 5 s silence reprompt");
+}

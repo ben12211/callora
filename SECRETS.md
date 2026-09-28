@@ -61,7 +61,7 @@ generated on the VM and never leaves it, and `PUBLIC_BASE_URL` comes from the Va
 
 ## Optional runtime tuning (environment)
 
-`AGENT_HEDGE_MS` (default `1200`), `AGENT_SPECULATE` (`true` to start the agent on partial transcripts),
+`AGENT_HEDGE_MS` (default `1200`), `AGENT_SPECULATE` (the agent starts on the partial transcript at the end of speech; on unless `false`),
 `SECOND_HEARING` (`1` for a second, hinted transcription of cities and streets; off until measured),
 `EVAL_PRICES` (prices for `callora eval` only; defaults to `AGENT_PRICES`),
 `RUST_LOG`, `LOG_FORMAT`, `HOST`, `PORT`, `BUSINESS_CONFIG_DIR`, `AUDIO_LIBRARY_DIR`,
