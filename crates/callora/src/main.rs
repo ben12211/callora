@@ -265,6 +265,18 @@ fn speech_to_text() -> Arc<dyn SpeechToText> {
     })
 }
 
+/// The built dashboard: `WEB_DIR`, else `web/dist` when it has been built.
+fn web_dir() -> Option<std::path::PathBuf> {
+    let dir = std::path::PathBuf::from(env("WEB_DIR").unwrap_or_else(|| "web/dist".into()));
+    if dir.join("index.html").is_file() {
+        tracing::info!(dir = %dir.display(), "dashboard");
+        Some(dir)
+    } else {
+        tracing::warn!(dir = %dir.display(), "no dashboard build: the site is not served");
+        None
+    }
+}
+
 fn env_snapshot() -> HashMap<String, String> {
     std::env::vars().collect()
 }
@@ -597,6 +609,11 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         admin_api_key: env("ADMIN_API_KEY").filter(|k| k.len() >= 8),
         skip_signature_validation,
         prices: callora_runtime::pricing::parse_prices(&env("AGENT_PRICES").unwrap_or_default()),
+        dashboard_password: env("DASHBOARD_PASSWORD").unwrap_or_else(|| {
+            tracing::warn!("DASHBOARD_PASSWORD is not set: the dashboard's password is the default 12345678");
+            "12345678".into()
+        }),
+        web_dir: web_dir(),
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
     let app = router(state);

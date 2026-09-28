@@ -194,6 +194,8 @@ async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
         admin_api_key: None,
         skip_signature_validation: false,
         prices: Default::default(),
+        dashboard_password: "12345678".into(),
+        web_dir: None,
     };
     let state = AppState::new(registry, libraries, services, SessionConfig::default(), settings, None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -476,4 +478,38 @@ async fn words_taken_for_noise_are_followed_by_the_question_again_not_a_long_sil
     assert!(frames.is_empty(), "nothing at once: the caller may go on");
     let (frames, _) = collect(&mut ws, Duration::from_millis(1200)).await;
     assert!(!frames.is_empty(), "then the question again, well before the 5 s silence reprompt");
+}
+
+#[tokio::test]
+async fn the_dashboard_signs_in_with_its_password_and_the_cookie_opens_the_api() {
+    let h = start_server().await;
+    let base = format!("http://{}", h.addr);
+    let http = reqwest::Client::new();
+    let login = |password: &str| http.post(format!("{base}/api/login")).json(&json!({ "password": password })).send();
+
+    assert_eq!(http.get(format!("{base}/api/session")).send().await.unwrap().status(), 401, "not signed in");
+    assert_eq!(login("wrong").await.unwrap().status(), 401);
+
+    let ok = login("12345678").await.unwrap();
+    assert_eq!(ok.status(), 204);
+    let cookie = ok.headers()["set-cookie"].to_str().unwrap().to_string();
+    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"), "{cookie}");
+    let session = cookie.split(';').next().unwrap().to_string();
+
+    let me = http.get(format!("{base}/api/session")).header("cookie", &session).send().await.unwrap();
+    assert_eq!(me.status(), 200);
+    let me: Value = me.json().await.unwrap();
+    assert_eq!(me["businesses"][0]["id"], "taxi");
+    // Past the check: this test server has no database.
+    let calls = http.get(format!("{base}/api/calls")).header("cookie", &session).send().await.unwrap();
+    assert_eq!(calls.status(), 503);
+    let forged = http.get(format!("{base}/api/calls")).header("cookie", "callora_session=v1.9999999999.x").send();
+    assert_eq!(forged.await.unwrap().status(), 401);
+    assert_eq!(http.get(format!("{base}/api/nothing")).send().await.unwrap().status(), 404);
+
+    // Guessing stops after five wrong passwords, even the right one then waits.
+    for _ in 0..5 {
+        login("guess").await.unwrap();
+    }
+    assert_eq!(login("12345678").await.unwrap().status(), 429);
 }

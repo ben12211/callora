@@ -193,6 +193,7 @@ jobs:
       ELEVENLABS_DYNAMIC_MODEL: ${{ vars.ELEVENLABS_DYNAMIC_MODEL }}
       CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
       DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+      DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
@@ -266,7 +267,7 @@ jobs:
                       TEXT_LLM_MODEL TEXT_LLM_REASONING_EFFORT \
                       AGENT_MODEL AGENT_BACKUP_MODEL AGENT_REASONING_EFFORT AGENT_PRICES \
                       TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN \
-                      TAXI_CRM_URL TAXI_CRM_TOKEN ALLOW_LIST ADMIN_API_KEY AUDIO_SAMPLE_NUMBERS; do
+                      TAXI_CRM_URL TAXI_CRM_TOKEN ALLOW_LIST ADMIN_API_KEY AUDIO_SAMPLE_NUMBERS DASHBOARD_PASSWORD; do
             value="${!name}"
             value="${value//$'\n'/}"
             printf '%s=%s\n' "$name" "$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"

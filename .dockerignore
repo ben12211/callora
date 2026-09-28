@@ -9,3 +9,6 @@ docs
 evaluation
 voice-library
 *.md
+web/node_modules
+web/dist
+.claude

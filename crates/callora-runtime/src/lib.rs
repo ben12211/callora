@@ -1,6 +1,7 @@
 //! The Callora phone runtime.
 
 pub mod actions;
+pub mod dashboard;
 pub mod metrics;
 pub mod ports;
 pub mod pricing;

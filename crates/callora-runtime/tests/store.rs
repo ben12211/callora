@@ -105,6 +105,9 @@ async fn records_round_trip_through_postgres() {
         && f.booking_seconds.is_none()
         && f.booking_turns.is_none()));
 
+    let daily = store::daily(&pool, Some("taxi"), 1).await.unwrap();
+    assert!(daily.iter().any(|d| d["calls"].as_i64() >= Some(1) && d["handed_off"].as_i64() >= Some(1)), "{daily:?}");
+
     let id = call["utterances"][0]["id"].as_i64().unwrap();
     assert_eq!(store::utterance_audio(&pool, id).await.unwrap().map(|a| a.len()), Some(1600));
 }

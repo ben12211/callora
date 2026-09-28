@@ -72,6 +72,15 @@ should have happened ([`evaluation/README.md`](evaluation/README.md)).
 | `callora-providers` | OpenAI-compatible LLMs (the agent, with streaming and token usage; understanding), Deepgram (Nova-3 STT), ElevenLabs (TTS, Scribe STT), Cartesia (STT), Twilio REST, and the hedge/race between models |
 | `callora` | The binary: `serve`, `migrate`, `healthcheck`, `config validate`, `voice-library build/status`, `simulate`, `understand`, `agent-prompt`, `eval` |
 
+## Dashboard
+
+`web/` is the owner's site, built into the image and served at `/`. To work on it against a
+local server (`./dev up`):
+
+```bash
+cd web && npm install && npm run dev   # http://localhost:5173, /api proxied to :3000
+```
+
 ## Endpoints
 
 | Method | Path | |
@@ -81,8 +90,9 @@ should have happened ([`evaluation/README.md`](evaluation/README.md)).
 | POST | `/webhooks/twilio/call-status` | Call status callback (signed) |
 | POST | `/webhooks/twilio/handoff-whisper` | Reads the collected context to the human agent (signed) |
 | GET | `/health`, `/metrics` | Health, Prometheus metrics (latency histograms, audio-source mix) |
-| GET | `/calls`, `/orders` | The owner's pages: calls with their numbers, decisions, recordings and reviews; order cards. They ask for the admin key once. |
-| GET | `/api/businesses`, `/api/calls`, `/api/calls/{id}`, `/api/orders`, `/api/stats?days=7` | `X-Api-Key: $ADMIN_API_KEY` |
+| GET | `/`, `/calls`, `/calls/{id}`, `/orders` | The dashboard (`web/`, React + TypeScript): overview, calls with their decisions, recordings and reviews, order cards. Signed in with `DASHBOARD_PASSWORD`. |
+| POST | `/api/login`, `/api/logout` | `{"password": "..."}` → a signed, HttpOnly session cookie for 12 hours; five wrong passwords wait a minute |
+| GET | `/api/session`, `/api/businesses`, `/api/calls`, `/api/calls/{id}`, `/api/orders`, `/api/stats?days=7`, `/api/stats/daily?days=30` | The session cookie, or `X-Api-Key: $ADMIN_API_KEY` |
 | PUT | `/api/calls/{id}/review` | `{"verdict": "good" \| "bad", "note": "..."}` |
 | GET | `/api/calls/{id}/eval-case`, `/api/utterances/{id}` | A call as an eval case; a recorded utterance as WAV |
 

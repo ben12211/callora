@@ -184,9 +184,10 @@ Do not run `docker compose down --volumes` in production.
   `AGENT_REASONING_EFFORT` (defaults `gemini-3.8-flash` with thinking `low`, hedged by `gpt-6-luna`); the pipeline sends
   them on every deployment. Compare models with the **Agent eval** workflow (Actions tab)
   before changing them.
-- `https://<host>/calls` shows the numbers of the last day, week or month, every call with
-  the agent's decisions, the recorded utterances of the numbers in `AUDIO_SAMPLE_NUMBERS`,
-  and a verdict per call. It asks for `ADMIN_API_KEY` once and keeps it in the browser.
+- `https://<host>/` is the dashboard: the numbers of the last day, week or month, every
+  call with the agent's decisions, the recorded utterances of the numbers in
+  `AUDIO_SAMPLE_NUMBERS`, a verdict per call, and the order cards. It asks for
+  `DASHBOARD_PASSWORD` (a Repository Secret; `12345678` until one is set).
   Set `AGENT_PRICES` for the cost per call.
 - A migration adds `calls.llm_usage` and the `call_reviews` table; it runs by itself when
   the server starts.

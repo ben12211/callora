@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1.7
-# Production image. The build stage runs on the build machine's own architecture and
-# cross-compiles a static binary for the target (linux/arm64 in production) with
+# Production image. The build stages run on the build machine's own architecture and
+# cross-compile a static binary for the target (linux/arm64 in production) with
 # cargo-zigbuild, so an ARM64 image builds at native speed instead of under QEMU.
+# Dependencies are compiled in a layer of their own (cargo-chef) that the CI cache keeps
+# while Cargo.lock does not change, so a release compiles only Callora's own crates.
 
-FROM --platform=$BUILDPLATFORM rust:1.94-bookworm AS build
-ARG TARGETARCH
+FROM --platform=$BUILDPLATFORM rust:1.94-bookworm AS toolchain
 ARG BUILDARCH
 # Zig (the cross linker) comes from its PyPI wheel, verified against a pinned checksum.
 ARG ZIG_VERSION=0.13.0
@@ -21,18 +22,37 @@ RUN --mount=type=secret,id=extra_ca,required=false \
     unzip -q /tmp/zig.whl -d /opt/zig && rm /tmp/zig.whl; \
     printf '#!/bin/sh\nexec /opt/zig/ziglang/zig "$@"\n' > /usr/local/bin/zig && chmod +x /usr/local/bin/zig /opt/zig/ziglang/zig; \
     zig version; \
-    cargo install --locked cargo-zigbuild@0.19.8; \
+    cargo install --locked cargo-zigbuild@0.19.8 cargo-chef@0.1.78; \
     rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl
 WORKDIR /src
+
+# What the dependencies are, and nothing else: unchanged while Cargo.lock is.
+FROM toolchain AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    set -e; \
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM toolchain AS build
+ARG TARGETARCH
+COPY --from=planner /src/recipe.json recipe.json
+RUN set -e; \
+    case "$TARGETARCH" in arm64) T=aarch64-unknown-linux-musl ;; amd64) T=x86_64-unknown-linux-musl ;; *) echo "unsupported $TARGETARCH"; exit 1 ;; esac; \
+    cargo chef cook --release --locked --zigbuild --target "$T" --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN set -e; \
     case "$TARGETARCH" in arm64) T=aarch64-unknown-linux-musl ;; amd64) T=x86_64-unknown-linux-musl ;; *) echo "unsupported $TARGETARCH"; exit 1 ;; esac; \
     cargo zigbuild --release --locked --bin callora --target "$T"; \
     install -D "target/$T/release/callora" /out/callora; \
     mkdir -p /out/data/voice-library
+
+# The dashboard: static files, the same on every architecture.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
 
 FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.source="https://github.com/ben12211/callora"
@@ -40,6 +60,7 @@ LABEL org.opencontainers.image.description="Callora V2 phone agent"
 COPY --from=build /out/callora /usr/local/bin/callora
 # Empty and owned by the runtime user, so a fresh voice-library volume is writable.
 COPY --from=build --chown=65532:65532 /out/data /data
+COPY --from=web /web/dist /app/web
 COPY businesses /app/businesses
 COPY data/israel-streets.tsv.gz /app/data/israel-streets.tsv.gz
 COPY data/israel-places.tsv.gz /app/data/israel-places.tsv.gz
@@ -48,6 +69,7 @@ ENV BUSINESS_CONFIG_DIR=/app/businesses \
     STREETS_FILE=/app/data/israel-streets.tsv.gz \
     PLACES_FILE=/app/data/israel-places.tsv.gz \
     AUDIO_LIBRARY_DIR=/data/voice-library \
+    WEB_DIR=/app/web \
     HOST=0.0.0.0 \
     PORT=3000
 USER nonroot

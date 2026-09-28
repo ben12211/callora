@@ -247,6 +247,36 @@ pub async fn call_facts(pool: &PgPool, business: Option<&str>, days: i32) -> sql
         .collect())
 }
 
+/// Calls per day (in the business's time zone, Israel), for the dashboard's chart: how many,
+/// how many completed a task without a person, how many went to one.
+pub async fn daily(pool: &PgPool, business: Option<&str>, days: i32) -> sqlx::Result<Vec<Value>> {
+    let rows = sqlx::query(
+        "SELECT to_char((c.started_at AT TIME ZONE 'Asia/Jerusalem')::date, 'YYYY-MM-DD') AS day,
+                count(*) AS calls,
+                count(*) FILTER (WHERE c.outcome IS DISTINCT FROM 'HandedOff'
+                   AND EXISTS (SELECT 1 FROM callora_v2.orders o WHERE o.call_id = c.id)) AS done,
+                count(*) FILTER (WHERE c.outcome = 'HandedOff') AS handed_off
+         FROM callora_v2.calls c
+         WHERE c.started_at > now() - make_interval(days => $1) AND ($2::text IS NULL OR c.business_id = $2)
+         GROUP BY 1 ORDER BY 1",
+    )
+    .bind(days)
+    .bind(business)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "day": r.get::<String, _>("day"),
+                "calls": r.get::<i64, _>("calls"),
+                "done": r.get::<i64, _>("done"),
+                "handed_off": r.get::<i64, _>("handed_off"),
+            })
+        })
+        .collect())
+}
+
 /// The owner's verdict on a call ("good" or "bad", with a note); replaces an earlier one.
 pub async fn set_review(pool: &PgPool, call_id: uuid::Uuid, verdict: &str, note: &str) -> sqlx::Result<bool> {
     let r = sqlx::query(

@@ -42,6 +42,10 @@ pub struct ServerSettings {
     pub skip_signature_validation: bool,
     /// Token prices, for the cost per call (`AGENT_PRICES`).
     pub prices: crate::pricing::Prices,
+    /// The dashboard's password (`DASHBOARD_PASSWORD`).
+    pub dashboard_password: String,
+    /// The built dashboard (`web/dist`), served at `/`; none, no site.
+    pub web_dir: Option<std::path::PathBuf>,
 }
 
 pub struct AppState {
@@ -54,6 +58,7 @@ pub struct AppState {
     /// What the voice webhook learned, waiting for the media stream of the same call.
     pending: Mutex<HashMap<String, PendingCall>>,
     whispers: Arc<Whispers>,
+    sessions: crate::dashboard::Sessions,
 }
 
 impl AppState {
@@ -68,6 +73,10 @@ impl AppState {
         let whispers =
             Arc::new(Whispers { base: settings.public_base_url.clone(), entries: Mutex::new(HashMap::new()) });
         services.whisper = whispers.clone();
+        // Sessions are signed with a key only this server has: the stream secret, else the
+        // Twilio token.
+        let secret = settings.stream_secrets.first().cloned().unwrap_or_else(|| settings.twilio_auth_token.clone());
+        let sessions = crate::dashboard::Sessions::new(&settings.dashboard_password, &secret);
         Arc::new(Self {
             registry,
             libraries,
@@ -77,6 +86,7 @@ impl AppState {
             db,
             pending: Mutex::new(HashMap::new()),
             whispers,
+            sessions,
         })
     }
 }
@@ -89,7 +99,8 @@ struct PendingCall {
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let web_dir = state.settings.web_dir.clone();
+    let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route(twilio::VOICE_PATH, post(voice))
@@ -99,15 +110,32 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/businesses", get(api_businesses))
         .route("/api/calls", get(api_calls))
         .route("/api/orders", get(api_orders))
-        .route("/orders", get(orders_page))
-        .route("/calls", get(calls_page))
+        .route("/api/login", post(api_login))
+        .route("/api/logout", post(api_logout))
+        .route("/api/session", get(api_session))
         .route("/api/stats", get(api_stats))
+        .route("/api/stats/daily", get(api_stats_daily))
         .route("/api/calls/{id}", get(api_call))
         .route("/api/calls/{id}/review", axum::routing::put(api_review))
         .route("/api/calls/{id}/eval-case", get(api_eval_case))
         .route("/api/utterances/{id}", get(api_utterance))
+        .route("/api/{*rest}", axum::routing::any(|| async { StatusCode::NOT_FOUND }))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
-        .with_state(state)
+        .with_state(state);
+    // The dashboard: its files, and index.html for its own paths ("/calls/…"), so a reload
+    // or a link opens the page. Never cached stale: a deploy changes the file names.
+    match web_dir {
+        Some(dir) => {
+            let site = tower_http::services::ServeDir::new(&dir)
+                .fallback(tower_http::services::ServeFile::new(dir.join("index.html")));
+            app.fallback_service(tower_http::set_header::SetResponseHeader::if_not_present(
+                site,
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-cache"),
+            ))
+        }
+        None => app,
+    }
 }
 
 fn xml(body: String) -> Response {
@@ -360,14 +388,91 @@ async fn whisper(
 }
 
 // ---------------------------------------------------------------------------------------
-// Admin API (`X-Api-Key`): read-only, except the owner's review of a call
+// Admin API (`X-Api-Key`, or the dashboard's session cookie): read-only, except the
+// owner's review of a call
 
 fn authorized(s: &AppState, headers: &HeaderMap) -> bool {
-    let Some(key) = &s.settings.admin_api_key else { return false };
+    let by_key = s.settings.admin_api_key.as_ref().is_some_and(|key| {
+        headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|given| bool::from(given.as_bytes().ct_eq(key.as_bytes())))
+    });
+    let by_session = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(crate::dashboard::cookie_token)
+        .any(|token| s.sessions.valid(token, chrono::Utc::now().timestamp()));
+    by_key || by_session
+}
+
+/// Who is trying a password: the address Caddy saw, else the direct peer.
+fn client_address(headers: &HeaderMap) -> String {
     headers
-        .get("x-api-key")
+        .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|given| bool::from(given.as_bytes().ct_eq(key.as_bytes())))
+        .and_then(|v| v.split(',').next())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "direct".into())
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    password: String,
+}
+
+async fn api_login(State(s): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<LoginBody>) -> Response {
+    let client = client_address(&headers);
+    if !s.sessions.allowed(&client) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "too_many_attempts" }))).into_response();
+    }
+    if !s.sessions.password_matches(&body.password) {
+        s.sessions.failed(&client);
+        tracing::warn!(%client, "dashboard login failed");
+        // Each wrong guess costs time.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "wrong_password" }))).into_response();
+    }
+    s.sessions.succeeded(&client);
+    tracing::info!(%client, "dashboard login");
+    let token = s.sessions.issue(chrono::Utc::now().timestamp());
+    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, crate::dashboard::set_cookie(&token))]).into_response()
+}
+
+async fn api_logout() -> Response {
+    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, crate::dashboard::clear_cookie())]).into_response()
+}
+
+/// Whether the browser is signed in, and what the dashboard shows about the business.
+async fn api_session(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let businesses: Vec<_> = s.registry.all().map(|b| json!({ "id": b.config.id, "name": b.config.name })).collect();
+    Json(json!({ "businesses": businesses, "database": s.db.is_some() })).into_response()
+}
+
+#[derive(Deserialize)]
+struct DailyQuery {
+    business: Option<String>,
+    days: Option<i32>,
+}
+
+async fn api_stats_daily(State(s): State<Arc<AppState>>, headers: HeaderMap, Query(q): Query<DailyQuery>) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    let days = q.days.unwrap_or(30).clamp(1, 365);
+    match crate::store::daily(pool, q.business.as_deref(), days).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "daily numbers failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 async fn api_businesses(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -422,13 +527,6 @@ async fn api_calls(State(s): State<Arc<AppState>>, headers: HeaderMap, Query(q):
     }
 }
 
-/// The owner's page of order cards. It holds no data itself: it asks for the admin key
-/// once, keeps it in the browser, and reads `/api/orders` with it (so the key never lands in
-/// a URL or an access log).
-async fn orders_page() -> Response {
-    axum::response::Html(include_str!("orders.html")).into_response()
-}
-
 async fn api_orders(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -441,13 +539,6 @@ async fn api_orders(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
-}
-
-/// The owner's calls page: the numbers, every call with what the agent decided on each
-/// turn, the recorded utterances, a verdict, and the export of a call as an eval case. Like
-/// the orders page it holds no data and keeps the admin key in the browser.
-async fn calls_page() -> Response {
-    axum::response::Html(include_str!("calls.html")).into_response()
 }
 
 #[derive(Deserialize)]
