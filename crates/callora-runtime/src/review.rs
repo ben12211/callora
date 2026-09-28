@@ -142,7 +142,7 @@ mod tests {
                     "route": "agent", "decision_ms": 700, "second_hearing": "צריך מונית מביתר",
                     "reply": { "action": "none", "task": "book_ride", "fields": [{ "slot": "pickup", "value": "ביתר" }],
                                "phrase": "ask_pickup_street", "say": "" } } },
-                { "speaker": "agent", "text": "איזה רחוב ומספר?", "detail": {} },
+                { "speaker": "agent", "text": "מאיזה רחוב ומספר לאסוף?", "detail": {} },
                 { "speaker": "caller", "text": "כן", "detail": { "transcript": "כן", "affirm": true } }
             ]
         });

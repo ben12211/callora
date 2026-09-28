@@ -456,7 +456,7 @@ fn a_city_alone_is_not_a_pickup() {
     );
     assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12, אלעד");
 
-    // "לאיזה רחוב?" "לא יודע": the city is enough.
+    // "לאיזה רחוב צריך להגיע?" "לא יודע": the city is enough.
     call.engine.on_agent_turn(
         "לא יודע",
         decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "באר שבע")]),
@@ -475,7 +475,7 @@ fn a_numbered_street_the_city_does_not_have_is_asked_again_once() {
     call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
     call.engine.on_agent_turn(
         "אלעד",
-        decide(AgentAction::None, "איזה רחוב ומספר?", Some("book_ride"), &[("pickup", "אלעד")]),
+        decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", Some("book_ride"), &[("pickup", "אלעד")]),
         "",
     );
     call.engine.on_agent_turn(
@@ -507,7 +507,7 @@ fn a_default_detail_is_shown_as_its_default() {
 
 #[test]
 fn city_first_then_street_builds_one_address() {
-    // The order the owner asked for: "מאיזו עיר לאסוף?" "אלעד" ... "איזה רחוב ומספר?" "בן זכאי 45".
+    // The order the owner asked for: "מאיזו עיר לאסוף?" "אלעד" ... "מאיזה רחוב ומספר לאסוף?" "בן זכאי 45".
     let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
         "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
          2066\tבן זכאי\t9000\tבן זכאי\tofficial\n9000\tבאר שבע\t120\tרגר\tofficial\n",
@@ -516,7 +516,7 @@ fn city_first_then_street_builds_one_address() {
     call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
     call.engine.on_agent_turn(
         "מאלעד",
-        decide(AgentAction::None, "איזה רחוב ומספר?", Some("book_ride"), &[("pickup", "אלעד")]),
+        decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", Some("book_ride"), &[("pickup", "אלעד")]),
         "",
     );
     assert_eq!(call.slot("pickup"), None);
@@ -532,7 +532,7 @@ fn city_first_then_street_builds_one_address() {
 
     call.engine.on_agent_turn(
         "לבאר שבע",
-        decide(AgentAction::None, "לאיזה רחוב?", None, &[("destination", "באר שבע")]),
+        decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", None, &[("destination", "באר שבע")]),
         "",
     );
     call.engine.on_agent_turn(
@@ -549,7 +549,7 @@ fn a_street_the_caller_never_said_is_not_booked() {
     let (mut call, _) = Call::new(business(&[]));
     call.engine.on_agent_turn(
         "לבני ברק",
-        decide(AgentAction::None, "לאיזה רחוב?", Some("book_ride"), &[("destination", "בני ברק")]),
+        decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", Some("book_ride"), &[("destination", "בני ברק")]),
         "",
     );
     call.engine.on_agent_turn(
@@ -669,7 +669,7 @@ fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
         "the action and the fields, then the words: values are checked before a word plays"
     );
     // Phrases are offered by id, with their wording, and only those with nothing to fill in.
-    assert!(system.contains("- ask_destination_street: \"לאיזה רחוב?\""), "{system}");
+    assert!(system.contains("- ask_destination_street: \"לאיזה רחוב צריך להגיע?\""), "{system}");
     let ids = request.schema["properties"]["phrase"]["enum"].as_array().unwrap();
     assert!(ids.contains(&serde_json::json!("ask_name")) && ids.contains(&serde_json::Value::Null));
     // Nothing of the taxi business is written in the generic prompt: its words come from its file.
@@ -921,7 +921,7 @@ fn the_address_form_follows_what_the_caller_says_about_themselves() {
     // Impersonal "צריך" says nothing; "אני צריכה" does, and it stays for the rest of the call.
     call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "מאיזו עיר לאסוף?", Some("book_ride"), &[]), "");
     assert_eq!(call.engine.state.address_form, AddressForm::Unknown);
-    call.engine.on_agent_turn("מרעננה, אני צריכה מונית", decide(AgentAction::None, "איזה רחוב ומספר?", None, &[]), "");
+    call.engine.on_agent_turn("מרעננה, אני צריכה מונית", decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", None, &[]), "");
     assert_eq!(call.engine.state.address_form, AddressForm::Feminine);
     call.engine.on_agent_turn("אחוזה 12", decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[]), "");
     assert_eq!(call.engine.state.address_form, AddressForm::Feminine, "kept when nothing new is said");
@@ -929,7 +929,7 @@ fn the_address_form_follows_what_the_caller_says_about_themselves() {
     assert!(feminine.user.contains("ADDRESS FORM: feminine"), "{}", feminine.user);
 
     // A correction wins.
-    call.engine.on_agent_turn("סליחה, אני מתכוון לתל אביב", decide(AgentAction::None, "לאיזה רחוב?", None, &[]), "");
+    call.engine.on_agent_turn("סליחה, אני מתכוון לתל אביב", decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", None, &[]), "");
     assert_eq!(call.engine.state.address_form, AddressForm::Masculine);
     // The rules path listens too.
     call.say("אני אישה, דברו אליי בלשון נקבה");
@@ -1074,7 +1074,7 @@ fn a_known_place_is_taken_and_an_unknown_one_is_asked_about_once() {
     call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
     call.engine.on_agent_turn(
         "לירושלים",
-        decide(AgentAction::None, "לאיזה רחוב?", Some("book_ride"), &[("destination", "ירושלים")]),
+        decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", Some("book_ride"), &[("destination", "ירושלים")]),
         "",
     );
     call.engine.on_agent_turn(
@@ -1153,7 +1153,7 @@ fn the_city_waiting_for_its_street_is_the_recognition_focus() {
     assert_eq!(call.engine.street_focus(), None);
     call.engine.on_agent_turn(
         "מאלעד",
-        decide(AgentAction::None, "איזה רחוב ומספר?", Some("book_ride"), &[("pickup", "אלעד")]),
+        decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", Some("book_ride"), &[("pickup", "אלעד")]),
         "",
     );
     assert_eq!(call.engine.street_focus().as_deref(), Some("אלעד"));
@@ -1165,7 +1165,7 @@ fn the_city_waiting_for_its_street_is_the_recognition_focus() {
     assert_eq!(call.engine.street_focus(), None);
     call.engine.on_agent_turn(
         "בני ברק",
-        decide(AgentAction::None, "לאיזה רחוב?", None, &[("destination", "בני ברק")]),
+        decide(AgentAction::None, "לאיזה רחוב צריך להגיע?", None, &[("destination", "בני ברק")]),
         "",
     );
     assert_eq!(call.engine.street_focus().as_deref(), Some("בני ברק"));
@@ -1181,7 +1181,7 @@ fn the_agent_is_told_the_street_question_comes_after_a_city() {
     );
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "ירושלים");
     assert!(
-        next.user.contains("NOW: the caller is giving the destination city") && next.user.contains("\"לאיזה רחוב?\""),
+        next.user.contains("NOW: the caller is giving the destination city") && next.user.contains("\"לאיזה רחוב צריך להגיע?\""),
         "{}",
         next.user
     );
@@ -1259,7 +1259,7 @@ fn the_second_hearing_reaches_the_agent_and_counts_as_heard() {
     );
     call.engine.on_agent_turn(
         "זה יותר",
-        decide(AgentAction::None, "איזה רחוב ומספר?", None, &[("destination", "בית הכרם, ביתר")]),
+        decide(AgentAction::None, "מאיזה רחוב ומספר לאסוף?", None, &[("destination", "בית הכרם, ביתר")]),
         "",
     );
     assert!(
@@ -1287,10 +1287,10 @@ fn an_impossible_value_is_asked_again_before_anything_else() {
     let fields = vec![("passengers".to_string(), "47".to_string())];
     assert!(call.engine.rejects_any(&fields));
     assert!(!call.engine.rejects_any(&[("passengers".to_string(), "3".to_string())]));
-    // The runtime held the agent's "על שם מי ההזמנה?": nothing was spoken.
+    // The runtime held the agent's "על שם מי לרשום את ההזמנה?": nothing was spoken.
     let d = call.engine.on_agent_turn(
         "47",
-        decide(AgentAction::None, "על שם מי ההזמנה?", None, &[("passengers", "47")]),
+        decide(AgentAction::None, "על שם מי לרשום את ההזמנה?", None, &[("passengers", "47")]),
         "",
     );
     assert!(spoken(&d).contains("כמה נוסעים"), "{}", spoken(&d));
@@ -1383,7 +1383,7 @@ fn a_ride_that_may_have_gone_through_is_checked_by_a_person_not_called_failed() 
 
 #[test]
 fn a_question_the_caller_just_answered_is_not_asked_again() {
-    // A live call: "בן זכאי, אה, 32." stored as the destination, and "לאיזה רחוב?" again.
+    // A live call: "בן זכאי, אה, 32." stored as the destination, and "לאיזה רחוב צריך להגיע?" again.
     let (mut call, _) = Call::new(business(&[]));
     call.engine.on_agent_turn(
         "מונית מהרצל 10 רעננה",

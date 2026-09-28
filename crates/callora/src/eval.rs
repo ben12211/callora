@@ -798,7 +798,7 @@ mod tests {
         let c = case(json!([
             scene("צריך מונית מהרצל 10 רעננה", json!([{ "slot": "pickup", "value": "הרצל 10, רעננה" }]), "none", "לאן נוסעים?"),
             scene("לעזריאלי", json!([{ "slot": "destination", "value": "עזריאלי" }]), "none", "כמה נוסעים?"),
-            scene("שניים", json!([{ "slot": "passengers", "value": "2" }]), "none", "על שם מי ההזמנה?"),
+            scene("שניים", json!([{ "slot": "passengers", "value": "2" }]), "none", "על שם מי לרשום את ההזמנה?"),
             scene("דני", json!([{ "slot": "customer_name", "value": "דני" }]), "none", "יש משהו שהנהג צריך לדעת?"),
             scene("לא", json!([]), "read_back", "סגור."),
             { "caller": "כן", "expect": { "submitted": true, "slots": { "passengers": "2", "customer_name": "דני" } } }
