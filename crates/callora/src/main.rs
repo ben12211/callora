@@ -614,8 +614,18 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
             "12345678".into()
         }),
         web_dir: web_dir(),
+        whatsapp: env("WHATSAPP_URL").zip(env("WHATSAPP_TOKEN").filter(|t| t.len() >= 16)),
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
+    // Orders to WhatsApp, drained in the background at the accounts' pace.
+    match (&state.db, &state.whatsapp) {
+        (Some(pool), Some(service)) => {
+            tokio::spawn(callora_runtime::whatsapp::run_sender(pool.clone(), service.clone()));
+            tracing::info!("whatsapp sending on");
+        }
+        (_, None) => tracing::info!("no WHATSAPP_URL/WHATSAPP_TOKEN: whatsapp off"),
+        (None, Some(_)) => tracing::warn!("whatsapp needs the database; off"),
+    }
     let app = router(state);
     let addr =
         format!("{}:{}", env("HOST").unwrap_or_else(|| "0.0.0.0".into()), env("PORT").unwrap_or_else(|| "3000".into()));

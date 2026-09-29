@@ -122,6 +122,41 @@ jobs:
           provenance: true
           sbom: true
 
+  # The WhatsApp service (whatsapp/): Node and the system's Chromium, built on a native ARM64
+  # runner (free for public repositories), tagged whatsapp-<sha> in the same repository.
+  whatsapp-image:
+    name: Publish WhatsApp service image
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ vars.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Build and push the WhatsApp service image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: ./whatsapp
+          file: ./whatsapp/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:whatsapp-${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:whatsapp-latest
+          cache-from: type=gha,scope=whatsapp
+          cache-to: type=gha,mode=max,scope=whatsapp
+
   host:
     name: Bootstrap and validate the production VM
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -173,8 +208,9 @@ jobs:
 
   deploy:
     name: Deploy production
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
-    needs: [image, host]
+    # Calls do not wait for WhatsApp: a failed WhatsApp image leaves it out of this release.
+    if: always() && needs.image.result == 'success' && needs.host.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
+    needs: [image, host, whatsapp-image]
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: production

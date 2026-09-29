@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Navigate, NavLink, Route, Routes } from "react-router-dom";
-import { ClipboardList, LayoutDashboard, LogOut, Menu, Moon, Phone, Settings, Sun, X } from "lucide-react";
+import { ClipboardList, LayoutDashboard, LogOut, Menu, MessageCircle, Moon, Phone, Settings, Sun, X } from "lucide-react";
 import { api, type Session } from "./api";
 import { cx, Loading } from "./ui";
 import { Login } from "./pages/Login";
@@ -8,6 +8,7 @@ import { Overview } from "./pages/Overview";
 import { Calls } from "./pages/Calls";
 import { CallView } from "./pages/CallView";
 import { Orders } from "./pages/Orders";
+import { WhatsApp } from "./pages/WhatsApp";
 
 type Auth = { state: "checking" } | { state: "out" } | { state: "in"; session: Session };
 
@@ -42,6 +43,7 @@ export function App() {
           <Route path="/calls" element={<Calls />} />
           <Route path="/calls/:id" element={<CallView />} />
           <Route path="/orders" element={<Orders />} />
+          <Route path="/whatsapp" element={<WhatsApp />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Shell>
@@ -53,6 +55,7 @@ const NAV = [
   { to: "/", label: "סקירה", icon: LayoutDashboard, end: true },
   { to: "/calls", label: "שיחות", icon: Phone, end: false },
   { to: "/orders", label: "הזמנות", icon: ClipboardList, end: false },
+  { to: "/whatsapp", label: "וואטסאפ", icon: MessageCircle, end: false },
 ];
 
 function useTheme(): [boolean, () => void] {

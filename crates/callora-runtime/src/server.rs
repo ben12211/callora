@@ -46,6 +46,8 @@ pub struct ServerSettings {
     pub dashboard_password: String,
     /// The built dashboard (`web/dist`), served at `/`; none, no site.
     pub web_dir: Option<std::path::PathBuf>,
+    /// The WhatsApp service (`WHATSAPP_URL`, `WHATSAPP_TOKEN`); none, no WhatsApp page.
+    pub whatsapp: Option<(String, String)>,
 }
 
 pub struct AppState {
@@ -59,6 +61,7 @@ pub struct AppState {
     pending: Mutex<HashMap<String, PendingCall>>,
     whispers: Arc<Whispers>,
     sessions: crate::dashboard::Sessions,
+    pub whatsapp: Option<Arc<crate::whatsapp::Service>>,
 }
 
 impl AppState {
@@ -77,6 +80,8 @@ impl AppState {
         // Twilio token.
         let secret = settings.stream_secrets.first().cloned().unwrap_or_else(|| settings.twilio_auth_token.clone());
         let sessions = crate::dashboard::Sessions::new(&settings.dashboard_password, &secret);
+        let whatsapp =
+            settings.whatsapp.clone().map(|(url, token)| Arc::new(crate::whatsapp::Service::new(url, token)));
         Arc::new(Self {
             registry,
             libraries,
@@ -87,6 +92,7 @@ impl AppState {
             pending: Mutex::new(HashMap::new()),
             whispers,
             sessions,
+            whatsapp,
         })
     }
 }
@@ -119,6 +125,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/calls/{id}/review", axum::routing::put(api_review))
         .route("/api/calls/{id}/eval-case", get(api_eval_case))
         .route("/api/utterances/{id}", get(api_utterance))
+        .merge(crate::whatsapp::routes())
         .route("/api/{*rest}", axum::routing::any(|| async { StatusCode::NOT_FOUND }))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
         .with_state(state);
@@ -391,7 +398,7 @@ async fn whisper(
 // Admin API (`X-Api-Key`, or the dashboard's session cookie): read-only, except the
 // owner's review of a call
 
-fn authorized(s: &AppState, headers: &HeaderMap) -> bool {
+pub(crate) fn authorized(s: &AppState, headers: &HeaderMap) -> bool {
     let by_key = s.settings.admin_api_key.as_ref().is_some_and(|key| {
         headers
             .get("x-api-key")

@@ -88,6 +88,9 @@ services:
       AUDIO_SAMPLE_NUMBERS: ${AUDIO_SAMPLE_NUMBERS:-}
       TRANSCRIPT_RETENTION_DAYS: ${TRANSCRIPT_RETENTION_DAYS:-30}
       AUDIO_LIBRARY_DIR: /data/voice-library
+      # The WhatsApp service, over its own network; no token, no WhatsApp page.
+      WHATSAPP_URL: http://whatsapp:3100
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
     logging: *logging
     volumes:
       # Generated once per voice with `callora voice-library build` (see DEPLOYMENT.md).
@@ -97,6 +100,7 @@ services:
     networks:
       - database
       - web
+      - whatsapp
     depends_on:
       db:
         condition: service_healthy
@@ -150,6 +154,26 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
 
+  # WhatsApp accounts (whatsapp-web.js with Chromium), signed in by QR from the dashboard.
+  # Only the backend reaches it; its logins live on the whatsapp_data volume.
+  whatsapp:
+    image: ${WHATSAPP_IMAGE:-whatsapp-image-not-set}
+    environment:
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+      MAX_SESSIONS: ${WHATSAPP_MAX_SESSIONS:-5}
+    logging: *logging
+    volumes:
+      - whatsapp_data:/data
+    networks:
+      - whatsapp
+    # Chromium needs a real /dev/shm; each account is a browser of its own.
+    shm_size: 1gb
+    mem_limit: 3g
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 20s
+
 volumes:
   postgres_data:
     name: callora_postgres_data
@@ -159,8 +183,12 @@ volumes:
     name: callora_caddy_config
   voice_library:
     name: callora_voice_library
+  whatsapp_data:
+    name: callora_whatsapp_data
 
 networks:
   database:
     internal: true
+  # The WhatsApp service reaches WhatsApp's servers; the backend reaches it.
+  whatsapp:
   web:

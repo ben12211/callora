@@ -6,6 +6,7 @@ import { type CallRow, type Day, type Stats, useApi } from "../api";
 import { dayLabel, dollars, duration, lastDays, pct, phone } from "../format";
 import { Card, Empty, Loading, PageHeader, Problem, Segmented, Stat, When } from "../ui";
 import { OutcomeBadge } from "./Calls";
+import { type WaOverview, whatsappTrouble } from "./WhatsApp";
 
 const PERIODS = [
   { value: 1, label: "היום" },
@@ -36,6 +37,8 @@ export function Overview() {
   const chartDays = Math.max(days, 14);
   const daily = useApi<Day[]>(`/api/stats/daily?days=${chartDays}`, 60_000);
   const recent = useApi<CallRow[]>("/api/calls?limit=8", 30_000);
+  const whatsapp = useApi<WaOverview>("/api/whatsapp", 60_000);
+  const waTrouble = whatsappTrouble(whatsapp.data);
 
   const s = stats.data;
   return (
@@ -52,6 +55,17 @@ export function Overview() {
           <span className="flex-1">
             {s.to_verify === 1 ? "הזמנה אחת שלא ידוע אם נקלטה" : `${s.to_verify} הזמנות שלא ידוע אם נקלטו`} במערכת ההזמנות. כדאי לבדוק.
           </span>
+          <ArrowLeft className="size-4" aria-hidden />
+        </Link>
+      )}
+
+      {waTrouble && (
+        <Link
+          to="/whatsapp"
+          className="mb-6 flex items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900 hover:bg-rose-100 dark:border-rose-900 dark:bg-rose-950/50 dark:text-rose-200"
+        >
+          <TriangleAlert className="size-4 shrink-0" aria-hidden />
+          <span className="flex-1">{waTrouble}. ההזמנות נשמרות בתור עד שזה יסתדר.</span>
           <ArrowLeft className="size-4" aria-hidden />
         </Link>
       )}

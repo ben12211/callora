@@ -60,6 +60,12 @@ secrets already configured in GitHub keep working.
 On a fresh VM, `deploy.sh init-host` (run by CI) creates them: the database password is
 generated on the VM and never leaves it, and `PUBLIC_BASE_URL` comes from the Variable above.
 
+## WhatsApp (host-only)
+
+`WHATSAPP_TOKEN`, the secret between the backend and the WhatsApp service, is created on the
+VM by `deploy.sh init-host` and never leaves it. `WHATSAPP_MAX_SESSIONS` (default 5) caps the
+accounts: each one runs a browser of its own (about 300–500 MB).
+
 ## Optional runtime tuning (environment)
 
 `AGENT_HEDGE_MS` (default `1200`), `AGENT_SPECULATE` (the agent starts on the partial transcript at the end of speech; on unless `false`),

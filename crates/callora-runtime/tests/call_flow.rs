@@ -196,6 +196,7 @@ async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
         prices: Default::default(),
         dashboard_password: "12345678".into(),
         web_dir: None,
+        whatsapp: None,
     };
     let state = AppState::new(registry, libraries, services, SessionConfig::default(), settings, None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -503,6 +504,11 @@ async fn the_dashboard_signs_in_with_its_password_and_the_cookie_opens_the_api()
     // Past the check: this test server has no database.
     let calls = http.get(format!("{base}/api/calls")).header("cookie", &session).send().await.unwrap();
     assert_eq!(calls.status(), 503);
+    // No WhatsApp service configured: the page says so instead of failing.
+    let wa: Value =
+        http.get(format!("{base}/api/whatsapp")).header("cookie", &session).send().await.unwrap().json().await.unwrap();
+    assert_eq!(wa["configured"], false);
+    assert_eq!(http.get(format!("{base}/api/whatsapp")).send().await.unwrap().status(), 401);
     let forged = http.get(format!("{base}/api/calls")).header("cookie", "callora_session=v1.9999999999.x").send();
     assert_eq!(forged.await.unwrap().status(), 401);
     assert_eq!(http.get(format!("{base}/api/nothing")).send().await.unwrap().status(), 404);

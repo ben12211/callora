@@ -101,6 +101,10 @@ async fn write(pool: &PgPool, record: &CallRecord) -> sqlx::Result<()> {
                 .bind(serde_json::to_value(summary).unwrap_or(Value::Null))
                 .execute(pool)
                 .await?;
+            let text = crate::whatsapp::handoff_message(&summary.reason, &summary.text, chrono::Utc::now());
+            if let Err(e) = crate::whatsapp::enqueue(pool, "handoff", &text).await {
+                tracing::warn!(error = %e, "handoff not queued for whatsapp");
+            }
         }
         CallRecord::Ended { call_id, outcome, state, usage } => {
             sqlx::query(
@@ -127,6 +131,12 @@ async fn write(pool: &PgPool, record: &CallRecord) -> sqlx::Result<()> {
                 .bind(card)
                 .execute(pool)
                 .await?;
+            // To WhatsApp, for the targets that want it; a failure here never loses the order.
+            let event = if card["verify"].as_bool() == Some(true) { "order_verify" } else { "order" };
+            let text = crate::whatsapp::order_message(card, chrono::Utc::now());
+            if let Err(e) = crate::whatsapp::enqueue(pool, event, &text).await {
+                tracing::warn!(error = %e, "order not queued for whatsapp");
+            }
         }
         CallRecord::Status { call_sid, status, duration_seconds } => {
             sqlx::query("UPDATE callora_v2.calls SET twilio_status = $2, duration_seconds = COALESCE($3, duration_seconds) WHERE call_sid = $1")

@@ -81,6 +81,16 @@ local server (`./dev up`):
 cd web && npm install && npm run dev   # http://localhost:5173, /api proxied to :3000
 ```
 
+## WhatsApp
+
+`whatsapp/` is a small internal service (Node, whatsapp-web.js with Chromium) that holds the
+WhatsApp accounts, each signed in by scanning a QR code on the dashboard's WhatsApp page.
+Each account sends every new order (and, if asked, orders to check and handoffs) to its own
+list of groups it is in and saved contacts, at a human pace: a random wait between messages,
+"typing…" first, hourly and daily limits, quiet hours, half the limits while a new number
+warms up. Messages queue in Postgres (`whatsapp_outbox`) and are retried until sent, so a
+disconnected account loses nothing. It is unofficial: connect a separate number.
+
 ## Endpoints
 
 | Method | Path | |

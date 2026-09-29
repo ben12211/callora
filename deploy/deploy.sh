@@ -478,8 +478,10 @@ prepare_incoming_env() {
     return 1
   }
 
-  awk '!/^[[:space:]]*CALLORA_IMAGE[[:space:]]*=/' "$ENV_FILE" > "$INCOMING_DIR/callora.env"
+  awk '!/^[[:space:]]*(CALLORA_IMAGE|WHATSAPP_IMAGE)[[:space:]]*=/' "$ENV_FILE" > "$INCOMING_DIR/callora.env"
   printf 'CALLORA_IMAGE="%s"\n' "$new_image" >> "$INCOMING_DIR/callora.env"
+  # The WhatsApp service of the same commit: same repository, tag whatsapp-<sha>.
+  printf 'WHATSAPP_IMAGE="%s"\n' "${new_image/:/:whatsapp-}" >> "$INCOMING_DIR/callora.env"
   chmod 0600 "$INCOMING_DIR/callora.env"
 }
 
@@ -676,6 +678,15 @@ deploy_release() {
 
   trap - ERR
   log 'Database, backend, Caddy, internal, and public health checks passed.'
+
+  # WhatsApp is not needed to answer calls: its image missing or its start failing leaves
+  # this release in place and is only reported. Orders wait in the queue meanwhile.
+  log 'Starting or refreshing the WhatsApp service.'
+  if compose pull whatsapp && compose up -d --no-deps whatsapp; then
+    log 'WhatsApp service started.'
+  else
+    log 'The WhatsApp service did not start; calls and orders are unaffected.'
+  fi
 }
 
 confirm_release() {
@@ -847,6 +858,12 @@ init_host() {
       printf 'DATABASE_URL=postgresql://%s:%s@db:5432/%s\n' "$user" "$password" "$db" >> "$ENV_FILE"
       created+=(DATABASE_URL)
     fi
+  fi
+
+  # The shared secret between the backend and the WhatsApp service; it never leaves the VM.
+  if ! setting_present WHATSAPP_TOKEN "$ENV_FILE"; then
+    printf 'WHATSAPP_TOKEN=%s\n' "$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')" >> "$ENV_FILE"
+    created+=(WHATSAPP_TOKEN)
   fi
 
   local setting
