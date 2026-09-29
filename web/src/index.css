@@ -5,38 +5,79 @@
 @theme {
   --font-sans: "Heebo", system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
 
-  /* A deep navy: classic, calm, readable on white and on slate. */
-  --color-brand-50: #eef3fb;
-  --color-brand-100: #d8e3f3;
-  --color-brand-200: #b3c7e6;
-  --color-brand-300: #86a4d3;
-  --color-brand-400: #5b80bc;
-  --color-brand-500: #3f64a2;
-  --color-brand-600: #2f4f86;
-  --color-brand-700: #25406d;
-  --color-brand-800: #1d3356;
-  --color-brand-900: #152640;
+  /* One accent: a confident indigo. Green means done, amber means look at it, rose means broken. */
+  --color-brand-50: #f0f1ff;
+  --color-brand-100: #e3e5ff;
+  --color-brand-200: #cbcfff;
+  --color-brand-300: #a9afff;
+  --color-brand-400: #8788fb;
+  --color-brand-500: #6b66f2;
+  --color-brand-600: #5b4ce4;
+  --color-brand-700: #4c3dc8;
+  --color-brand-800: #3e34a1;
+  --color-brand-900: #352f7e;
+  --color-brand-950: #211d4f;
+
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 2px 8px -2px rgb(15 23 42 / 0.06);
+  --shadow-pop: 0 8px 24px -6px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.08);
+
+  --animate-rise: rise 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-ping-slow: ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
 }
 
 @layer base {
   html {
     color-scheme: light;
+    -webkit-tap-highlight-color: transparent;
   }
   html.dark {
     color-scheme: dark;
   }
   body {
-    @apply bg-slate-100 font-sans text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+    @apply min-h-dvh bg-slate-50 font-sans text-slate-900 antialiased dark:bg-[#080c18] dark:text-slate-100;
+    background-image:
+      radial-gradient(60rem 28rem at 85% -8rem, rgb(107 102 242 / 0.09), transparent 70%),
+      radial-gradient(40rem 24rem at 0% 0%, rgb(16 185 129 / 0.05), transparent 70%);
+    background-attachment: fixed;
+    font-feature-settings: "tnum" 0;
   }
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-brand-500;
   }
+  ::selection {
+    @apply bg-brand-200 text-brand-950;
+  }
+  /* Quiet scrollbars that still show where the scroll is. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(148 163 184 / 0.45) transparent;
+  }
 }
 
-/* Phone numbers and ids read left to right inside Hebrew text. */
+/* Phone numbers, ids and dates read left to right inside Hebrew text. */
 .ltr {
   direction: ltr;
   unicode-bidi: isolate;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Room for the phone's bottom bar (and the home indicator) under the page. */
+@utility pb-tabbar {
+  padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
 }
 
 @media (prefers-reduced-motion: reduce) {

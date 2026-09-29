@@ -34,9 +34,44 @@ export function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+export function hhmm(iso: string): string {
+  return new Date(iso).toLocaleTimeString("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+}
+
 export function dayLabel(day: string): string {
   const [y, m, d] = day.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d, 12)).toLocaleDateString("he-IL", { timeZone: TZ, day: "numeric", month: "numeric" });
+}
+
+/** "יום שלישי, 29 בספטמבר" */
+export function longDate(d: Date = new Date()): string {
+  return d.toLocaleDateString("he-IL", { timeZone: TZ, weekday: "long", day: "numeric", month: "long" });
+}
+
+/** The greeting for the hour in Israel. */
+export function greeting(d: Date = new Date()): string {
+  const h = Number(d.toLocaleTimeString("en-GB", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" }).slice(0, 2));
+  if (h < 5) return "לילה טוב";
+  if (h < 12) return "בוקר טוב";
+  if (h < 18) return "צהריים טובים";
+  if (h < 22) return "ערב טוב";
+  return "לילה טוב";
+}
+
+/** "עכשיו", "לפני 5 דקות", "לפני שעתיים", "אתמול ב-14:11", else the date. */
+export function ago(iso: string, now: number = Date.now()): string {
+  const t = new Date(iso).getTime();
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < 45) return "עכשיו";
+  const m = Math.round(s / 60);
+  if (m < 60) return m === 1 ? "לפני דקה" : `לפני ${m} דקות`;
+  const h = Math.round(m / 60);
+  if (h < 6) return h === 1 ? "לפני שעה" : h === 2 ? "לפני שעתיים" : `לפני ${h} שעות`;
+  const day = (x: number) => new Date(x).toLocaleDateString("en-CA", { timeZone: TZ });
+  const today = day(now);
+  if (day(t) === today) return `היום ב-${hhmm(iso)}`;
+  if (day(t) === day(now - 86_400_000)) return `אתמול ב-${hhmm(iso)}`;
+  return new Date(iso).toLocaleDateString("he-IL", { timeZone: TZ, day: "numeric", month: "numeric" }) + ` · ${hhmm(iso)}`;
 }
 
 /** Milliseconds as seconds: "1.18 ש׳" reads the same way in Hebrew and in numbers. */
@@ -80,4 +115,9 @@ export function lastDays(days: number): string[] {
     out.push(d.toLocaleDateString("en-CA", { timeZone: TZ }));
   }
   return out;
+}
+
+/** The change from `before` to `now`, as a fraction (null when there was nothing before). */
+export function change(now: number, before: number): number | null {
+  return before > 0 ? (now - before) / before : null;
 }

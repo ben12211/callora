@@ -4,8 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#f8fafc" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <title>קלורה · ניהול</title>
+    <script>
+      // The theme is set before the page draws, so the sign-in page and the first paint match it.
+      try {
+        var saved = localStorage.getItem("callora_theme");
+        if (saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark");
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
