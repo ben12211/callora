@@ -1022,6 +1022,14 @@ mod streets {
         assert_eq!(spoken("בן זכאי 45, עדי"), "רבן יוחנן בן זכאי 45, אלעד");
         // "ביתר" is ביתר עילית, not מיתר (a live call booked "רימון 16, מיתר").
         assert!(spoken("הרמב\"ן 16, ביתר").ends_with("ביתר עילית"), "{}", spoken("הרמב\"ן 16, ביתר"));
+        // House numbers in words, as OpenAI's recognizer writes them.
+        assert_eq!(spoken("בן זכאי ארבעים וחמש, אלעד"), "בן זכאי 45, אלעד");
+        // "street, city" as the agent passes it: looked up in that city.
+        match g.resolve_within("רחוב בן זכאי שלושים ושתיים", "אלעד") {
+            Some(Lookup::Found(a)) => assert_eq!(a.spoken(), "בן זכאי 32, אלעד"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(spoken("באר שבע"), "באר שבע", "a name made of number words stays a name");
         // Real streets of the city said stay there.
         assert_eq!(spoken("אחוזה 12 רעננה"), "אחוזה 12, רעננה");
         assert_eq!(spoken("הרצל 10 רחובות"), "הרצל 10, רחובות");

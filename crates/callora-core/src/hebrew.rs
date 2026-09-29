@@ -170,6 +170,30 @@ pub struct FoundNumber {
     pub end: usize,
 }
 
+/// `text` with every number written in words turned into digits ("בן זכאי ארבעים וחמש,
+/// אלעד" → "בן זכאי 45, אלעד"). Also turns the words of names that are numbers ("באר שבע",
+/// "אחד העם"), so callers use it only when the text as written finds nothing.
+pub fn with_digits(text: &str) -> String {
+    let spaced = text.replace(',', " , ");
+    let tokens: Vec<&str> = spaced.split_whitespace().collect();
+    let found = find_numbers(&tokens);
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        match found.iter().find(|n| n.start == i) {
+            Some(n) => {
+                out.push(n.value.to_string());
+                i = n.end.max(i + 1);
+            }
+            None => {
+                out.push(tokens[i].to_string());
+                i += 1;
+            }
+        }
+    }
+    out.join(" ").replace(" , ", ", ").replace(" ,", ",")
+}
+
 /// Every number in `tokens`, written in digits or in words ("עשרים ושלוש", "שתים עשרה").
 pub fn find_numbers(tokens: &[&str]) -> Vec<FoundNumber> {
     let mut found = Vec::new();
@@ -223,6 +247,13 @@ pub fn find_numbers(tokens: &[&str]) -> Vec<FoundNumber> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn number_words_become_digits() {
+        assert_eq!(with_digits("בן זכאי ארבעים וחמש, אלעד"), "בן זכאי 45, אלעד");
+        assert_eq!(with_digits("רמבם שתים עשרה"), "רמבם 12");
+        assert_eq!(with_digits("רחוב חיפה 32, ירושלים"), "רחוב חיפה 32, ירושלים");
+    }
 
     fn parse(s: &str) -> Vec<i64> {
         let toks: Vec<&str> = s.split(' ').collect();

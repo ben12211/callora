@@ -443,8 +443,25 @@ impl Gazetteer {
         self.cities.len()
     }
 
-    /// Find the locality, street and house number in a place as the caller gave it.
+    /// Find the locality, street and house number in a place as the caller gave it. A house
+    /// number in words ("בן זכאי ארבעים וחמש, אלעד", as some recognizers write it) is tried
+    /// in digits when the words as written find no street.
     pub fn resolve(&self, text: &str) -> Lookup {
+        let first = self.resolve_written(text);
+        if matches!(&first, Lookup::Found(a) if a.street.is_some()) {
+            return first;
+        }
+        let digits = crate::hebrew::with_digits(text);
+        if digits == text {
+            return first;
+        }
+        match self.resolve_written(&digits) {
+            found @ Lookup::Found(_) if matches!(&found, Lookup::Found(a) if a.street.is_some()) => found,
+            _ => first,
+        }
+    }
+
+    fn resolve_written(&self, text: &str) -> Lookup {
         let words: Vec<String> = norm(text).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect();
         let candidates = self.find_cities(&words);
         if candidates.is_empty() {
@@ -466,6 +483,21 @@ impl Gazetteer {
     /// city", and "חיפה 32, ירושלים" is רחוב חיפה in ירושלים, not רחוב ירושלים in חיפה.
     /// `None` when `city` is not a locality.
     pub fn resolve_within(&self, street: &str, city: &str) -> Option<Lookup> {
+        let first = self.resolve_within_written(street, city)?;
+        if matches!(&first, Lookup::Found(a) if a.street.is_some()) {
+            return Some(first);
+        }
+        let digits = crate::hebrew::with_digits(street);
+        if digits == street {
+            return Some(first);
+        }
+        Some(match self.resolve_within_written(&digits, city) {
+            Some(found @ Lookup::Found(_)) if matches!(&found, Lookup::Found(a) if a.street.is_some()) => found,
+            _ => first,
+        })
+    }
+
+    fn resolve_within_written(&self, street: &str, city: &str) -> Option<Lookup> {
         let (ci, alias) = self.city_keys.get(&norm(city)).cloned()?;
         let words: Vec<String> = norm(street).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect();
         if words.is_empty() {
