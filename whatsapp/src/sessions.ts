@@ -7,7 +7,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import path from "node:path";
 import QRCode from "qrcode";
 import pkg from "whatsapp-web.js";
-import type { Client as ClientType, GroupChat } from "whatsapp-web.js";
+import type { Client as ClientType } from "whatsapp-web.js";
 
 const { Client, LocalAuth } = pkg;
 
@@ -255,11 +255,7 @@ export class Sessions {
   /** What the account may send to: the groups it is in and its saved contacts, nothing else. */
   async chats(id: string) {
     const client = this.get(id).ready();
-    const me = client.info.wid._serialized;
-    const chats = await client.getChats();
-    const groups = chats
-      .filter((c) => c.isGroup && (c as GroupChat).participants?.some((p) => p.id._serialized === me))
-      .map((c) => ({ id: c.id._serialized, name: c.name }));
+    const groups = await myGroups(client);
     const contacts = (await client.getContacts())
       .filter((c) => c.isMyContact && c.isUser && !c.isGroup && c.id.server === "c.us" && !c.isMe)
       .map((c) => ({ id: c.id._serialized, name: c.name || c.pushname || c.number, number: c.number }));
@@ -271,23 +267,48 @@ export class Sessions {
    * or a saved contact. */
   async send(id: string, chatId: string, text: string, typingMs: number) {
     const client = this.get(id).ready();
-    const me = client.info.wid._serialized;
     if (chatId.endsWith("@g.us")) {
-      const chat = (await client.getChatById(chatId).catch(() => null)) as GroupChat | null;
-      if (!chat?.isGroup || !chat.participants?.some((p) => p.id._serialized === me)) throw new NotAllowed("not_a_member");
+      if (!(await myGroups(client, chatId)).length) throw new NotAllowed("not_a_member");
     } else if (chatId.endsWith("@c.us")) {
       const contact = await client.getContactById(chatId).catch(() => null);
       if (!contact?.isMyContact) throw new NotAllowed("not_a_contact");
     } else {
       throw new NotAllowed("not_a_contact");
     }
-    const chat = await client.getChatById(chatId);
+    // Not through client.getChatById: it builds the whole chat, last message included, and
+    // that read fails in WhatsApp Web of September 2026.
+    const state = (what: "typing" | "stop") =>
+      page(client)
+        .evaluate((s, c) => (window as any).WWebJS.sendChatstate(s, c), what, chatId)
+        .catch(() => undefined);
     if (typingMs > 0) {
-      await chat.sendStateTyping().catch(() => undefined);
+      await state("typing");
       await new Promise((r) => setTimeout(r, Math.min(typingMs, 5000)));
     }
-    const message = await chat.sendMessage(text);
-    await chat.clearState().catch(() => undefined);
+    const message = await client.sendMessage(chatId, text, { sendSeen: false });
+    await state("stop");
+    if (!message) throw new Error("not_sent");
     return { id: message.id._serialized };
   }
+}
+
+function page(client: ClientType): import("puppeteer-core").Page {
+  return (client as unknown as { pupPage: import("puppeteer-core").Page }).pupPage;
+}
+
+/** The groups the account is a member of (or the one asked, if it is), read straight from
+ * WhatsApp Web's own lists: whatsapp-web.js's getChats reads each chat's last message too, and
+ * that read fails in WhatsApp Web of September 2026 ("No key or key range specified"). */
+async function myGroups(client: ClientType, only?: string): Promise<{ id: string; name: string }[]> {
+  return page(client).evaluate((only: string | null) => {
+    const w = window as any;
+    const Me = w.require("WAWebUserPrefsMeUser");
+    const me = [Me.getMaybeMePnUser?.(), Me.getMaybeMeLidUser?.()].filter(Boolean).map((u: any) => u._serialized);
+    return w
+      .require("WAWebCollections")
+      .Chat.getModelsArray()
+      .filter((c: any) => c.id.server === "g.us" && c.groupMetadata && (!only || c.id._serialized === only))
+      .filter((c: any) => c.groupMetadata.participants.getModelsArray().some((p: any) => me.includes(p.id._serialized)))
+      .map((c: any) => ({ id: c.id._serialized as string, name: String(c.formattedTitle ?? c.name ?? "") }));
+  }, only ?? null);
 }
