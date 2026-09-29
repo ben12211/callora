@@ -61,6 +61,9 @@ class Session {
     this.error = null;
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: this.stored.id, dataPath: AUTH }),
+      // WhatsApp Web's page is kept where the service may write: under /app it cannot, and
+      // whatsapp-web.js then stops after the scan without a word ("authenticating" forever).
+      webVersionCache: { type: "local", path: path.join(DATA, "web-cache") },
       puppeteer: {
         executablePath: CHROMIUM,
         headless: true,

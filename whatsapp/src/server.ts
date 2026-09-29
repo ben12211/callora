@@ -83,3 +83,9 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.exit(0);
   });
 }
+
+// whatsapp-web.js leaves some of its own promises unhandled (a browser closed while a page
+// response is read, as when an account is removed): logged, not the end of every account.
+process.on("unhandledRejection", (e) => {
+  console.error(JSON.stringify({ at: new Date().toISOString(), unhandled: e instanceof Error ? e.message : String(e) }));
+});
