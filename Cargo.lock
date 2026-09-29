@@ -242,6 +242,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
+ "bytes",
  "callora-audio",
  "callora-core",
  "callora-providers",

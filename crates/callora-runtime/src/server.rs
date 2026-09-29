@@ -82,6 +82,10 @@ impl AppState {
         let sessions = crate::dashboard::Sessions::new(&settings.dashboard_password, &secret);
         let whatsapp =
             settings.whatsapp.clone().map(|(url, token)| Arc::new(crate::whatsapp::Service::new(url, token)));
+        if !settings.public_base_url.is_empty() {
+            services.desk =
+                Some(Arc::new(crate::desk::Desk::new(settings.public_base_url.clone(), services.telephony.clone())));
+        }
         Arc::new(Self {
             registry,
             libraries,
@@ -113,6 +117,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(twilio::STATUS_PATH, post(call_status))
         .route(twilio::MEDIA_PATH, get(media))
         .route(twilio::WHISPER_PATH, post(whisper))
+        .route(twilio::DESK_PATH, post(desk_answered))
+        .route("/api/settings", get(api_settings))
+        .route("/api/settings/{business}", axum::routing::put(api_save_settings))
         .route("/api/businesses", get(api_businesses))
         .route("/api/calls", get(api_calls))
         .route("/api/orders", get(api_orders))
@@ -372,6 +379,24 @@ impl WhisperRegistry for Whispers {
     }
 }
 
+/// A desk number answered a transfer: the first one takes the caller.
+async fn desk_answered(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    Query(q): Query<WhisperQuery>,
+    Form(params): Form<BTreeMap<String, String>>,
+) -> Response {
+    if !signed(&s, &headers, &uri, &params) {
+        return (StatusCode::FORBIDDEN, "invalid signature").into_response();
+    }
+    let leg = params.get("CallSid").map(String::as_str).unwrap_or("");
+    match &s.services.desk {
+        Some(desk) => xml(desk.answered(&q.t, leg)),
+        None => xml(twilio::twiml_hangup()),
+    }
+}
+
 #[derive(Deserialize)]
 struct WhisperQuery {
     t: String,
@@ -546,6 +571,64 @@ async fn api_orders(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+async fn api_settings(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let businesses: Vec<_> = s
+        .registry
+        .all()
+        .map(|b| json!({ "id": b.config.id, "name": b.config.name, "desk": s.services.settings.desk(b) }))
+        .collect();
+    Json(json!({
+        "businesses": businesses,
+        "music": crate::settings::DeskSettings::music_names(),
+        "saving": s.db.is_some(),
+        "transfers": s.services.desk.is_some(),
+    }))
+    .into_response()
+}
+
+async fn api_save_settings(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(business): Path<String>,
+    Json(mut desk): Json<crate::settings::DeskSettings>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if s.registry.by_id(&business).is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    // "050-123 4567" as typed → "+972501234567".
+    desk.numbers = desk.numbers.iter().map(|n| normalize_phone(n)).filter(|n| !n.is_empty()).collect();
+    let problems = desk.problems();
+    if !problems.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "problems": problems }))).into_response();
+    }
+    match s.services.settings.save_desk(pool, &business, desk.clone()).await {
+        Ok(()) => Json(desk).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "saving settings failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// An Israeli number as people type it, in E.164.
+fn normalize_phone(raw: &str) -> String {
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+    if let Some(rest) = digits.strip_prefix("00") {
+        return format!("+{rest}");
+    }
+    if let Some(rest) = digits.strip_prefix('0') {
+        return format!("+972{rest}");
+    }
+    digits
 }
 
 #[derive(Deserialize)]

@@ -104,6 +104,15 @@ export type Order = {
   };
 };
 
+export type DeskSettings = { numbers: string[]; hold_music: string; max_wait_seconds: number };
+
+export type SettingsData = {
+  businesses: { id: string; name: string; desk: DeskSettings }[];
+  music: string[];
+  saving: boolean;
+  transfers: boolean;
+};
+
 export type Session = { businesses: { id: string; name: string }[]; database: boolean };
 
 /** Raised for a 401: the page asks for the password again. */

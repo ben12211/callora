@@ -153,12 +153,15 @@ pub struct Engine {
     offered_more: bool,
     /// Israel's localities and streets, for checking the places the agent passes on.
     gazetteer: Option<Arc<Gazetteer>>,
+    /// Whether a person can take the call, from the owner's settings (`None`: the business
+    /// file's handoff number decides).
+    desk: Option<bool>,
 }
 
 impl Engine {
     pub fn new(business: Arc<Business>, seed: u64) -> Self {
         let state = CallState::new(&business.config.id);
-        Self { business, state, chooser: SeededChooser(seed | 1), offered_more: false, gazetteer: None }
+        Self { business, state, chooser: SeededChooser(seed | 1), offered_more: false, gazetteer: None, desk: None }
     }
 
     /// The city whose street the question just asked for ("מאיזו עיר?" "בני ברק" ... "איזה
@@ -198,6 +201,7 @@ impl Engine {
             chooser: self.chooser.clone(),
             offered_more: self.offered_more,
             gazetteer: self.gazetteer.clone(),
+            desk: self.desk,
         };
         probe.state.remember(Speaker::Caller, transcript);
         let fields = probe.answer_in_place(transcript, fields);
@@ -252,6 +256,15 @@ impl Engine {
 
     pub fn set_caller_phone(&mut self, phone: Option<String>) {
         self.state.caller_phone = phone.filter(|p| !p.trim().is_empty());
+    }
+
+    /// Whether the dispatch desk has numbers to ring (the owner's settings).
+    pub fn set_desk(&mut self, available: bool) {
+        self.desk = Some(available);
+    }
+
+    fn has_desk(&self) -> bool {
+        self.desk.unwrap_or(self.business.handoff_number.is_some())
     }
 
     pub fn set_gazetteer(&mut self, gazetteer: Option<Arc<Gazetteer>>) {
@@ -1687,7 +1700,7 @@ impl Engine {
                         self.say(&mut out, r, ctx, true);
                     }
                     let result = json!({ "error": failure.error, "outcome_unknown": true, "run_id": run_id });
-                    if self.business.handoff_number.is_some() {
+                    if self.has_desk() {
                         self.handoff(&mut out, "action_outcome_unknown");
                         self.close_run("unknown", Some(result));
                     } else {
@@ -1911,7 +1924,7 @@ impl Engine {
 
     fn handoff(&mut self, out: &mut Out, reason: &str) {
         let handoff = self.business.config.handoff.clone();
-        if self.business.handoff_number.is_some() {
+        if self.has_desk() {
             let ctx = self.render_ctx(None);
             self.say(out, &handoff.response, ctx, true);
             self.state.phase = Phase::HandingOff;

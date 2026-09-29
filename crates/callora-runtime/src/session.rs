@@ -108,6 +108,10 @@ pub struct Services {
     pub store: Arc<dyn CallStore>,
     pub whisper: Arc<dyn WhisperRegistry>,
     pub metrics: Arc<Metrics>,
+    /// The owner's settings (the dispatch desk).
+    pub settings: Arc<crate::settings::SettingsStore>,
+    /// Hands callers to the desk with hold music; set by the server.
+    pub desk: Option<Arc<crate::desk::Desk>>,
 }
 
 #[derive(Debug)]
@@ -337,6 +341,7 @@ impl Session {
         let mut engine = Engine::new(business.clone(), seed);
         engine.set_gazetteer(services.gazetteer.clone());
         engine.set_caller_phone(info.from.clone());
+        engine.set_desk(!services.settings.desk(&business).numbers.is_empty());
         let mut s = Session {
             engine,
             business,

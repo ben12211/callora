@@ -202,6 +202,20 @@ impl Session {
             }
             AfterSpeech::Handoff(summary) => {
                 self.services.metrics.handoffs_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(desk) = self.services.desk.clone() {
+                    let settings = self.services.settings.desk(&self.business);
+                    let c = &self.business.config;
+                    let unavailable = self
+                        .business
+                        .response(&c.handoff.unavailable_response)
+                        .and_then(|r| r.variants.first().cloned())
+                        .unwrap_or_default();
+                    if desk.transfer(&self.info, &summary, &settings, &c.language, &unavailable).await {
+                        return Ending::HandedOff;
+                    }
+                    let _ = self.services.telephony.hangup(&self.info.call_sid).await;
+                    return Ending::AgentHungUp;
+                }
                 let Some(number) = self.business.handoff_number.clone() else {
                     let _ = self.services.telephony.hangup(&self.info.call_sid).await;
                     return Ending::AgentHungUp;

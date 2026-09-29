@@ -9,6 +9,7 @@ import { Calls } from "./pages/Calls";
 import { CallView } from "./pages/CallView";
 import { Orders } from "./pages/Orders";
 import { WhatsApp } from "./pages/WhatsApp";
+import { Settings as SettingsPage } from "./pages/Settings";
 
 type Auth = { state: "checking" } | { state: "out" } | { state: "in"; session: Session };
 
@@ -44,6 +45,7 @@ export function App() {
           <Route path="/calls/:id" element={<CallView />} />
           <Route path="/orders" element={<Orders />} />
           <Route path="/whatsapp" element={<WhatsApp />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Shell>
@@ -56,6 +58,7 @@ const NAV = [
   { to: "/calls", label: "שיחות", icon: Phone, end: false },
   { to: "/orders", label: "הזמנות", icon: ClipboardList, end: false },
   { to: "/whatsapp", label: "וואטסאפ", icon: MessageCircle, end: false },
+  { to: "/settings", label: "הגדרות", icon: Settings, end: false },
 ];
 
 function useTheme(): [boolean, () => void] {
@@ -108,11 +111,6 @@ function Shell({ business, onLogout, children }: { business: string; onLogout: (
           {label}
         </NavLink>
       ))}
-      <span className="flex cursor-not-allowed items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-400 dark:text-slate-600" title="בשלב הבא">
-        <Settings className="size-4" aria-hidden />
-        הגדרות
-        <span className="ms-auto rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-800">בקרוב</span>
-      </span>
     </nav>
   );
 

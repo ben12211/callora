@@ -47,4 +47,30 @@ impl Telephony for TwilioRest {
         let twiml = twiml_dial(to, whisper_url);
         self.update(call_sid, &[("Twiml", &twiml)]).await
     }
+
+    async fn redirect(&self, call_sid: &str, twiml: &str) -> anyhow::Result<()> {
+        self.update(call_sid, &[("Twiml", twiml)]).await
+    }
+
+    async fn dial(&self, to: &str, from: &str, url: &str, ring_seconds: u32) -> anyhow::Result<String> {
+        let endpoint = format!("{}/2010-04-01/Accounts/{}/Calls.json", self.base_url, self.account_sid);
+        let timeout = ring_seconds.to_string();
+        let form = [("To", to), ("From", from), ("Url", url), ("Method", "POST"), ("Timeout", timeout.as_str())];
+        let resp =
+            self.http.post(endpoint).basic_auth(&self.account_sid, Some(&self.auth_token)).form(&form).send().await?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("Twilio call create failed with HTTP {status}: {}", body["message"].as_str().unwrap_or(""));
+        }
+        body["sid"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!("Twilio returned no call sid"))
+    }
+
+    async fn cancel(&self, call_sid: &str) -> anyhow::Result<()> {
+        // "canceled" stops a call still ringing; "completed" ends one already answered.
+        if self.update(call_sid, &[("Status", "canceled")]).await.is_err() {
+            self.update(call_sid, &[("Status", "completed")]).await?;
+        }
+        Ok(())
+    }
 }

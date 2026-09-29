@@ -19,6 +19,8 @@ pub const VOICE_PATH: &str = "/webhooks/twilio/voice";
 pub const STATUS_PATH: &str = "/webhooks/twilio/call-status";
 pub const MEDIA_PATH: &str = "/webhooks/twilio/media";
 pub const WHISPER_PATH: &str = "/webhooks/twilio/handoff-whisper";
+/// Fetched by Twilio when a desk number answers a transfer (see `desk.rs`).
+pub const DESK_PATH: &str = "/webhooks/twilio/desk";
 
 /// `X-Twilio-Signature`: base64(HMAC-SHA1(auth_token, url + sorted(key + value)...)).
 pub fn signature(auth_token: &str, url: &str, params: &BTreeMap<String, String>) -> String {
@@ -105,6 +107,30 @@ pub fn twiml_say(text: &str, language: &str) -> String {
         r#"<?xml version="1.0" encoding="UTF-8"?><Response><Say language="{}">{}</Say></Response>"#,
         xml_escape(language),
         xml_escape(text)
+    )
+}
+
+pub fn twiml_hangup() -> String {
+    r#"<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>"#.to_string()
+}
+
+/// The caller waits in their own conference, with the music, until a dispatcher joins.
+/// Leaving ends it, so a dispatcher is never left alone in it.
+pub fn twiml_conference_wait(conference: &str, music_url: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><Dial><Conference waitUrl="{}" waitMethod="GET" startConferenceOnEnter="false" endConferenceOnExit="true" beep="false">{}</Conference></Dial><Hangup/></Response>"#,
+        xml_escape(music_url),
+        xml_escape(conference)
+    )
+}
+
+/// The dispatcher hears the call's summary, then joins the caller (the music stops).
+pub fn twiml_desk_join(summary: &str, language: &str, conference: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><Say language="{}">{}</Say><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true" beep="false">{}</Conference></Dial></Response>"#,
+        xml_escape(language),
+        xml_escape(summary),
+        xml_escape(conference)
     )
 }
 

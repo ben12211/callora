@@ -183,6 +183,8 @@ async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
         store: Arc::new(NullStore),
         whisper: Arc::new(NoWhisper),
         metrics: metrics.clone(),
+        settings: Default::default(),
+        desk: None,
     };
     let mut libraries = HashMap::new();
     libraries.insert("taxi".to_string(), Arc::new(library));

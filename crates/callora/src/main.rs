@@ -73,6 +73,13 @@ enum Command {
         business: String,
         text: String,
     },
+    /// Stored caller utterances through the configured speech recognizer, with its latency.
+    SttProbe {
+        /// JSON lines with `heard` and `audio` (base64 μ-law 8 kHz).
+        file: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Print the agent's system prompt and reply schema, as JSON.
     AgentPrompt {
         #[arg(long, default_value = "taxi")]
@@ -233,9 +240,20 @@ fn load_gazetteer() -> Option<Arc<callora_core::gazetteer::Gazetteer>> {
     (!g.is_empty()).then(|| Arc::new(g))
 }
 
-/// Speech recognition: Deepgram Nova-3 unless STT_PROVIDER names Scribe (ElevenLabs) or
-/// Cartesia. Each needs its key; without the chosen one's, the next one with a key hears.
+/// Speech recognition: Deepgram Nova-3 unless STT_PROVIDER names OpenAI (`gpt-transcribe`),
+/// Scribe (ElevenLabs) or Cartesia. Each needs its key; without the chosen one's, the next
+/// one with a key hears. OpenAI is backed by the next one if its session cannot open.
 fn speech_to_text() -> Arc<dyn SpeechToText> {
+    let openai = || {
+        env("OPENAI_API_KEY").map(|key| {
+            Arc::new(callora_providers::openai_stt::OpenAiStt::new(
+                key,
+                env("OPENAI_STT_URL"),
+                env("OPENAI_STT_MODEL"),
+                env("OPENAI_STT_PROMPT"),
+            )) as Arc<dyn SpeechToText>
+        })
+    };
     let deepgram = || {
         env("DEEPGRAM_API_KEY").map(|key| {
             Arc::new(Deepgram::new(key, env("DEEPGRAM_STT_URL"), env("DEEPGRAM_STT_MODEL"))) as Arc<dyn SpeechToText>
@@ -253,6 +271,10 @@ fn speech_to_text() -> Arc<dyn SpeechToText> {
         })
     };
     let chosen = match env("STT_PROVIDER").as_deref() {
+        Some("openai") => match (openai(), deepgram().or_else(scribe).or_else(cartesia)) {
+            (Some(primary), Some(backup)) => Some(Arc::new(SttWithBackup { primary, backup }) as Arc<dyn SpeechToText>),
+            (primary, backup) => primary.or(backup),
+        },
         Some("cartesia") => cartesia().or_else(deepgram).or_else(scribe),
         Some("scribe") => scribe().or_else(deepgram).or_else(cartesia),
         _ => deepgram().or_else(scribe).or_else(cartesia),
@@ -365,6 +387,10 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
+        Command::SttProbe { file, limit } => {
+            init_tracing();
+            stt_probe(&file, limit).await
+        }
         Command::Understand { business, text } => {
             let reg = load_registry(&cli.businesses)?;
             let b = reg.by_id(&business).context("unknown business")?;
@@ -442,6 +468,71 @@ async fn voice_library(dir: &Path, command: LibraryCommand) -> anyhow::Result<()
             Ok(())
         }
     }
+}
+
+/// A recognizer backed by another: when the primary's session cannot open (an outage, a
+/// rejected key), the call is heard by the backup instead of being handed off.
+struct SttWithBackup {
+    primary: Arc<dyn SpeechToText>,
+    backup: Arc<dyn SpeechToText>,
+}
+
+#[async_trait::async_trait]
+impl SpeechToText for SttWithBackup {
+    async fn open(&self, language: &str, keyterms: &[String]) -> anyhow::Result<SttSession> {
+        match self.primary.open(language, keyterms).await {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                tracing::warn!(primary = self.primary.name(), error = %format!("{e:#}"), "speech recognition failed to open; using the backup");
+                self.backup.open(language, keyterms).await
+            }
+        }
+    }
+    fn name(&self) -> &'static str {
+        self.primary.name()
+    }
+}
+
+/// `callora stt-probe`: stored caller utterances (the JSON lines the calls export makes:
+/// `heard`, `audio` as base64 μ-law) through the configured recognizer, as a call streams
+/// them, with the time from the end of speech to the transcript.
+async fn stt_probe(file: &Path, limit: usize) -> anyhow::Result<()> {
+    use base64::Engine as _;
+    let stt = speech_to_text();
+    println!("recognizer: {}", stt.name());
+    let text = std::fs::read_to_string(file)?;
+    let bs = char::from(92).to_string();
+    for (n, line) in text.lines().filter(|l| !l.trim().is_empty()).take(limit).enumerate() {
+        let row: serde_json::Value = serde_json::from_str(&line.replace(&bs.repeat(2), &bs))?;
+        let b64: String = row["audio"].as_str().unwrap_or("").chars().filter(|c| !c.is_whitespace()).collect();
+        let audio = base64::engine::general_purpose::STANDARD.decode(b64)?;
+        let mut session = stt.open("he-IL", &[]).await?;
+        for frame in audio.chunks(160) {
+            session.input.send(callora_runtime::ports::SttInput::Audio(bytes::Bytes::copy_from_slice(frame))).await?;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let ended = std::time::Instant::now();
+        session.input.send(callora_runtime::ports::SttInput::Finalize).await?;
+        let mut heard = String::new();
+        while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(8), session.events.recv()).await {
+            match e {
+                callora_runtime::ports::SttEvent::Final(t) => {
+                    heard = t;
+                    break;
+                }
+                callora_runtime::ports::SttEvent::Error(e) => {
+                    heard = format!("ERROR {e}");
+                    break;
+                }
+                callora_runtime::ports::SttEvent::Closed => break,
+                callora_runtime::ports::SttEvent::Partial(_) => {}
+            }
+        }
+        let ms = ended.elapsed().as_millis();
+        let _ = session.input.send(callora_runtime::ports::SttInput::Close).await;
+        println!("{:>3} {:>5} ms | before: {} | now: {}", n + 1, ms, row["heard"].as_str().unwrap_or(""), heard);
+    }
+    Ok(())
 }
 
 /// STT for a server started without a speech recognition key: every call is handed off.
@@ -572,6 +663,14 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         store,
         whisper: Arc::new(NoWhisper),
         metrics: Arc::new(Metrics::default()),
+        settings: Arc::new(match &db {
+            Some(pool) => callora_runtime::settings::SettingsStore::load(pool).await.unwrap_or_else(|e| {
+                tracing::error!(error = %e, "saved settings unreadable; using the business files");
+                Default::default()
+            }),
+            None => Default::default(),
+        }),
+        desk: None,
     };
     let mut session = SessionConfig { dynamic_model: env("ELEVENLABS_DYNAMIC_MODEL"), ..SessionConfig::default() };
     if let Some(ms) = env("VAD_ENDPOINT_MS").and_then(|v| v.parse().ok()) {

@@ -142,6 +142,22 @@ pub trait Telephony: Send + Sync {
     /// Move the caller to a human. `whisper_url` is fetched by Twilio and played to the
     /// human before the caller is connected.
     async fn transfer(&self, call_sid: &str, to: &str, whisper_url: Option<&str>) -> anyhow::Result<()>;
+
+    /// Replace what a live call is doing with this TwiML.
+    async fn redirect(&self, _call_sid: &str, _twiml: &str) -> anyhow::Result<()> {
+        anyhow::bail!("redirect is not supported")
+    }
+
+    /// Ring `to` from `from` (a number of ours); when answered, Twilio fetches `url` (POST)
+    /// for what to do. Returns the new call's sid.
+    async fn dial(&self, _to: &str, _from: &str, _url: &str, _ring_seconds: u32) -> anyhow::Result<String> {
+        anyhow::bail!("dialing out is not supported")
+    }
+
+    /// Stop a call that is still ringing (or hang it up).
+    async fn cancel(&self, _call_sid: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------------------
