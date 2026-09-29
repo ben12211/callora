@@ -141,6 +141,14 @@ pub struct CompletedRun {
     pub result: Option<serde_json::Value>,
 }
 
+/// One of the business's responses, with the values it fills in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Prompt {
+    pub response: String,
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallState {
     pub business_id: String,
@@ -192,10 +200,19 @@ pub struct CallState {
     /// comes: slot → the words.
     #[serde(default)]
     pub place_streets: BTreeMap<String, String>,
-    /// A street its city does not have, to read back for the caller to confirm or correct
-    /// ("ארנוביץ 32, ירושלים, נכון?"): slot → the words.
+    /// What to ask about a place that was not taken ("לא מצאתי את ארנוביץ בירושלים. התכוונת
+    /// ל…?"): slot → the business's responses to say, with their values.
     #[serde(default)]
-    pub doubt_confirm: BTreeMap<String, String>,
+    pub doubt_confirm: BTreeMap<String, Vec<Prompt>>,
+    /// A street given without its house number, asked for on its own: slot → (street, city).
+    #[serde(default)]
+    pub place_numbers: BTreeMap<String, (String, String)>,
+    /// Places whose house number was asked once: the second time the street is taken as is.
+    #[serde(default)]
+    pub number_asked: BTreeSet<String>,
+    /// How many times each place was not taken: at the third, a person takes the call.
+    #[serde(default)]
+    pub place_rejections: BTreeMap<String, u8>,
     /// This turn's second transcript of the caller's words (see the runtime's second hearing).
     #[serde(default)]
     pub second_hearing: Option<String>,
@@ -238,6 +255,9 @@ impl CallState {
             last_asks: Vec::new(),
             place_streets: BTreeMap::new(),
             doubt_confirm: BTreeMap::new(),
+            place_numbers: BTreeMap::new(),
+            number_asked: BTreeSet::new(),
+            place_rejections: BTreeMap::new(),
             second_hearing: None,
             address_form: AddressForm::Unknown,
             caller_phone: None,

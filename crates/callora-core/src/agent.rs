@@ -365,7 +365,12 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
                     b.config.slots.get(&ps.slot).is_some_and(|c| c.precise || c.street_once) && street_ask(ps).is_some()
                 };
                 if let Some(ps) = pending {
-                    if state.place_cities.contains_key(&ps.slot) {
+                    if let Some((street, city)) = state.place_numbers.get(&ps.slot) {
+                        u.push_str(&format!(
+                            "NOW: the caller is giving the house number on {street} in {city} for {}; take it and go on.\n",
+                            ps.slot
+                        ));
+                    } else if state.place_cities.contains_key(&ps.slot) {
                         u.push_str(&format!(
                             "NOW: the caller is giving the street in {} for {}; take it (with the city) and go on.\n",
                             state.place_cities[&ps.slot], ps.slot

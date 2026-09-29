@@ -464,8 +464,9 @@ async fn a_reply_that_starts_with_live_tts_opens_with_a_recorded_cover() {
 }
 
 #[tokio::test]
-async fn words_taken_for_noise_are_followed_by_the_question_again_not_a_long_silence() {
-    // A live call waited 11 seconds after its "שלום" (likely "שלוש") was dropped as noise.
+async fn words_taken_for_noise_before_any_task_do_not_repeat_the_greeting() {
+    // The call of 23:58 heard its greeting twice: noise right after it asked "again".
+    // Before a task there is no question to repeat; the silence reprompt waits its 5 s.
     let h = start_server().await;
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
     let token = twilio::create_stream_token(TOKEN, "CA43", "taxi", 300, chrono_now());
@@ -475,10 +476,8 @@ async fn words_taken_for_noise_are_followed_by_the_question_again_not_a_long_sil
     assert!(!frames.is_empty(), "greeting");
 
     h.stt.say("אה").await;
-    let (frames, _) = collect(&mut ws, Duration::from_millis(1500)).await;
-    assert!(frames.is_empty(), "nothing at once: the caller may go on");
-    let (frames, _) = collect(&mut ws, Duration::from_millis(1200)).await;
-    assert!(!frames.is_empty(), "then the question again, well before the 5 s silence reprompt");
+    let (frames, _) = collect(&mut ws, Duration::from_millis(3000)).await;
+    assert!(frames.is_empty(), "the greeting is not said again");
 }
 
 #[tokio::test]

@@ -428,7 +428,9 @@ fn places_are_checked_against_the_list_of_israeli_streets() {
     );
     assert_eq!(place(call.slot("pickup")), "ז'בוטינסקי 5, רמת גן", "the official spelling");
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "כן");
-    assert!(next.user.contains("names no Israeli locality") && next.user.contains("אלעד"), "{}", next.user);
+    // "מיל״ד" is no locality: not taken as the destination, the caller is asked for its city.
+    assert_eq!(call.slot("destination"), None);
+    assert!(next.user.contains("is no place the system knows") && next.user.contains("אלעד"), "{}", next.user);
 }
 
 #[test]
@@ -486,7 +488,7 @@ fn a_numbered_street_the_city_does_not_have_is_asked_again_once() {
     );
     assert_eq!(call.slot("pickup"), None, "not a street of אלעד");
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "בית דחה 45");
-    assert!(next.user.contains("has no street \"בית דחה\"; it was not accepted"), "{}", next.user);
+    assert!(next.user.contains("has no street \"בית דחה\"; it was not taken"), "{}", next.user);
     assert!(next.user.contains("- pickup: city אלעד, street MISSING"), "{}", next.user);
 
     // Said again the same way: kept, the list may be missing it.
@@ -1020,7 +1022,7 @@ fn read_back_ride() -> Call {
             Some("book_ride"),
             &[
                 ("pickup", "בן זכאי 40, אלעד"),
-                ("destination", "סוכות, ירושלים"),
+                ("destination", "סוכות 12, ירושלים"),
                 ("passengers", "שלושה"),
                 ("notes", "יש מזוודה"),
             ],
@@ -1072,7 +1074,7 @@ fn a_detail_rejected_in_a_read_back_turn_is_asked_for_not_read_back() {
     );
     let said = spoken(&d);
     assert!(!said.contains("לשלוח"), "no read-back of the old pickup: {said}");
-    assert!(said.contains("בית דחה 45") && said.contains("נכון?"), "what was heard, to confirm: {said}");
+    assert!(said.contains("לא מצאתי את בית דחה באלעד"), "what was not found, and where: {said}");
     assert!(!said.contains("סגור"), "{said}");
 }
 
@@ -1653,7 +1655,8 @@ fn a_street_its_city_lacks_is_read_back_and_taken_when_confirmed() {
         "",
     );
     let said = spoken(&d);
-    assert!(said.contains("ארנוביץ 32") && said.contains("נכון?"), "{said}");
+    assert!(said.contains("לא מצאתי את ארנוביץ") && said.contains("בתל אביב"), "said what was not found where: {said}");
+    assert!(said.contains("התכוונת ל") || said.contains("בעיר אחרת"), "and asked what they meant: {said}");
     call.engine.on_agent_turn(
         "כן",
         asking(
@@ -1699,4 +1702,123 @@ fn the_street_question_names_the_city_and_a_wrong_city_is_corrected() {
         "",
     );
     assert_eq!(place(call.slot("destination")), "ז'בוטינסקי 22, בני ברק");
+}
+
+fn elad_efrat() -> Arc<callora_core::gazetteer::Gazetteer> {
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         3650\tאפרת\t170\tהגפן\tofficial\n6100\tבני ברק\t301\tז'בוטינסקי\tofficial\n",
+    ))
+}
+
+#[test]
+fn the_house_number_is_asked_on_its_own_and_can_be_skipped() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_efrat()));
+    let d = call.engine.on_agent_turn(
+        "מבן זכאי באלעד",
+        asking(&["destination"], decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "בן זכאי, אלעד")])),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None, "not without its number yet");
+    assert!(spoken(&d).contains("באיזה מספר בית לאסוף"), "{}", spoken(&d));
+    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "45");
+    assert!(next.user.contains("NOW: the caller is giving the house number on בן זכאי in אלעד"), "{}", next.user);
+
+    call.engine.on_agent_turn(
+        "45",
+        asking(&["destination"], decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "45")])),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "בן זכאי 45, אלעד", "the number joins its street");
+
+    // The destination's number, not known: its street is taken as it is.
+    call.engine.on_agent_turn(
+        "לז'בוטינסקי בבני ברק",
+        asking(&["destination"], decide(AgentAction::None, "", None, &[("destination", "ז'בוטינסקי, בני ברק")])),
+        "",
+    );
+    assert_eq!(call.slot("destination"), None);
+    call.engine.on_agent_turn(
+        "לא יודע",
+        asking(
+            &["passengers"],
+            decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "ז'בוטינסקי, בני ברק")]),
+        ),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), "ז'בוטינסקי, בני ברק");
+}
+
+#[test]
+fn a_place_that_is_no_locality_is_not_the_pickup_and_a_new_city_replaces_the_old() {
+    // The call of 23:58: "מאפרק" (Efrat misheard) was booked as the pickup.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_efrat()));
+    let d = call.engine.on_agent_turn(
+        "מאפרק לביתר",
+        asking(&["pickup"], decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "אפרק")])),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None);
+    assert!(spoken(&d).contains("לא הכרתי את אפרק") && spoken(&d).contains("מאיזו עיר לאסוף"), "{}", spoken(&d));
+
+    // A pickup in one city, corrected to another: the old one goes, the new city's street is asked.
+    call.engine.on_agent_turn(
+        "מבן זכאי 45 אלעד",
+        asking(&["destination"], decide(AgentAction::None, "", None, &[("pickup", "בן זכאי 45, אלעד")])),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "בן זכאי 45, אלעד");
+    call.engine.on_agent_turn(
+        "לא, מאפרת",
+        asking(&["pickup"], decide(AgentAction::None, "איפה באפרת לאסוף?", None, &[("pickup", "אפרת")])),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None, "the pickup in אלעד is gone");
+    assert_eq!(call.engine.state.place_cities.get("pickup").map(String::as_str), Some("אפרת"));
+}
+
+#[test]
+fn a_place_missed_three_times_goes_to_a_person_or_is_taken_as_said() {
+    let three = |call: &mut Call| {
+        let mut last = Vec::new();
+        for heard in ["אפרק", "אפרוק", "אפרקה"] {
+            last = call.engine.on_agent_turn(
+                heard,
+                asking(&["pickup"], decide(AgentAction::None, "", Some("book_ride"), &[("pickup", heard)])),
+                "",
+            );
+        }
+        last
+    };
+    let (mut call, _) = Call::new(with_desk());
+    call.engine.set_gazetteer(Some(elad_efrat()));
+    let last = three(&mut call);
+    assert!(last.iter().any(|d| matches!(d, Directive::Handoff { .. })), "{last:?}");
+
+    // No desk (as in production today): taken as said, marked for the driver, no hangup.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_efrat()));
+    let last = three(&mut call);
+    assert!(!last.iter().any(|d| matches!(d, Directive::Hangup | Directive::Handoff { .. })), "{last:?}");
+    assert_eq!(place(call.slot("pickup")), "אפרקה");
+}
+
+#[test]
+fn yes_with_a_but_is_no_yes() {
+    // The call of 23:58: "כן אבל אתה יכול רק להחזיר להזמנה" sent the ride.
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn("כן אבל תחזור על ההזמנה", decide(AgentAction::Submit, "", None, &[]), "");
+    assert!(action(&d).is_none(), "nothing sent: {}", spoken(&d));
+    assert!(spoken(&d).contains("לשלוח"), "read back again: {}", spoken(&d));
+    let d = call.engine.on_agent_turn("כן", decide(AgentAction::Submit, "", None, &[]), "");
+    assert!(action(&d).is_some(), "a plain yes sends");
+}
+
+#[test]
+fn words_not_made_out_before_any_task_wait_for_the_silence_reprompt() {
+    // The call of 23:58 heard its greeting twice.
+    let (mut call, _) = Call::new(business(&[]));
+    assert!(call.engine.on_unheard().is_empty());
 }
