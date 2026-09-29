@@ -229,7 +229,8 @@ jobs:
       ELEVENLABS_DYNAMIC_MODEL: ${{ vars.ELEVENLABS_DYNAMIC_MODEL }}
       CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
       DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
-      DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+      # The legacy admin password until a dashboard one is set.
+      DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD || secrets.ADMIN_PASSWORD }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}

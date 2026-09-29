@@ -34,6 +34,7 @@ impl Session {
 
     pub(super) fn on_final_agent(&mut self, text: String) {
         self.last_partial.clear();
+        self.overlap = self.overlaps_last_reply();
         let mut transcript = text;
         if let Some(p) = self.pending_agent.take() {
             if p.speculative && same_words(&p.transcript, &transcript) {
@@ -108,6 +109,15 @@ impl Session {
         self.start_agent(transcript, false);
     }
 
+    /// The caller began these words before the agent's last reply started (and not long
+    /// ago): they finish the previous answer rather than answer the new question.
+    pub(super) fn overlaps_last_reply(&self) -> bool {
+        match (self.speech_started_at, self.reply_started_at) {
+            (Some(began), Some(reply)) => began < reply && reply.elapsed() < Duration::from_secs(6),
+            _ => false,
+        }
+    }
+
     pub(super) fn adopt_speculation(&mut self) {
         let Some(p) = self.pending_agent.as_mut() else { return };
         p.speculative = false;
@@ -131,7 +141,12 @@ impl Session {
         };
         self.turn += 1;
         let turn = self.turn;
+        self.engine.state.continues_answer = !speculative && std::mem::take(&mut self.overlap);
+        if self.engine.state.continues_answer {
+            tracing::info!(call = %self.info.call_sid, caller = %transcript, "the caller began before the last reply: finishing the previous answer");
+        }
         let request = agent::build_request(&self.business, &self.engine.state, &transcript);
+        self.engine.state.continues_answer = false;
         let timeout = Duration::from_millis(cfg.timeout_ms);
         let tx = self.events.clone();
         let task = tokio::spawn(async move {
@@ -321,6 +336,7 @@ impl Session {
     }
 
     fn play_agent(&mut self, plan: SpeechPlan, response: &str) {
+        self.reply_started_at = Some(Instant::now());
         let text = plan.text();
         let recorded = plan.segments.iter().all(|s| self.library.get_loose(&s.delivery, &s.text).is_some());
         if let Some(c) = &mut self.clock {

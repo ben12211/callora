@@ -32,7 +32,7 @@ secrets already configured in GitHub keep working.
 | `TAXI_CRM_URL` | optional | Customer lookup endpoint (by caller number). Unset → callers are unknown. |
 | `TAXI_CRM_TOKEN` | optional | Bearer token for `TAXI_CRM_URL`. |
 | `ALLOW_LIST` | optional | Comma-separated E.164 callers allowed to reach the agent; empty allows everyone. *legacy* |
-| `DASHBOARD_PASSWORD` | yes | The dashboard's password, 8 characters or more. Unset, nobody can sign in (an error is logged). Changing it signs everyone out. |
+| `DASHBOARD_PASSWORD` | yes | The dashboard's password, 8 characters or more. Unset, the legacy `ADMIN_PASSWORD` is used; with neither, nobody can sign in (an error is logged). Changing it signs everyone out. |
 | `ADMIN_API_KEY` | optional | `X-Api-Key` for the read-only `/api` (≥16 chars). *legacy* |
 
 ## GitHub Repository Variables

@@ -137,5 +137,32 @@
         }
       }
     ]
+  },
+  {
+    "id": "are_you_there_is_answered_not_asked_back",
+    "note": "live call 2026-09-29: \"אתה שומע?\" got \"הלו, שומעים אותי?\"",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "אתה שומע?",
+        "expect": {
+          "says_none": [
+            "שומעים אותי"
+          ],
+          "says_any": [
+            "אני פה|שומע|שומעים"
+          ],
+          "ended": false
+        }
+      }
+    ]
   }
 ]

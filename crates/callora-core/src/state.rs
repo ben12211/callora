@@ -216,6 +216,10 @@ pub struct CallState {
     /// This turn's second transcript of the caller's words (see the runtime's second hearing).
     #[serde(default)]
     pub second_hearing: Option<String>,
+    /// This turn's words began before the agent's last reply started to play: they finish
+    /// the caller's answer to the question before it ("דוד" ... "אביטבול").
+    #[serde(default)]
+    pub continues_answer: bool,
     /// Masculine or feminine once the caller's words show it ("אני צריכה"); neutral until then.
     #[serde(default)]
     pub address_form: AddressForm,
@@ -259,6 +263,7 @@ impl CallState {
             number_asked: BTreeSet::new(),
             place_rejections: BTreeMap::new(),
             second_hearing: None,
+            continues_answer: false,
             address_form: AddressForm::Unknown,
             caller_phone: None,
             next_action_run: 1,

@@ -280,6 +280,12 @@ pub struct Session {
     after_speech: Option<AfterSpeech>,
     silence_generation: u64,
     speech_ended_at: Option<Instant>,
+    /// When the caller's current utterance began (VAD), and when the agent last started a
+    /// reply: an utterance begun before the reply answers the question before it.
+    speech_started_at: Option<Instant>,
+    reply_started_at: Option<Instant>,
+    /// The next agent request is told the caller's words overlap its last reply.
+    overlap: bool,
     barge_in_started: Option<Instant>,
     /// The agent was cut off and no real utterance has followed yet.
     interrupted: bool,
@@ -363,6 +369,9 @@ impl Session {
             after_speech: None,
             silence_generation: 0,
             speech_ended_at: None,
+            speech_started_at: None,
+            reply_started_at: None,
+            overlap: false,
             barge_in_started: None,
             interrupted: false,
             finalize_sent_at: None,

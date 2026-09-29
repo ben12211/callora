@@ -325,5 +325,28 @@
         }
       }
     ]
+  },
+  {
+    "id": "a_detail_is_kept_when_the_other_is_garbled",
+    "note": "live call 2026-09-29: \"בלד לירושלים\" lost the destination",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "בלד לירושלים",
+        "expect": {
+          "fields": {
+            "destination": "ירושלים"
+          }
+        }
+      }
+    ]
   }
 ]

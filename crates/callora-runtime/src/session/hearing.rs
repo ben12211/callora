@@ -14,6 +14,7 @@ impl Session {
         match vad_event {
             Some(VadEvent::SpeechStarted) => {
                 self.silence_generation += 1;
+                self.speech_started_at = Some(Instant::now());
                 if self.pending_agent.as_ref().is_some_and(|p| p.speculative) {
                     // The caller went on talking: the guess was about half a sentence.
                     if let Some(p) = self.pending_agent.take() {

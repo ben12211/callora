@@ -8,7 +8,10 @@ impl Session {
         self.focus_stt();
         for d in directives {
             match d {
-                Directive::Speak { plan, .. } => {
+                Directive::Speak { plan, filler } => {
+                    if !filler {
+                        self.reply_started_at = Some(Instant::now());
+                    }
                     self.services.store.record(CallRecord::Turn {
                         call_id: self.info.call_id,
                         speaker: "agent".into(),

@@ -520,3 +520,36 @@ async fn the_dashboard_signs_in_with_its_password_and_the_cookie_opens_the_api()
     }
     assert_eq!(login("12345678").await.unwrap().status(), 429);
 }
+
+#[tokio::test]
+async fn words_begun_before_the_reply_are_sent_as_the_rest_of_the_previous_answer() {
+    // A live call: "דוד" ... "אביטבול", said in one breath with a short pause, became the name
+    // "דוד" and a driver note "אביטבול": the second part started before the next question.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "action": "none", "fields": [{ "slot": "customer_name", "value": "דוד" }], "say": "יש משהו שהנהג צריך לדעת?", "task": "book_ride" }),
+        json!({ "action": "none", "fields": [{ "slot": "customer_name", "value": "דוד אביטבול" }], "say": "יש משהו שהנהג צריך לדעת?", "task": "book_ride" }),
+    ]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, "CA48", "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "connected" }).to_string().into())).await.unwrap();
+    ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ1", "start": { "streamSid": "MZ1", "callSid": "CA48", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    collect(&mut ws, Duration::from_millis(400)).await;
+
+    // The caller is talking (the second part of the name starts) ...
+    for _ in 0..10 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // ... when the first part's transcript arrives and the agent answers it.
+    h.stt.say("דוד").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    h.stt.say("אביטבול").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+
+    let requests = agent.requests.lock();
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[0].user.contains("OVERLAP"), "the first part is an answer of its own");
+    assert!(requests[1].user.contains("OVERLAP"), "the rest of the name: {}", requests[1].user);
+}

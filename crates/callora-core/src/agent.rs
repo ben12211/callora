@@ -418,6 +418,16 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
             u.push_str(&format!("- {n}\n"));
         }
     }
+    if state.continues_answer {
+        // A live call's "דוד" ... "אביטבול" became the name "דוד" and the driver note
+        // "אביטבול": the caller was still giving the name when the next question played.
+        u.push_str(
+            "\nOVERLAP: the caller began these words before your last question played, so they have not heard \
+             it: they finish their answer to the question before it (the rest of a name, a street's number). \
+             Pass them for that detail, together with what they said just before, and ask your last question \
+             again.",
+        );
+    }
     u.push_str(&format!("\nCALLER NOW: \"{transcript}\""));
     if let Some(second) = state.second_hearing.as_deref().filter(|s| !s.is_empty() && *s != transcript) {
         u.push_str(&format!(

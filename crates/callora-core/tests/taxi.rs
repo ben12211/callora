@@ -1886,3 +1886,15 @@ fn a_street_without_a_number_the_city_lacks_gets_the_closest_offered() {
     );
     assert!(spoken(&d).contains("באיזה מספר בית לאסוף"), "{}", spoken(&d));
 }
+
+#[test]
+fn words_begun_before_the_last_question_are_told_to_the_agent_as_the_previous_answer() {
+    // A live call: "דוד" ... "אביטבול" became the name "דוד" and the driver note "אביטבול".
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.state.continues_answer = true;
+    let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "אביטבול");
+    assert!(request.user.contains("OVERLAP"), "{}", request.user);
+    call.engine.state.continues_answer = false;
+    let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "אביטבול");
+    assert!(!request.user.contains("OVERLAP"));
+}
