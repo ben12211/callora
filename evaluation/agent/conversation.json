@@ -116,7 +116,7 @@
   },
   {
     "id": "never_says_i_did_not_understand",
-    "note": "the rules say \"רק כדי שלא תהיה טעות\" instead",
+    "note": "the owner: say why it is asked again (\"סליחה, יש קצת רעש בקו.\"), never \"לא הבנתי\"",
     "turns": [
       {
         "caller": "צריך מונית",
@@ -132,6 +132,9 @@
         "expect": {
           "says_none": [
             "לא הבנתי"
+          ],
+          "says_any": [
+            "רעש"
           ],
           "ended": false
         }

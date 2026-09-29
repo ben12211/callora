@@ -218,12 +218,18 @@ fn cancel_then_no_more_ends_the_call() {
 }
 
 #[test]
-fn wait_says_nothing_and_changes_nothing() {
+fn wait_says_so_changes_nothing_and_waits_longer() {
+    // "רגע" left the caller in a silence nobody ended: no reply, no silence reprompt.
     let (mut call, _) = Call::new(with_desk());
     call.say("צריך מונית");
     let before = call.engine.state.run.clone();
-    assert!(call.say("רגע").is_empty());
+    let d = call.say("רגע");
+    assert!(spoken(&d).contains("אני מחכה"), "{}", spoken(&d));
     assert_eq!(call.engine.state.run, before);
+    assert_eq!(call.engine.silence_after_ms(), 15_000, "a longer wait before \"שומעים אותי?\"");
+    let d = call.engine.on_silence();
+    assert!(spoken(&d).contains("שומעים אותי"), "{}", spoken(&d));
+    assert_eq!(call.engine.silence_after_ms(), 5_000, "then the usual wait");
 }
 
 #[test]
@@ -737,7 +743,7 @@ fn a_misheard_correction_asks_again_instead_of_reading_it_back() {
     assert!(needs_llm, "a doubtful correction goes to the LLM");
     let d = call.say("בנלחב");
     assert!(!spoken(&d).contains("בנלחב"), "{}", spoken(&d));
-    assert!(spoken(&d).contains("כדי שלא תהיה טעות") && spoken(&d).contains("לאן"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("רעש בקו") && spoken(&d).contains("לאן"), "{}", spoken(&d));
     assert_eq!(call.slot("destination"), None);
     assert_eq!(call.step(), Some(Step::Collecting { awaiting: Some("destination".into()) }));
 
@@ -760,7 +766,7 @@ fn a_clear_correction_while_reading_back_a_value_is_taken() {
 fn fallback_ladder_then_handoff_with_context() {
     let (mut call, _) = Call::new(with_desk());
     let d1 = call.say("בלה בלה בלה");
-    assert!(spoken(&d1).contains("כדי שלא תהיה טעות"));
+    assert!(spoken(&d1).contains("רעש בקו"), "a reason for asking again: {}", spoken(&d1));
     let d2 = call.say("גלגל ענק ירוק");
     assert!(spoken(&d2).contains("להזמין מונית"));
     let d3 = call.say("פלפל שחור");
@@ -775,7 +781,7 @@ fn without_a_desk_a_bad_line_restarts_the_ladder_once_before_hanging_up() {
     call.say("בלה בלה בלה");
     call.say("גלגל ענק ירוק");
     let d = call.say("פלפל שחור");
-    assert!(spoken(&d).contains("הקו קצת לא ברור"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("איך אפשר לעזור"), "{}", spoken(&d));
     assert!(!hangs_up(&d), "the first time, the call goes on");
     assert_eq!(call.engine.state.fallback_level, 0);
 
@@ -1597,8 +1603,9 @@ fn a_street_its_city_does_not_have_holds_the_words_before_they_play() {
 }
 
 #[test]
-fn words_that_were_not_made_out_get_the_question_again() {
-    // The owner: not "I didn't hear" or "say it again?", just the question once more.
+fn words_that_were_not_made_out_get_the_question_again_with_the_reason() {
+    // The owner: the question once more, after why it is asked again ("יש רעש"), not a bare
+    // "I didn't hear".
     let (mut call, _) = Call::new(business(&[]));
     call.engine.on_agent_turn(
         "מאלעד בן זכאי 45 לירושלים",
@@ -1611,7 +1618,11 @@ fn words_that_were_not_made_out_get_the_question_again() {
         "",
     );
     let said = spoken(&call.engine.on_unheard());
-    assert_eq!(said, "כמה נוסעים?", "the question alone, without the \"סגור.\" before it");
+    assert_eq!(said, "סליחה, יש קצת רעש בקו. כמה נוסעים?", "the question alone, without the \"סגור.\" before it");
+    // Noise again in the same turn: no second apology; the silence reprompt waits.
+    assert!(call.engine.on_unheard().is_empty());
+    // Noise that cut the agent off: what it was saying, again.
+    assert_eq!(spoken(&call.engine.on_noise(true)), "סגור. כמה נוסעים?");
 }
 
 #[test]
@@ -1897,4 +1908,125 @@ fn words_begun_before_the_last_question_are_told_to_the_agent_as_the_previous_an
     call.engine.state.continues_answer = false;
     let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "אביטבול");
     assert!(!request.user.contains("OVERLAP"));
+}
+
+fn booked_ride() -> Call {
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn("כן", decide(AgentAction::Submit, "", None, &[]), "");
+    let (run_id, _, _) = action(&d).expect("the ride is sent");
+    let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "ride_id": "R-1" })));
+    assert!(spoken(&d).contains("משהו נוסף") || spoken(&d).contains("במשהו נוסף"), "{}", spoken(&d));
+    call
+}
+
+#[test]
+fn a_yes_with_a_word_that_corrects_nothing_sends() {
+    // "כן סליחה", "כן, לא צריך כלום": read back again and again until the call went to a person.
+    for yes in ["כן סליחה", "כן, לא צריך כלום, תשלח"] {
+        let mut call = read_back_ride();
+        let d = call.engine.on_agent_turn(yes, decide(AgentAction::Submit, "", None, &[]), "");
+        assert!(action(&d).is_some(), "{yes}: {}", spoken(&d));
+    }
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn("כן רגע", decide(AgentAction::Submit, "", None, &[]), "");
+    assert!(action(&d).is_none(), "a yes with a wait is no yes");
+    for cancellation in ["כן, לא צריך מונית", "כן, לא תודה", "כן, לא משנה, אל תשלח"]
+    {
+        let mut call = read_back_ride();
+        let d = call.engine.on_agent_turn(cancellation, decide(AgentAction::Submit, "", None, &[]), "");
+        assert!(action(&d).is_none(), "{cancellation}: a denial cannot be stripped into confirmation");
+    }
+}
+
+#[test]
+fn yes_said_over_the_read_back_is_the_caller_listening() {
+    let call = read_back_ride();
+    for listening in ["כן", "כן כן", "אהה", "בסדר", "טוב"] {
+        assert!(call.engine.is_backchannel(listening), "{listening}");
+    }
+    for words in ["כן אבל רגע", "לא", "ארבעה נוסעים"] {
+        assert!(!call.engine.is_backchannel(words), "{words}");
+    }
+    let (mut call, _) = Call::new(business(&[]));
+    call.say("צריך מונית");
+    assert!(!call.engine.is_backchannel("כן"), "only while details are read back");
+}
+
+#[test]
+fn short_answers_the_call_waits_for_are_not_noise() {
+    // "טוב", "תודה" are filler words, dropped as noise; to "משהו נוסף?" or the read-back they
+    // are the answer, and the question was asked again.
+    let call = read_back_ride();
+    assert!(call.engine.takes_short_answer("תודה"));
+    assert!(!call.engine.takes_short_answer("אממ"));
+    assert!(!call.engine.takes_short_answer("הלו"));
+    let (mut call, _) = Call::new(business(&[]));
+    call.say("צריך מונית");
+    assert!(!call.engine.takes_short_answer("תודה"), "nothing waits for it");
+}
+
+#[test]
+fn thanks_to_anything_else_ends_the_call() {
+    let mut call = booked_ride();
+    assert!(call.engine.on_closing("אממ").is_none());
+    let d = call.engine.on_closing("תודה רבה").expect("the goodbye");
+    assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{d:?}");
+
+    // The same through the agent: its goodbye is kept.
+    let mut call = booked_ride();
+    let d = call.engine.on_agent_turn("טוב תודה", decide(AgentAction::EndCall, "", None, &[]), "");
+    assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{d:?}");
+}
+
+#[test]
+fn hello_is_answered_with_the_question_again() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "מאלעד בן זכאי 45 לירושלים",
+        decide(
+            AgentAction::None,
+            "סגור. כמה נוסעים?",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 45, אלעד"), ("destination", "ירושלים")],
+        ),
+        "",
+    );
+    assert!(call.engine.is_hello("הלו"));
+    assert!(call.engine.is_hello("הלו הלו?"));
+    assert!(!call.engine.is_hello("הלו אני צריך מונית"));
+    let said = spoken(&call.engine.on_hello());
+    assert!(said.starts_with("כן, ") && said.ends_with("כמה נוסעים?"), "{said}");
+}
+
+#[test]
+fn a_silent_caller_with_details_given_is_waited_for() {
+    // A caller looking for the house number was hung up on after about twenty seconds.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "מאלעד בן זכאי 45 לירושלים",
+        decide(
+            AgentAction::None,
+            "סגור. כמה נוסעים?",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 45, אלעד"), ("destination", "ירושלים")],
+        ),
+        "",
+    );
+    for _ in 0..2 {
+        assert!(spoken(&call.engine.on_silence()).contains("שומעים אותי"));
+    }
+    assert_eq!(call.engine.silence_after_ms(), 5_000);
+    for _ in 0..2 {
+        let d = call.engine.on_silence();
+        assert!(spoken(&d).contains("אני") && !d.iter().any(|d| matches!(d, Directive::Hangup)), "{}", spoken(&d));
+        assert_eq!(call.engine.silence_after_ms(), 15_000);
+    }
+    let d = call.engine.on_silence();
+    assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "then the goodbye");
+
+    // Before any detail, the usual two reprompts.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_silence();
+    call.engine.on_silence();
+    assert!(call.engine.on_silence().iter().any(|d| matches!(d, Directive::Hangup)));
 }

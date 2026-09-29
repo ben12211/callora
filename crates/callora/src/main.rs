@@ -20,7 +20,7 @@ use callora_providers::{
     deepgram::Deepgram,
     elevenlabs::ElevenLabs,
     openai::OpenAi,
-    race::{FirstAnswer, Hedged},
+    race::{Fallback, FirstAnswer, Hedged},
     scribe::Scribe,
     twilio_rest::TwilioRest,
 };
@@ -194,19 +194,39 @@ fn agent_model_named(http: reqwest::Client, model: &str, effort: Option<String>)
 
 /// The conversation agent: AGENT_MODEL (default gemini-3.8-flash), hedged after
 /// AGENT_HEDGE_MS (default 1200) by AGENT_BACKUP_MODEL (default gpt-6-luna) when that
-/// provider's key is set. Run `callora eval --model <a> --model <b>` to compare models on
-/// the recorded conversations before changing either.
+/// provider's key is set; when both fail, AGENT_FALLBACK_MODEL, by default a model of the
+/// other provider (an outage of one provider must not end the calls). Run `callora eval
+/// --model <a> --model <b>` to compare models on the recorded conversations before changing
+/// any.
 fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
     let primary = env("AGENT_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_MODEL.into());
     let backup = env("AGENT_BACKUP_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_BACKUP_MODEL.into());
     let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(1200));
     let primary_model = agent_model_named(http.clone(), &primary, None)?;
-    Some(match agent_model_named(http, &backup, None) {
+    let agent: Arc<dyn LanguageModel> = match agent_model_named(http.clone(), &backup, None) {
         Some(backup_model) => Arc::new(Hedged::new(primary_model, backup_model, hedge)),
         None => {
             tracing::warn!(%backup, "no key for the agent's backup model; the agent runs unhedged");
             primary_model
         }
+    };
+    let on_gemini = primary.starts_with("gemini") && backup.starts_with("gemini");
+    let on_openai = !primary.starts_with("gemini") && !backup.starts_with("gemini");
+    let fallback = env("AGENT_FALLBACK_MODEL").or_else(|| {
+        if on_openai {
+            Some("gemini-3.8-flash".into())
+        } else if on_gemini {
+            Some(callora_providers::openai::AGENT_BACKUP_MODEL.into())
+        } else {
+            None
+        }
+    });
+    Some(match fallback.as_deref().filter(|f| *f != "none").and_then(|f| agent_model_named(http, f, None)) {
+        Some(then) => {
+            tracing::info!(fallback = ?fallback, "the agent falls back to another provider when its models fail");
+            Arc::new(Fallback::new(agent, then))
+        }
+        None => agent,
     })
 }
 

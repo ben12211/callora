@@ -28,6 +28,9 @@ pub struct DeskSettings {
     /// E.164 numbers rung at once; the first to answer takes the caller.
     #[serde(default)]
     pub numbers: Vec<String>,
+    /// A Twilio-owned or verified E.164 caller ID; absent uses the called business number.
+    #[serde(default)]
+    pub caller_id: Option<String>,
     /// A name from [`MUSIC`] or an `https://` audio URL.
     #[serde(default = "default_music")]
     pub hold_music: String,
@@ -45,7 +48,7 @@ fn default_wait() -> u32 {
 
 impl Default for DeskSettings {
     fn default() -> Self {
-        Self { numbers: Vec::new(), hold_music: default_music(), max_wait_seconds: default_wait() }
+        Self { numbers: Vec::new(), caller_id: None, hold_music: default_music(), max_wait_seconds: default_wait() }
     }
 }
 
@@ -61,6 +64,9 @@ impl DeskSettings {
     /// Problems that keep these settings from being saved.
     pub fn problems(&self) -> Vec<String> {
         let mut p = Vec::new();
+        if self.caller_id.as_deref().is_some_and(|n| !is_e164(n)) {
+            p.push("מספר הזיהוי היוצא חייב להיות בפורמט בינלאומי".into());
+        }
         if self.numbers.len() > 10 {
             p.push("עד 10 מספרים".into());
         }
@@ -138,9 +144,17 @@ mod tests {
     fn settings_are_checked_before_they_are_saved() {
         let ok = DeskSettings { numbers: vec!["+972501234567".into()], ..DeskSettings::default() };
         assert!(ok.problems().is_empty());
+        let old: DeskSettings =
+            serde_json::from_str(r#"{"numbers":["+972501234567"],"hold_music":"none","max_wait_seconds":15}"#).unwrap();
+        assert_eq!(old.caller_id, None, "saved settings remain compatible");
+        assert!(!DeskSettings { caller_id: Some("054-1234567".into()), ..Default::default() }.problems().is_empty());
         assert!(ok.music_url().contains("classical"));
-        let bad =
-            DeskSettings { numbers: vec!["050-1234567".into()], hold_music: "http://x".into(), max_wait_seconds: 5 };
+        let bad = DeskSettings {
+            numbers: vec!["050-1234567".into()],
+            hold_music: "http://x".into(),
+            max_wait_seconds: 5,
+            ..DeskSettings::default()
+        };
         assert_eq!(bad.problems().len(), 3, "{:?}", bad.problems());
         let custom = DeskSettings { hold_music: "https://example.com/wait.mp3".into(), ..DeskSettings::default() };
         assert_eq!(custom.music_url(), "https://example.com/wait.mp3");

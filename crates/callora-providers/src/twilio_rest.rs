@@ -2,6 +2,7 @@
 //! the server-side stream authorization, never from the caller or a model.
 
 use async_trait::async_trait;
+use std::time::Duration;
 
 use callora_runtime::ports::Telephony;
 use callora_runtime::twilio::twiml_dial;
@@ -22,7 +23,14 @@ impl TwilioRest {
 
     async fn update(&self, call_sid: &str, form: &[(&str, &str)]) -> anyhow::Result<()> {
         let url = format!("{}/2010-04-01/Accounts/{}/Calls/{}.json", self.base_url, self.account_sid, call_sid);
-        let resp = self.http.post(url).basic_auth(&self.account_sid, Some(&self.auth_token)).form(form).send().await?;
+        let resp = self
+            .http
+            .post(url)
+            .timeout(Duration::from_secs(10))
+            .basic_auth(&self.account_sid, Some(&self.auth_token))
+            .form(form)
+            .send()
+            .await?;
         let status = resp.status();
         if status.is_success() {
             return Ok(());
@@ -72,12 +80,19 @@ impl Telephony for TwilioRest {
             ("StatusCallbackMethod", "POST"),
             ("StatusCallbackEvent", "completed"),
         ];
-        let resp =
-            self.http.post(endpoint).basic_auth(&self.account_sid, Some(&self.auth_token)).form(&form).send().await?;
+        let resp = self
+            .http
+            .post(endpoint)
+            .timeout(Duration::from_secs(10))
+            .basic_auth(&self.account_sid, Some(&self.auth_token))
+            .form(&form)
+            .send()
+            .await?;
         let status = resp.status();
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
         if !status.is_success() {
-            anyhow::bail!("Twilio call create failed with HTTP {status}: {}", body["message"].as_str().unwrap_or(""));
+            let code = body.get("code").and_then(serde_json::Value::as_i64);
+            anyhow::bail!("Twilio call create failed with HTTP {status} (code {code:?})");
         }
         body["sid"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!("Twilio returned no call sid"))
     }

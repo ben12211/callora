@@ -227,6 +227,13 @@ pub struct CallState {
     #[serde(default)]
     pub caller_phone: Option<String>,
     pub next_action_run: u64,
+    /// The caller asked to wait ("רגע"): the silence reprompt waits longer.
+    #[serde(default)]
+    pub waiting: bool,
+    /// The caller turn at which the agent last said the line is noisy: said once per turn,
+    /// not every time noise cuts in.
+    #[serde(default)]
+    pub noise_apology_turn: Option<u32>,
 }
 
 pub const HISTORY_LIMIT: usize = 24;
@@ -267,6 +274,8 @@ impl CallState {
             address_form: AddressForm::Unknown,
             caller_phone: None,
             next_action_run: 1,
+            waiting: false,
+            noise_apology_turn: None,
         }
     }
 

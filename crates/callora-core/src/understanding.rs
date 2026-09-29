@@ -287,7 +287,7 @@ pub fn fast_path(b: &Business, ctx: &Context<'_>, transcript: &str) -> (Understa
 }
 
 /// A drawn-out "אההה" / "אממממ" / "המממ": a hesitation, however many letters it has.
-fn is_hesitation(token: &str) -> bool {
+pub(crate) fn is_hesitation(token: &str) -> bool {
     token.chars().count() >= 2 && token.chars().all(|c| matches!(c, 'א' | 'ה' | 'מ'))
 }
 

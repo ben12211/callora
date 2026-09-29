@@ -33,6 +33,46 @@ use callora_runtime::ports::{LanguageModel, SpeechToText, SttEvent, SttInput, St
 
 const TAXI: &str = include_str!("../../../businesses/taxi.json");
 
+#[tokio::test]
+async fn twilio_dial_registers_signed_post_completion_callbacks_and_sanitizes_errors() {
+    use axum::Form;
+    use callora_providers::twilio_rest::TwilioRest;
+    use callora_runtime::ports::Telephony;
+    use std::collections::HashMap;
+    let app = Router::new().route(
+        "/2010-04-01/Accounts/ACtest/Calls.json",
+        post(|headers: HeaderMap, Form(form): Form<HashMap<String, String>>| async move {
+            assert!(headers.contains_key("authorization"));
+            assert_eq!(form["From"], "+972509876543");
+            assert_eq!(form["Method"], "POST");
+            assert_eq!(form["StatusCallback"], "https://calls.example/webhooks/twilio/desk-status?t=token");
+            assert_eq!(form["StatusCallbackMethod"], "POST");
+            assert_eq!(form["StatusCallbackEvent"], "completed");
+            assert_eq!(form["Timeout"], "15");
+            if form["To"] == "+972501111111" {
+                (StatusCode::CREATED, Json(json!({"sid": "CAleg"})))
+            } else {
+                (StatusCode::BAD_REQUEST, Json(json!({"code": 21212, "message": "private destination detail"})))
+            }
+        }),
+    );
+    let addr = serve(app).await;
+    let twilio =
+        TwilioRest::new(reqwest::Client::new(), "ACtest".into(), "test-token".into(), Some(format!("http://{addr}")));
+    let status = "https://calls.example/webhooks/twilio/desk-status?t=token";
+    assert_eq!(
+        twilio.dial("+972501111111", "+972509876543", "https://calls.example/answer", status, 15).await.unwrap(),
+        "CAleg"
+    );
+    let error = twilio
+        .dial("+972502222222", "+972509876543", "https://calls.example/answer", status, 15)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("21212"));
+    assert!(!error.contains("private destination"));
+}
+
 fn taxi() -> Arc<Business> {
     Arc::new(
         Business::from_json(TAXI, "taxi.json", &|k| (k == "ELEVENLABS_VOICE_ID").then(|| "voice-1".to_string()))

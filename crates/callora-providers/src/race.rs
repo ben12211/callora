@@ -126,6 +126,55 @@ impl LanguageModel for Hedged {
     }
 }
 
+/// A model from another provider, asked only when the first fails outright: the agent and its
+/// hedge both run on OpenAI, and an OpenAI outage turned every turn into "say that again?"
+/// until the call was dropped.
+pub struct Fallback {
+    first: Arc<dyn LanguageModel>,
+    then: Arc<dyn LanguageModel>,
+}
+
+impl Fallback {
+    pub fn new(first: Arc<dyn LanguageModel>, then: Arc<dyn LanguageModel>) -> Self {
+        Self { first, then }
+    }
+}
+
+#[async_trait]
+impl LanguageModel for Fallback {
+    async fn extract(&self, request: &LlmRequest) -> anyhow::Result<Value> {
+        match self.first.extract(request).await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "the agent's models failed; asking the fallback provider");
+                self.then.extract(request).await
+            }
+        }
+    }
+
+    async fn stream(&self, request: &LlmRequest) -> anyhow::Result<TextStream> {
+        Ok(self.stream_metered(request).await?.0)
+    }
+
+    async fn stream_metered(&self, request: &LlmRequest) -> anyhow::Result<(TextStream, UsageReceiver)> {
+        match start(self.first.clone(), request.clone()).await {
+            Ok(started) => Ok(resume(started)),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "the agent's models failed; asking the fallback provider");
+                start(self.then.clone(), request.clone()).await.map(resume)
+            }
+        }
+    }
+
+    async fn warm(&self) {
+        futures::join!(self.first.warm(), self.then.warm());
+    }
+
+    fn name(&self) -> &'static str {
+        "fallback"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -153,6 +202,28 @@ mod tests {
 
     fn request() -> LlmRequest {
         LlmRequest { system: String::new(), user: String::new(), schema: json!({}) }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_fallback_recovers_extract_and_stream_only_after_failure() {
+        let make = |reply| {
+            Fallback::new(
+                Arc::new(Fake { delay_ms: 5, reply, name: "first" }),
+                Arc::new(Fake { delay_ms: 5, reply: Ok(json!("fallback")), name: "second" }),
+            )
+        };
+        let failing = make(Err("outage"));
+        assert_eq!(failing.extract(&request()).await.unwrap(), json!("fallback"));
+        assert_eq!(text(failing.stream(&request()).await.unwrap()).await, "\"fallback\"");
+        let healthy = make(Ok(json!("primary")));
+        assert_eq!(healthy.extract(&request()).await.unwrap(), json!("primary"));
+        assert_eq!(text(healthy.stream(&request()).await.unwrap()).await, "\"primary\"");
+        let failed = Fallback::new(
+            Arc::new(Fake { delay_ms: 5, reply: Err("outage"), name: "first" }),
+            Arc::new(Fake { delay_ms: 5, reply: Err("outage"), name: "second" }),
+        );
+        assert!(failed.extract(&request()).await.is_err());
+        assert!(failed.stream(&request()).await.is_err());
     }
 
     fn race(models: Vec<Fake>) -> FirstAnswer {

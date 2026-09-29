@@ -29,6 +29,7 @@ use callora_core::engine::{Directive, Engine, HandoffSummary};
 use callora_core::llm;
 use callora_core::render::{SegmentOrigin, SpeechPlan, SpeechSegment};
 use callora_core::speech::prepare_for_tts;
+use callora_core::state::Speaker;
 use callora_core::understanding::{fast_path, merge, Understanding};
 
 use crate::metrics::Metrics;
@@ -50,6 +51,18 @@ const UNFINISHED_WAIT: Duration = Duration::from_millis(1200);
 /// again: a
 /// live call waited 11 seconds in silence after its "שלום" (likely "שלוש") was dropped.
 const UNHEARD_WAIT: Duration = Duration::from_millis(2000);
+
+/// How long the caller's voice must go on over the agent before it stops, unless words come
+/// first: a cough, a car horn or the TV cut the agent off mid-question in live calls.
+const BARGE_CONFIRM: Duration = Duration::from_millis(450);
+/// The same during a read-back, where "כן", "אהה" are the caller listening.
+const BARGE_CONFIRM_READ_BACK: Duration = Duration::from_millis(1200);
+/// After speech with no words at all (noise the recognizer returned nothing for), how long
+/// before the question is asked again: otherwise nothing is said until the caller speaks.
+const NO_WORDS_WAIT: Duration = Duration::from_millis(2000);
+/// Words begun before the agent's reply finish the previous answer only when they follow it
+/// closely ("דוד" ... "אביטבול"), not after a long pause.
+const CONTINUATION_GAP: Duration = Duration::from_millis(2500);
 
 /// Consecutive speech recognition reconnects (with no transcript in between) before the
 /// call is handed off.
@@ -201,6 +214,11 @@ enum Ev {
     Unheard {
         generation: u64,
     },
+    /// Speech that ended some time ago and brought no words at all.
+    NoWords {
+        utterance: u64,
+        generation: u64,
+    },
 }
 
 enum AfterSpeech {
@@ -289,6 +307,21 @@ pub struct Session {
     barge_in_started: Option<Instant>,
     /// The agent was cut off and no real utterance has followed yet.
     interrupted: bool,
+    /// The caller's voice began over the agent, which goes on until words (or a long enough
+    /// voice) show it is not noise.
+    barge_pending: bool,
+    /// Audio of the current utterance so far, in ms (8 kHz μ-law: 8 bytes a millisecond).
+    voiced_ms: u64,
+    /// A read-back was cut off: a "yes" now was said without hearing all of it.
+    cut_read_back: bool,
+    /// The current utterance (counted at each start of speech) and whether it brought words.
+    speech_count: u64,
+    utterance_heard: bool,
+    no_words_generation: u64,
+    no_words_task: Option<JoinHandle<()>>,
+    /// When the caller last stopped speaking, and the pause before the current utterance.
+    last_speech_end: Option<Instant>,
+    speech_gap: Option<Duration>,
     /// When the last finalize went to the STT, for the transcription latency metric.
     finalize_sent_at: Option<Instant>,
     /// Reconnects since the last transcript.
@@ -374,6 +407,15 @@ impl Session {
             overlap: false,
             barge_in_started: None,
             interrupted: false,
+            barge_pending: false,
+            voiced_ms: 0,
+            cut_read_back: false,
+            speech_count: 0,
+            utterance_heard: false,
+            no_words_generation: 0,
+            no_words_task: None,
+            last_speech_end: None,
+            speech_gap: None,
             finalize_sent_at: None,
             stt_reconnects: 0,
             stt_city: None,
@@ -483,6 +525,7 @@ impl Session {
             }
         };
 
+        s.cancel_no_words();
         if let Some(stt) = &s.stt {
             let _ = stt.input.try_send(SttInput::Close);
         }
@@ -625,8 +668,12 @@ impl Session {
             }
             Ev::Silence { generation } => {
                 if generation == self.silence_generation
+                    && !self.vad.is_speaking()
                     && !self.agent_busy()
+                    && self.pending_agent.is_none()
                     && self.pending_llm.is_none()
+                    && self.second_pending.is_none()
+                    && self.unfinished.is_none()
                     && self.actions_in_flight == 0
                     && self.after_speech.is_none()
                 {
@@ -644,7 +691,34 @@ impl Session {
                     && self.after_speech.is_none()
                 {
                     let d = self.engine.on_unheard();
+                    if d.is_empty() {
+                        self.arm_silence();
+                    }
                     self.execute(d);
+                }
+            }
+            Ev::NoWords { utterance, generation } => {
+                if generation != self.no_words_generation || utterance != self.speech_count || self.utterance_heard {
+                    return;
+                }
+                if utterance == self.speech_count
+                    && !self.utterance_heard
+                    && !self.vad.is_speaking()
+                    && !self.agent_busy()
+                    && self.pending_agent.is_none()
+                    && self.pending_llm.is_none()
+                    && self.second_pending.is_none()
+                    && self.unfinished.is_none()
+                    && self.actions_in_flight == 0
+                    && self.after_speech.is_none()
+                {
+                    self.cancel_no_words();
+                    tracing::info!(call = %self.info.call_sid, "speech with no words; the line is noisy");
+                    let interrupted = std::mem::take(&mut self.interrupted);
+                    self.noise_heard(interrupted);
+                } else if !self.vad.is_speaking() && self.after_speech.is_none() {
+                    // A reply or second hearing may still be finishing. Do not lose recovery.
+                    self.arm_no_words();
                 }
             }
             Ev::TtsFirstChunk { elapsed } => self.services.metrics.tts_first_chunk.observe(elapsed.as_millis() as u64),

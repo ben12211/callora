@@ -187,6 +187,13 @@ pub struct Lexicon {
     /// detail change while the question was about another.
     #[serde(default)]
     pub correct: Vec<String>,
+    /// Complete phrases with a correction word that correct nothing ("סליחה", "לא צריך כלום"): a yes
+    /// with one of them in it ("כן, לא צריך כלום") is still a yes.
+    #[serde(default)]
+    pub harmless: Vec<String>,
+    /// A caller checking the line is still there ("הלו"): answered, never taken for noise.
+    #[serde(default)]
+    pub hello: Vec<String>,
 }
 
 /// The meta intents the runtime understands. Their *behaviour* is built in; their
@@ -628,11 +635,32 @@ pub struct SilenceConfig {
     /// Response for the reprompt. `None` repeats the last response.
     #[serde(default)]
     pub response: Option<ResponseId>,
+    /// How long to wait after the caller asked to wait ("רגע"), and between the patient
+    /// reprompts below.
+    #[serde(default = "default_patient_after_ms")]
+    pub patient_after_ms: u64,
+    /// With details already given, reprompts said after `max_reprompts` before the call ends
+    /// ("אני פה, אפשר לקחת את הזמן."): a caller looking for a house number is not hung up on.
+    #[serde(default)]
+    pub patient_reprompts: u32,
+    #[serde(default)]
+    pub patient_response: Option<ResponseId>,
+}
+
+fn default_patient_after_ms() -> u64 {
+    15_000
 }
 
 impl Default for SilenceConfig {
     fn default() -> Self {
-        Self { reprompt_after_ms: 7000, max_reprompts: 2, response: None }
+        Self {
+            reprompt_after_ms: 7000,
+            max_reprompts: 2,
+            response: None,
+            patient_after_ms: default_patient_after_ms(),
+            patient_reprompts: 0,
+            patient_response: None,
+        }
     }
 }
 

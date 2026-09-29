@@ -23,6 +23,7 @@ pub const WHISPER_PATH: &str = "/webhooks/twilio/handoff-whisper";
 pub const DESK_PATH: &str = "/webhooks/twilio/desk";
 /// Told by Twilio how a desk call ended (busy, failed, no answer, ...).
 pub const DESK_STATUS_PATH: &str = "/webhooks/twilio/desk-status";
+pub const DESK_CONFERENCE_PATH: &str = "/webhooks/twilio/desk-conference";
 
 /// `X-Twilio-Signature`: base64(HMAC-SHA1(auth_token, url + sorted(key + value)...)).
 pub fn signature(auth_token: &str, url: &str, params: &BTreeMap<String, String>) -> String {
@@ -119,19 +120,32 @@ pub fn twiml_hangup() -> String {
 /// The caller waits in their own conference, with the music, until a dispatcher joins.
 /// Leaving ends it, so a dispatcher is never left alone in it.
 pub fn twiml_conference_wait(conference: &str, music_url: &str) -> String {
+    twiml_conference_wait_status(conference, music_url, None)
+}
+
+pub fn twiml_conference_wait_status(conference: &str, music_url: &str, status_url: Option<&str>) -> String {
+    let callback = status_url
+        .map(|url| {
+            format!(
+                r#" statusCallback="{}" statusCallbackMethod="POST" statusCallbackEvent="start end""#,
+                xml_escape(url)
+            )
+        })
+        .unwrap_or_default();
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><Response><Dial><Conference waitUrl="{}" waitMethod="GET" startConferenceOnEnter="false" endConferenceOnExit="true" beep="false">{}</Conference></Dial><Hangup/></Response>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><Dial><Conference waitUrl="{}" waitMethod="GET" startConferenceOnEnter="false" endConferenceOnExit="true" beep="false"{callback}>{}</Conference></Dial><Hangup/></Response>"#,
         xml_escape(music_url),
         xml_escape(conference)
     )
 }
 
 /// The dispatcher hears the call's summary, then joins the caller (the music stops).
-pub fn twiml_desk_join(summary: &str, language: &str, conference: &str) -> String {
+pub fn twiml_desk_join(summary: &str, language: &str, conference: &str, status_url: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><Response><Say language="{}">{}</Say><Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true" beep="false">{}</Conference></Dial></Response>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><Say language="{}">{}</Say><Dial><Conference statusCallback="{}" statusCallbackMethod="POST" statusCallbackEvent="start end" startConferenceOnEnter="true" endConferenceOnExit="true" beep="false">{}</Conference></Dial></Response>"#,
         xml_escape(language),
         xml_escape(summary),
+        xml_escape(status_url),
         xml_escape(conference)
     )
 }

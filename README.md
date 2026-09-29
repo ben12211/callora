@@ -51,6 +51,38 @@ library once (and again after adding responses):
 
 ## Before changing the agent
 
+Desk handoff settings are saved per business on the dashboard: up to ten E.164 numbers,
+hold music, maximum wait, and an optional outbound `caller_id`. Use a Twilio-owned or
+verified number for that caller ID; leaving it empty uses the business number the caller
+dialed. `TAXI_HANDOFF_NUMBER` remains the fallback when no dashboard settings are saved.
+Each distinct destination is attempted once; call creation is not retried automatically,
+because a network timeout can leave a call created at Twilio despite the missing response.
+The first answer wins, other legs are canceled, and when every leg fails the caller hears
+the short unavailable response immediately and the call ends. Ringing without an answer
+is bounded by the configured wait; caller termination also cancels the desk legs.
+
+Twilio desk calls register a POST completion callback at
+`/webhooks/twilio/desk-status?t=…`; `PUBLIC_BASE_URL` must be the reachable HTTPS origin
+and `TWILIO_AUTH_TOKEN` validates these callbacks. Keep signature validation enabled in
+production. Configure the inbound number's status callback as POST
+`/webhooks/twilio/call-status` so caller hangups cancel outstanding desk calls promptly.
+Internal handoff logs include the destination's configured index, call SID and terminal
+status, without passing those details to the caller.
+The caller and operator TwiML also register signed `start`/`end` conference callbacks at
+`/webhooks/twilio/desk-conference?t=…`. Only a conference start confirms a connected
+handoff: an operator leaving during the whisper still activates fallback, and the hold
+deadline includes dialing and whisper time. Twilio REST requests have a ten-second limit.
+
+After speech ends with no final recognized words, recovery waits two seconds; ASR partial
+progress extends that grace period. New speech, a valid final, or call termination cancels
+the old watchdog. It waits for pending recognition, responses and actions before reprompting.
+Regenerate the voice library after changing the taxi responses.
+
+`AGENT_FALLBACK_MODEL` optionally selects the last-resort model after the agent and hedge
+fail before producing output (`none` disables it). With both models on one provider, the
+default fallback uses the other provider only when its existing key is available. A healthy
+primary response never invokes it.
+
 The agent's behaviour depends on its prompt (`crates/callora-core/src/agent.rs`), the
 business's rules and examples (`businesses/taxi.json` → `agent`) and the model. Unit tests
 cannot tell whether a model will still behave, so run the eval before and after:

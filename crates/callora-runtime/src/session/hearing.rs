@@ -13,21 +13,33 @@ impl Session {
         self.keep_audio(&frame, vad_event.as_ref());
         match vad_event {
             Some(VadEvent::SpeechStarted) => {
+                self.cancel_no_words();
                 self.silence_generation += 1;
                 self.speech_started_at = Some(Instant::now());
+                self.speech_gap = self.last_speech_end.map(|t| t.elapsed());
+                self.speech_count += 1;
+                self.utterance_heard = false;
+                self.voiced_ms = 0;
                 if self.pending_agent.as_ref().is_some_and(|p| p.speculative) {
                     // The caller went on talking: the guess was about half a sentence.
                     if let Some(p) = self.pending_agent.take() {
                         p.task.abort();
                     }
                 }
+                // Not yet: noise must not cut the agent off. Words, or a voice that goes on,
+                // confirm it (below and in `on_stt`).
                 if self.agent_busy() {
-                    self.barge_in();
+                    self.barge_pending = true;
                 }
             }
             Some(VadEvent::SpeechEnded) => {
                 let now = Instant::now();
                 self.speech_ended_at = Some(now);
+                self.last_speech_end = Some(now);
+                self.barge_pending = false;
+                if !self.utterance_heard {
+                    self.arm_no_words();
+                }
                 self.clock = Some(TurnClock {
                     speech_end: now,
                     final_at: None,
@@ -43,6 +55,12 @@ impl Session {
                 self.speculate();
             }
             None => {}
+        }
+        if self.vad.is_speaking() {
+            self.voiced_ms += frame.len() as u64 / 8;
+        }
+        if self.barge_pending {
+            self.confirm_barge_in(None);
         }
         match &self.stt {
             Some(stt) => {
@@ -117,9 +135,29 @@ impl Session {
         Some(terms)
     }
 
+    /// The caller's voice over the agent is a barge-in once it has words in it (and, during a
+    /// read-back, more than "כן", "אהה"), or once it has gone on long enough.
+    pub(super) fn confirm_barge_in(&mut self, partial: Option<&str>) {
+        if !self.agent_busy() {
+            self.barge_pending = false;
+            return;
+        }
+        let reading_back = self.engine.context().awaiting_confirmation;
+        let words = partial.is_some_and(|text| {
+            let (u, _) = fast_path(&self.business, &self.engine.context(), text);
+            !u.noise && !self.engine.is_backchannel(text)
+        });
+        let enough = if reading_back { BARGE_CONFIRM_READ_BACK } else { BARGE_CONFIRM };
+        if words || Duration::from_millis(self.voiced_ms) >= enough {
+            self.barge_pending = false;
+            self.barge_in();
+        }
+    }
+
     pub(super) fn barge_in(&mut self) {
         self.barge_in_started = Some(Instant::now());
         self.interrupted = true;
+        self.cut_read_back = self.engine.context().awaiting_confirmation;
         self.playout.cancel();
         self.services.metrics.barge_ins_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tracing::debug!(call = %self.info.call_sid, rms = self.vad.last_rms, "barge-in: caller talked over the agent");
@@ -130,9 +168,22 @@ impl Session {
 
     pub(super) fn on_stt(&mut self, event: SttEvent) {
         match event {
-            SttEvent::Partial(text) => self.last_partial = text,
+            SttEvent::Partial(text) => {
+                if !text.trim().is_empty() && self.no_words_task.is_some() {
+                    // Progress from ASR buys another full grace period for the final words.
+                    self.arm_no_words();
+                }
+                if self.barge_pending && !text.trim().is_empty() {
+                    self.confirm_barge_in(Some(&text));
+                }
+                self.last_partial = text;
+            }
             SttEvent::Final(text) => {
                 self.stt_reconnects = 0;
+                if !text.trim().is_empty() {
+                    self.utterance_heard = true;
+                    self.cancel_no_words();
+                }
                 self.on_final(text);
                 self.swap_stt_if_ready();
             }
@@ -170,12 +221,39 @@ impl Session {
         if text.is_empty() {
             return;
         }
+        // "תודה" to "משהו נוסף?": the goodbye, without asking anyone.
+        if !self.agent_busy() && self.pending_agent.is_none() && self.pending_llm.is_none() {
+            if let Some(d) = self.engine.on_closing(&text) {
+                tracing::info!(call = %self.info.call_sid, caller = %text, "caller");
+                self.interrupted = false;
+                self.silence_generation += 1;
+                return self.execute(d);
+            }
+        }
         if self.pending_llm.is_none() {
             let (u, _) = fast_path(&self.business, &self.engine.context(), &text);
-            if u.noise {
+            // "טוב", "תודה" are noise when nothing waits for them, and an answer when the
+            // call waits for a short one.
+            if u.noise && !self.engine.takes_short_answer(&text) {
                 return self.on_noise(&text);
             }
         }
+        // "כן", "בסדר" while the details are read back: the caller listening. Neither a stop nor
+        // a yes; after a read-back cut off, the read-back again.
+        if self.engine.is_backchannel(&text) {
+            if self.agent_busy() {
+                tracing::info!(call = %self.info.call_sid, caller = %text, "said over the read-back; not an answer");
+                return;
+            }
+            if std::mem::take(&mut self.cut_read_back) {
+                tracing::info!(call = %self.info.call_sid, caller = %text, "a yes to a read-back cut off; reading it again");
+                self.interrupted = false;
+                self.silence_generation += 1;
+                let d = self.engine.replay_last();
+                return self.execute(d);
+            }
+        }
+        self.cut_read_back = false;
         self.interrupted = false;
         self.silence_generation += 1;
         if self.speech_ended_at.is_none() {
@@ -264,9 +342,17 @@ impl Session {
         if self.agent_busy() {
             return;
         }
+        // "הלו?": "כן, אני פה." and the question again.
+        if self.engine.is_hello(text) && self.pending_agent.is_none() {
+            self.interrupted = false;
+            let d = self.engine.on_hello();
+            if d.is_empty() {
+                self.arm_silence();
+            }
+            return self.execute(d);
+        }
         if std::mem::take(&mut self.interrupted) {
-            let directives = self.engine.replay_last();
-            self.execute(directives);
+            self.noise_heard(true);
         } else {
             // The silence reprompt as a backstop; the question again first, unless the caller
             // goes on talking.
@@ -278,6 +364,34 @@ impl Session {
                 let _ = tx.send(Ev::Unheard { generation });
             });
         }
+    }
+
+    /// Noise the caller could not have meant: "the line is noisy" and what was cut off (or the
+    /// question) again; when nothing is to be said, the silence reprompt waits.
+    pub(super) fn noise_heard(&mut self, interrupted: bool) {
+        let d = if interrupted { self.engine.on_noise(true) } else { self.engine.on_unheard() };
+        if d.is_empty() {
+            self.arm_silence();
+        }
+        self.execute(d);
+    }
+
+    pub(super) fn cancel_no_words(&mut self) {
+        self.no_words_generation += 1;
+        if let Some(task) = self.no_words_task.take() {
+            task.abort();
+        }
+    }
+
+    pub(super) fn arm_no_words(&mut self) {
+        self.cancel_no_words();
+        let utterance = self.speech_count;
+        let generation = self.no_words_generation;
+        let tx = self.events.clone();
+        self.no_words_task = Some(tokio::spawn(async move {
+            tokio::time::sleep(NO_WORDS_WAIT).await;
+            let _ = tx.send(Ev::NoWords { utterance, generation });
+        }));
     }
 
     // -----------------------------------------------------------------------------------

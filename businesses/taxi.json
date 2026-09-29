@@ -31,11 +31,13 @@
   "acknowledgement": "ack",
 
   "lexicon": {
-    "affirm": ["כן", "כן כן", "בטח", "סבבה", "יאללה", "נכון", "אוקיי", "אוקי", "בדיוק", "מאשר", "תשלח", "שלח", "יופי", "מעולה", "בסדר", "כן תשלח", "נכון מאוד", "yes"],
+    "affirm": ["כן", "כן כן", "בטח", "סבבה", "יאללה", "נכון", "אוקיי", "אוקי", "בדיוק", "מאשר", "תשלח", "שלח", "יופי", "מעולה", "בסדר", "טוב", "כן תשלח", "נכון מאוד", "yes"],
     "deny": ["לא", "לא לא", "ממש לא", "אל תשלח", "לא נכון", "no"],
     "fillers": ["אה", "אממ", "אמ", "אהה", "אהמ", "כאילו", "בעצם", "בבקשה", "לי", "לנו", "טוב", "שמע", "תשמע", "אחי", "אחותי", "מותק", "צריך", "רוצה", "אני", "היי", "הלו", "אהלן", "תודה", "רבה"],
     "now": ["עכשיו", "כמה שיותר מהר", "מיד", "כרגע", "דחוף", "בהקדם", "עכשיו עכשיו", "הכי מהר"],
-    "correct": ["לא", "רגע", "טעיתי", "טעות", "תתקן", "תשנה", "בעצם", "התכוונתי", "סליחה", "אופס", "לא לא", "אבל"]
+    "correct": ["לא", "רגע", "טעיתי", "טעות", "תתקן", "תשנה", "בעצם", "התכוונתי", "סליחה", "אופס", "לא לא", "אבל"],
+    "harmless": ["סליחה", "אין בעיה", "לא צריך כלום", "לא צריך שום דבר"],
+    "hello": ["הלו", "הלו הלו", "אלו"]
   },
 
   "meta_intents": {
@@ -63,7 +65,7 @@
       "exact": ["ביי", "להתראות", "תודה ביי", "יאללה ביי", "זהו תודה", "זה הכל", "זהו", "תודה זהו", "ביי ביי", "זהו זה"],
       "response": "goodbye"
     },
-    "wait": { "exact": ["רגע", "שנייה", "רק רגע", "חכה", "רגע רגע", "לא לא רגע", "שנייה אחת", "רגע אחד"] }
+    "wait": { "exact": ["רגע", "שנייה", "רק רגע", "חכה", "רגע רגע", "לא לא רגע", "שנייה אחת", "רגע אחד"], "response": "wait_ack" }
   },
 
   "intents": [
@@ -247,7 +249,7 @@
       "Pass a place's city as soon as it is said (\"אלעד\"), and its street with the city (\"בן זכאי 45, אלעד\").",
       "A place that is not a street (a building, a mall, a hospital, a school, a neighbourhood) is a fine answer to the street question: pass it with the city (\"בנייני האומה, ירושלים\"); the system knows the places of each city. If it says it does not know the place, ask \"יש כתובת של המקום?\"; if the caller does not know, pass the place again and go on.",
       "Many callers (especially in בני ברק, אלעד, ביתר עילית, מודיעין עילית, ירושלים, בית שמש) speak with an Ashkenazi pronunciation that recognition garbles: ת sounds like ס (\"שבעס\" is \"שבת\"), o like oy (\"אהרוינוביטש\" is \"אהרונוביץ\"), and names are said the Yiddish way (\"יאנקל\" is \"יעקב\"). Write the real street or name it obviously is; if unsure, ask.",
-      "When you did not understand, ask your question again in other words, or for the one detail you missed (\"רק כדי שלא תהיה טעות, מה שם הרחוב?\"). Never \"לא הבנתי\", never \"אפשר להגיד שוב?\", never the same sentence twice in a row. With nothing understood yet at the start: \"צריך מונית?\".",
+      "When you did not understand (garbled or cut-off words, noise), say why first, so the caller knows why you ask again: phrase noisy_line (\"סליחה, יש קצת רעש בקו.\"), then your question in other words, or the one detail you missed (\"מה שם הרחוב?\"). Once in a row is enough: the next time only the question. Never \"לא הבנתי\", never \"אפשר להגיד שוב?\", never the same sentence twice in a row. With nothing understood yet at the start: \"צריך מונית?\".",
       "YOUR GOAL: a sent ride in as few turns as possible, ideally under a minute, without ever mixing up the pickup and the destination. No small talk beyond one word, no explanations; when everything is in, read_back at once.",
       "After the ride was sent, a correction cannot change it here: never promise to fix it (\"אני אתקן\"). Say \"רגע, אני מעביר למוקדן שיתקן את ההזמנה\" and use action transfer.",
       "Submit only on a clear yes (\"כן\", \"יאללה\", \"תשלח\", \"סבבה\"). A word you cannot make sense of is not a yes: ask \"לשלוח את ההזמנה?\".",
@@ -261,7 +263,7 @@
       "Every detail goes into fields in the turn it is said, never later. A landmark, building or business answers the street question: caller \"זה ליד התחנה המרכזית, לא זוכר את הרחוב\" → fields destination \"התחנה המרכזית, ירושלים\", then the next question. Only places the caller said.",
       "Anything the driver should know (a big trunk, a lot of luggage, a child seat, a wheelchair, \"call when you arrive\") is the note: pass it in notes (and luggage when a number of suitcases is said). One answer to the note question is enough: when nothing else is missing, read_back right away (never \"עוד משהו?\"). Never ask again for a detail that already has a value under CURRENT TASK.",
       "The answer to \"על שם מי לרשום את ההזמנה?\" is the name: pass it in customer_name and go on (never ask for it twice). Speech recognition splits Hebrew names; write the real name it obviously is (\"בן-האיי או מנשה\" is \"בניהו מנשה\", \"יה או נתן כהן\" is \"יהונתן כהן\"), otherwise the name as heard.",
-      "Only when the caller complains that they already told you (\"אמרתי לך כבר\"), say \"סליחה, צודק.\" and take the detail from the conversation. Never blame the line (\"הקו לא ברור\"): when you did not understand, ask the short question again. \"כן אבל…\", \"כן רגע…\" to a read-back is not a yes: do what they ask (read the details again, fix one), never submit.",
+      "Only when the caller complains that they already told you (\"אמרתי לך כבר\"), say \"סליחה, צודק.\" and take the detail from the conversation. \"כן אבל…\", \"כן רגע…\" to a read-back is not a yes: do what they ask (read the details again, fix one), never submit.",
       "A correction after the read-back (\"לא 40, 45\") → pass the corrected detail with its city (\"בן זכאי 45, אלעד\") and action read_back; the system reads the whole ride again.",
       "Never repeat back what the caller just said as a question (\"בן זכאי 45 ברעננה, נכון?\"): go on to the next question; the read-back confirms everything.",
       "When the caller gives several details at once, take them all and ask only for what is still missing.",
@@ -284,7 +286,7 @@
     "phrases": [
       "ack", "anything_else", "goodbye", "ask_change", "go_back", "i_hear_you",
       "ask_route", "ask_pickup", "ask_destination", "ask_passengers", "ask_item", "ask_ride_time", "small_talk_answer",
-      "small_talk_short", "ask_pickup_city", "ask_destination_city", "ask_pickup_number", "ask_destination_number", "ask_again_street", "ask_place_address", "ask_name", "ask_notes",
+      "small_talk_short", "ask_pickup_city", "ask_destination_city", "ask_pickup_number", "ask_destination_number", "ask_again_street", "ask_place_address", "ask_name", "ask_notes", "noisy_line",
       "filler_checking", "invoice_answer", "hours_answer", "cancel_declined"
     ]
   },
@@ -440,13 +442,16 @@
     "go_back": { "variants": ["אין בעיה."] },
     "flow_cancelled": { "variants": ["אוקיי, ביטלתי. משהו אחר?"] },
     "still_there": { "variants": ["הלו, שומעים אותי?"] },
+    "still_waiting": { "variants": ["אני עדיין פה, אפשר לקחת את הזמן.", "אני פה, מחכה."] },
+    "noisy_line": { "variants": ["סליחה, יש קצת רעש בקו."] },
     "i_hear_you": { "variants": ["כן, אני פה.", "כן, שומעים."], "delivery": "quick" },
+    "wait_ack": { "variants": ["בטח, אני מחכה.", "אין בעיה, אני מחכה."], "delivery": "quick" },
 
-    "fallback_1": { "variants": ["רק כדי שלא תהיה טעות, אפשר להגיד שוב?"] },
+    "fallback_1": { "variants": ["סליחה, יש קצת רעש בקו. מה הבקשה?"] },
     "ask_place_address": { "variants": ["יש כתובת של המקום?"] },
     "ask_again_street": { "variants": ["רק כדי שלא תהיה טעות, מה שם הרחוב?", "רק לוודא שאין טעות, איזה רחוב?"] },
     "fallback_2": { "variants": ["להזמין מונית, לבדוק נסיעה קיימת, או משהו אחר?"] },
-    "fallback_restart": { "variants": ["סליחה, הקו קצת לא ברור. אפשר להגיד שוב, לאט?"], "delivery": "calm" },
+    "fallback_restart": { "variants": ["איך אפשר לעזור?"], "delivery": "calm" },
     "handoff": { "variants": ["מעביר את השיחה למוקדן."] },
     "handoff_unavailable": { "variants": ["כרגע אין מוקדן פנוי. אפשר לנסות שוב בעוד כמה דקות."], "delivery": "calm" },
 
@@ -479,7 +484,7 @@
     "ask_destination_unknown": { "variants": ["לא הכרתי את {heard}. לאיזו עיר נוסעים?"] },
     "street_not_found_suggest": { "variants": ["לא מצאתי את {heard} ב{city}. התכוונת ל{suggestion}?"] },
     "street_not_found": { "variants": ["לא מצאתי את {heard} ב{city}. אולי זה בעיר אחרת?"] },
-    "street_city_unknown": { "variants": ["לא הבנתי את העיר. {street} באיזו עיר?"] },
+    "street_city_unknown": { "variants": ["{street} באיזו עיר?"] },
     "ask_again_passengers": { "variants": ["רק כדי שלא תהיה טעות, כמה נוסעים? במונית עד עשרים."] },
     "ask_name": { "variants": ["על שם מי לרשום את ההזמנה?"] },
     "ask_notes": { "variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?"] },
@@ -564,6 +569,13 @@
     "unavailable_response": "handoff_unavailable",
     "after_action_failures": 2
   },
-  "silence": { "reprompt_after_ms": 5000, "max_reprompts": 2, "response": "still_there" },
+  "silence": {
+    "reprompt_after_ms": 5000,
+    "max_reprompts": 2,
+    "response": "still_there",
+    "patient_after_ms": 15000,
+    "patient_reprompts": 2,
+    "patient_response": "still_waiting"
+  },
   "understanding": { "llm_below_coverage": 0.55, "llm_timeout_ms": 2500, "thinking_filler": "filler_thinking", "filler_after_ms": 600 }
 }

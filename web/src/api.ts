@@ -104,7 +104,7 @@ export type Order = {
   };
 };
 
-export type DeskSettings = { numbers: string[]; hold_music: string; max_wait_seconds: number };
+export type DeskSettings = { numbers: string[]; caller_id?: string | null; hold_music: string; max_wait_seconds: number };
 
 export type SettingsData = {
   businesses: { id: string; name: string; desk: DeskSettings }[];

@@ -84,6 +84,8 @@ pub struct Business {
     pub fillers: PhraseSet,
     pub now: PhraseSet,
     pub correct: PhraseSet,
+    pub harmless: PhraseSet,
+    pub hello: PhraseSet,
     pub meta: Vec<CompiledMeta>,
     pub intent_keywords: Vec<(String, PhraseSet)>,
     pub slots: BTreeMap<SlotId, CompiledSlot>,
@@ -163,6 +165,8 @@ impl Business {
         let fillers = phrase("lexicon.fillers".into(), &config.lexicon.fillers, false);
         let now = phrase("lexicon.now".into(), &config.lexicon.now, true);
         let correct = phrase("lexicon.correct".into(), &config.lexicon.correct, false);
+        let harmless = phrase("lexicon.harmless".into(), &config.lexicon.harmless, false);
+        let hello = phrase("lexicon.hello".into(), &config.lexicon.hello, false);
 
         let mut meta = Vec::new();
         for (key, m) in &config.meta_intents {
@@ -281,6 +285,8 @@ impl Business {
             fillers,
             now,
             correct,
+            harmless,
+            hello,
             meta,
             intent_keywords,
             slots,
@@ -381,6 +387,9 @@ pub fn validate(c: &BusinessConfig) -> Vec<Issue> {
     need_response("handoff.unavailable_response", &c.handoff.unavailable_response, &mut v);
     if let Some(r) = &c.silence.response {
         need_response("silence.response", r, &mut v);
+    }
+    if let Some(r) = &c.silence.patient_response {
+        need_response("silence.patient_response", r, &mut v);
     }
     if let Some(r) = &c.voice.dynamic_cover {
         need_response("voice.dynamic_cover", r, &mut v);

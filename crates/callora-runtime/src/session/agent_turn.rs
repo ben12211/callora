@@ -51,8 +51,13 @@ impl Session {
             }
             p.task.abort();
             // A new sentence while the agent was still thinking about the previous one:
-            // they are one utterance.
-            if !p.speculative && p.spoken.is_empty() {
+            // they are one utterance. Also once its reply began ("סגור, לאן?" over "ושלושה
+            // אנשים"): that reply's values were never taken, and the caller would be asked
+            // for them again. What it said is remembered, so the next reply knows.
+            if !p.speculative {
+                if !p.spoken.is_empty() {
+                    self.engine.state.remember(Speaker::Agent, &p.spoken.join(" "));
+                }
                 transcript = format!("{} {transcript}", p.transcript);
             }
         }
@@ -113,7 +118,11 @@ impl Session {
     /// ago): they finish the previous answer rather than answer the new question.
     pub(super) fn overlaps_last_reply(&self) -> bool {
         match (self.speech_started_at, self.reply_started_at) {
-            (Some(began), Some(reply)) => began < reply && reply.elapsed() < Duration::from_secs(6),
+            (Some(began), Some(reply)) => {
+                began < reply
+                    && reply.elapsed() < Duration::from_secs(6)
+                    && self.speech_gap.is_none_or(|gap| gap < CONTINUATION_GAP)
+            }
             _ => false,
         }
     }

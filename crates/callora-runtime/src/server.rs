@@ -119,6 +119,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(twilio::WHISPER_PATH, post(whisper))
         .route(twilio::DESK_PATH, post(desk_answered))
         .route(twilio::DESK_STATUS_PATH, post(desk_status))
+        .route(twilio::DESK_CONFERENCE_PATH, post(desk_conference))
         .route("/api/settings", get(api_settings))
         .route("/api/settings/{business}", axum::routing::put(api_save_settings))
         .route("/api/businesses", get(api_businesses))
@@ -266,6 +267,11 @@ async fn call_status(
         return (StatusCode::FORBIDDEN, "invalid signature").into_response();
     }
     if let (Some(sid), Some(status)) = (params.get("CallSid"), params.get("CallStatus")) {
+        if matches!(status.as_str(), "completed" | "canceled" | "failed" | "busy" | "no-answer") {
+            if let Some(desk) = &s.services.desk {
+                desk.caller_ended(sid).await;
+            }
+        }
         s.services.store.record(CallRecord::Status {
             call_sid: sid.clone(),
             status: status.clone(),
@@ -413,6 +419,22 @@ async fn desk_status(
     let status = params.get("CallStatus").map(String::as_str).unwrap_or("");
     if let Some(desk) = &s.services.desk {
         desk.leg_ended(&q.t, leg, status).await;
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn desk_conference(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    Query(q): Query<WhisperQuery>,
+    Form(params): Form<BTreeMap<String, String>>,
+) -> Response {
+    if !signed(&s, &headers, &uri, &params) {
+        return (StatusCode::FORBIDDEN, "invalid signature").into_response();
+    }
+    if let Some(desk) = &s.services.desk {
+        desk.conference_event(&q.t, params.get("StatusCallbackEvent").map(String::as_str).unwrap_or("")).await;
     }
     StatusCode::NO_CONTENT.into_response()
 }

@@ -64,6 +64,7 @@ function DeskCard({ id, name, desk, music, canSave }: { id: string; name: string
   const [musicChoice, setMusicChoice] = useState(custom ? "custom" : desk.hold_music);
   const [musicUrl, setMusicUrl] = useState(custom ? desk.hold_music : "");
   const [wait, setWait] = useState(desk.max_wait_seconds);
+  const [callerId, setCallerId] = useState(desk.caller_id ?? "");
   const [problems, setProblems] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -79,6 +80,7 @@ function DeskCard({ id, name, desk, music, canSave }: { id: string; name: string
       numbers: numbers.map((n) => n.trim()).filter(Boolean),
       hold_music: musicChoice === "custom" ? musicUrl.trim() : musicChoice,
       max_wait_seconds: Number(wait),
+      caller_id: callerId.trim() || null,
     };
     try {
       const res = await fetch(`/api/settings/${encodeURIComponent(id)}`, {
@@ -121,6 +123,11 @@ function DeskCard({ id, name, desk, music, canSave }: { id: string; name: string
       action={active ? <Badge tone="good" dot>פעיל</Badge> : <Badge tone="warn" dot>לא מוגדר</Badge>}
     >
       <div className="grid gap-7">
+        <label className="grid gap-2 text-sm">
+          מספר זיהוי יוצא למוקד
+          <Input type="tel" dir="ltr" value={callerId} onChange={(e) => edited(setCallerId)(e.target.value)} placeholder="+972501234567" />
+          <span className="text-slate-500">מספר מאושר ב-Twilio. ריק: מספר העסק שאליו התקשרו.</span>
+        </label>
         <fieldset className="grid gap-2.5">
           <legend className="mb-1 text-sm font-medium">מספרי המוקד</legend>
           {numbers.map((n, i) => (

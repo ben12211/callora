@@ -364,7 +364,8 @@ impl Engine {
         self.state.turns += 1;
         self.state.silence_reprompts = 0;
         self.state.fallback_level = 0;
-        self.offered_more = false;
+        self.state.waiting = false;
+        let offered_more = std::mem::take(&mut self.offered_more);
         self.state.remember(Speaker::Caller, transcript);
         // Notes were for the decision just made; new ones are for the next.
         self.state.agent_notes.clear();
@@ -498,7 +499,8 @@ impl Engine {
                 self.handoff(&mut out, "caller_requested");
             }
             AgentAction::EndCall => {
-                if self.caller_said_goodbye(transcript) {
+                // "תודה רבה" to "משהו נוסף?" closes the call as surely as a goodbye.
+                if self.caller_said_goodbye(transcript) || (offered_more && self.only_fillers(transcript)) {
                     if spoken.is_empty() && turn.say.is_empty() && turn.phrase.is_none() {
                         self.goodbye(&mut out);
                     } else {
@@ -527,10 +529,12 @@ impl Engine {
                 // wrong ride on "שעמות", a word recognition made up.
                 // "כן אבל אתה יכול רק להחזיר להזמנה" sent a live ride: a yes with a but, a wait or a
                 // no in it is a question, and the details are read back again instead.
+                // "כן סליחה", "כן, לא צריך כלום": a correction word that corrects nothing does not
+                // turn the yes into another read-back.
                 let heard = crate::text::normalize(transcript);
                 let said_yes = !self.business.affirm.is_empty()
                     && self.business.affirm.find(&heard).is_some()
-                    && self.business.correct.find(&heard).is_none();
+                    && self.business.correct.find(&self.business.harmless.strip(&heard)).is_none();
                 let confirmed_now = action == AgentAction::Submit
                     && !changed
                     && said_yes
@@ -1254,6 +1258,7 @@ impl Engine {
         }
         self.state.turns += 1;
         self.state.silence_reprompts = 0;
+        self.state.waiting = false;
         self.state.remember(Speaker::Caller, &u.transcript);
         if u.frustrated && self.business.config.voice.deliveries.contains_key("calm") {
             self.state.delivery = Some("calm".into());
@@ -1747,31 +1752,146 @@ impl Engine {
         self.finish(out)
     }
 
-    /// The caller said nothing for the configured silence.
-    /// The caller said something that could not be made out (it was taken for line noise)
-    /// and then nothing more: the question again ("כמה נוסעים?"), as a person would ask it,
-    /// instead of the silence the caller would otherwise wait out. The owner wanted neither
-    /// "I didn't hear" nor "say it again?". With no question pending, the business's first
-    /// fallback.
+    /// The caller said something that could not be made out (line noise, or words the
+    /// recognizer turned into nothing) and then nothing more: the line is noisy, said so,
+    /// and the question again ("סליחה, יש קצת רעש בקו. כמה נוסעים?"), so the caller knows
+    /// why it is asked twice. Said once per turn: after that, the silence reprompt waits.
     pub fn on_unheard(&mut self) -> Vec<Directive> {
-        let mut out = Out::default();
         // Before any task, the question would be the greeting again: the silence reprompt waits.
         if self.state.run.is_none() {
             return Vec::new();
         }
+        self.on_noise(false)
+    }
+
+    /// Noise on the line. `interrupted`: it cut the agent off, and what was being said is said
+    /// again (all of it: a read-back cut in the middle left details unheard). Otherwise the
+    /// question again. The first time in a turn, after "the line is noisy"; an empty result
+    /// means nothing is said (the silence reprompt is the backstop).
+    pub fn on_noise(&mut self, interrupted: bool) -> Vec<Directive> {
+        let mut out = Out::default();
         if self.state.phase != Phase::Active
             || matches!(self.state.run.as_ref().map(|r| &r.step), Some(Step::Executing { .. }))
         {
             return Vec::new();
         }
-        self.question_again(&mut out);
+        let apologize =
+            self.state.noise_apology_turn != Some(self.state.turns) && self.business.response("noisy_line").is_some();
+        let again = if interrupted { self.state.last_plan.clone() } else { self.last_question() };
+        match again {
+            Some(plan) => {
+                if !interrupted && !apologize {
+                    return Vec::new();
+                }
+                if apologize {
+                    self.state.noise_apology_turn = Some(self.state.turns);
+                    let ctx = self.render_ctx(None);
+                    self.say(&mut out, "noisy_line", ctx, false);
+                }
+                out.speak(plan, false);
+            }
+            // Nothing to ask again: "say that again?", which gives its own reason.
+            None if !interrupted && apologize => {
+                self.state.noise_apology_turn = Some(self.state.turns);
+                if let Some(r) = self.business.config.fallback.ladder.first().cloned() {
+                    let ctx = self.render_ctx(None);
+                    self.say(&mut out, &r, ctx, false);
+                }
+            }
+            None => return Vec::new(),
+        }
         self.finish(out)
     }
 
-    /// The last question once more, alone ("לאן נוסעים?", not the "סגור." said before it);
-    /// with no question pending, the business's first fallback.
-    fn question_again(&mut self, out: &mut Out) {
-        let question = self.state.last_plan.as_ref().and_then(|p| {
+    /// "הלו?" while the caller waits: "כן, אני פה." and the question again.
+    pub fn on_hello(&mut self) -> Vec<Directive> {
+        let mut out = Out::default();
+        if self.state.phase != Phase::Active
+            || matches!(self.state.run.as_ref().map(|r| &r.step), Some(Step::Executing { .. }))
+            || self.business.response("i_hear_you").is_none()
+        {
+            return self.on_noise(false);
+        }
+        let ctx = self.render_ctx(None);
+        self.say(&mut out, "i_hear_you", ctx, false);
+        if let Some(q) = self.last_question() {
+            out.speak(q, false);
+        }
+        self.finish(out)
+    }
+
+    /// Words that only check the line is still there ("הלו").
+    pub fn is_hello(&self, text: &str) -> bool {
+        let norm = crate::text::normalize(text);
+        !self.business.hello.is_empty()
+            && self.business.hello.find(&norm).is_some()
+            && self.business.fillers.strip(&self.business.hello.strip(&norm)).trim().is_empty()
+    }
+
+    /// Nothing but filler words ("תודה רבה", "טוב").
+    fn only_fillers(&self, text: &str) -> bool {
+        let norm = crate::text::normalize(text);
+        !norm.trim().is_empty() && self.business.fillers.strip(&norm).trim().is_empty()
+    }
+
+    /// "כן", "אהה", "בסדר" said while the details are read back: the caller listening, not
+    /// the answer. It neither stops the read-back nor sends the task before it was heard.
+    pub fn is_backchannel(&self, text: &str) -> bool {
+        if !self.context().awaiting_confirmation {
+            return false;
+        }
+        let norm = crate::text::normalize(text);
+        let rest = self.business.fillers.strip(&self.business.affirm.strip(&norm));
+        !norm.trim().is_empty() && crate::text::tokens(&rest).iter().all(|t| crate::understanding::is_hesitation(t))
+    }
+
+    /// A short answer the call is waiting for, in words recognizers also invent on noise
+    /// ("טוב", "תודה" to "משהו נוסף?", to the read-back, to the question for the driver):
+    /// taken as an answer, not dropped as noise.
+    pub fn takes_short_answer(&self, text: &str) -> bool {
+        let driver_question = self.state.run.as_ref().is_some_and(|r| {
+            self.pipeline_of(r).slots.iter().any(|ps| ps.ask_before_confirm && self.state.last_asks.contains(&ps.slot))
+        });
+        let expects = self.offered_more || self.context().awaiting_confirmation || driver_question;
+        let norm = crate::text::normalize(text);
+        expects
+            && !self.is_hello(text)
+            && crate::text::tokens(&norm).iter().any(|t| !crate::understanding::is_hesitation(t))
+    }
+
+    /// "תודה", "טוב תודה" to "משהו נוסף?": the call ends with the goodbye.
+    pub fn on_closing(&mut self, text: &str) -> Option<Vec<Directive>> {
+        let norm = crate::text::normalize(text);
+        if self.state.phase != Phase::Active
+            || !self.offered_more
+            || !self.only_fillers(text)
+            || self.is_hello(text)
+            || crate::text::tokens(&norm).iter().all(|t| crate::understanding::is_hesitation(t))
+        {
+            return None;
+        }
+        self.offered_more = false;
+        self.state.turns += 1;
+        self.state.remember(Speaker::Caller, text);
+        let mut out = Out::default();
+        self.goodbye(&mut out);
+        Some(self.finish(out))
+    }
+
+    /// How long a silence waits before its reprompt: longer after "רגע", and between the
+    /// patient reprompts.
+    pub fn silence_after_ms(&self) -> u64 {
+        let s = &self.business.config.silence;
+        if self.state.waiting || self.state.silence_reprompts > s.max_reprompts {
+            s.patient_after_ms
+        } else {
+            s.reprompt_after_ms
+        }
+    }
+
+    /// The last question alone ("לאן נוסעים?", not the "סגור." said before it).
+    fn last_question(&self) -> Option<SpeechPlan> {
+        self.state.last_plan.as_ref().and_then(|p| {
             let last = p.segments.last().filter(|s| s.text.trim_end().ends_with('?'))?;
             let text = last.text.trim_end();
             let start = text[..text.len() - 1].rfind(['.', '!', '?']).map_or(0, |i| i + 1);
@@ -1779,8 +1899,13 @@ impl Engine {
                 tail if start > 0 => SpeechPlan::free(tail, &last.delivery, p.gain_db),
                 _ => SpeechPlan { segments: vec![last.clone()], gain_db: p.gain_db },
             })
-        });
-        match question {
+        })
+    }
+
+    /// The last question once more, alone; with no question pending, the business's first
+    /// fallback.
+    fn question_again(&mut self, out: &mut Out) {
+        match self.last_question() {
             Some(question) => out.speak(question, false),
             None => {
                 if let Some(r) = self.business.config.fallback.ladder.first().cloned() {
@@ -1791,6 +1916,7 @@ impl Engine {
         }
     }
 
+    /// The caller said nothing for the configured silence.
     pub fn on_silence(&mut self) -> Vec<Directive> {
         let mut out = Out::default();
         if self.state.phase != Phase::Active
@@ -1798,11 +1924,22 @@ impl Engine {
         {
             return Vec::new();
         }
+        self.state.waiting = false;
         self.state.silence_reprompts += 1;
         let silence = self.business.config.silence.clone();
-        if self.state.silence_reprompts > silence.max_reprompts {
+        // Details already given: a few patient reprompts more before hanging up on them.
+        let in_task = self.state.run.as_ref().is_some_and(|r| !r.slots.is_empty());
+        let patient = if in_task && silence.patient_response.is_some() { silence.patient_reprompts } else { 0 };
+        if self.state.silence_reprompts > silence.max_reprompts + patient {
             self.goodbye(&mut out);
             return self.finish(out);
+        }
+        if self.state.silence_reprompts > silence.max_reprompts {
+            if let Some(r) = &silence.patient_response {
+                let ctx = self.render_ctx(None);
+                self.say(&mut out, r, ctx, false);
+                return self.finish(out);
+            }
         }
         match &silence.response {
             Some(r) => {
@@ -1898,7 +2035,14 @@ impl Engine {
             }
             MetaIntent::TransferHuman => self.handoff(out, "caller_requested"),
             MetaIntent::Goodbye => self.goodbye(out),
-            MetaIntent::Wait => {}
+            // "רגע": "בטח, אני מחכה." and a longer wait before the silence reprompt.
+            MetaIntent::Wait => {
+                if let Some(r) = meta_response {
+                    let ctx = self.render_ctx(None);
+                    self.say(out, &r, ctx, false);
+                }
+                self.state.waiting = true;
+            }
         }
     }
 

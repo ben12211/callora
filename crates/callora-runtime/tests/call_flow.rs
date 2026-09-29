@@ -262,6 +262,43 @@ async fn voice_webhook_requires_a_valid_signature_and_returns_a_stream() {
 }
 
 #[tokio::test]
+async fn desk_callbacks_require_signatures_over_the_token_and_form() {
+    let h = start_server().await;
+    let http = reqwest::Client::new();
+    for path in [twilio::DESK_PATH, twilio::DESK_STATUS_PATH, twilio::DESK_CONFERENCE_PATH, twilio::STATUS_PATH] {
+        let path = format!("{path}?t=test-token");
+        let public = format!("https://calls.example.test{path}");
+        let local = format!("http://{}{path}", h.addr);
+        let params = BTreeMap::from([
+            ("CallSid".to_string(), "CA-test".to_string()),
+            ("CallStatus".to_string(), "busy".to_string()),
+        ]);
+        assert_eq!(http.post(&local).form(&params).send().await.unwrap().status(), 403);
+        let signature = twilio::signature(TOKEN, &public, &params);
+        assert!(http
+            .post(&local)
+            .form(&params)
+            .header("x-twilio-signature", &signature)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        let wrong_token = local.replace("test-token", "other-token");
+        assert_eq!(
+            http.post(wrong_token)
+                .form(&params)
+                .header("x-twilio-signature", &signature)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_full_call_greeting_booking_barge_in_and_goodbye() {
     let h = start_server().await;
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
@@ -289,8 +326,14 @@ async fn a_full_call_greeting_booking_barge_in_and_goodbye() {
     );
     assert!(frames.contains(&0x33), "then the dynamic read-back");
 
-    // The caller talks over the read-back: audio stops and Twilio is told to clear.
+    // A short sound over the read-back (a cough) does not stop it.
     for _ in 0..8 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    let (_, clears) = collect(&mut ws, Duration::from_millis(100)).await;
+    assert_eq!(clears, 0, "a cough is not a barge-in");
+    // The caller talks over the read-back: audio stops and Twilio is told to clear.
+    for _ in 0..70 {
         ws.send(Message::Text(loud_frame().into())).await.unwrap();
     }
     let (_, clears) = collect(&mut ws, Duration::from_millis(150)).await;
@@ -301,6 +344,12 @@ async fn a_full_call_greeting_booking_barge_in_and_goodbye() {
     let (frames, _) = collect(&mut ws, Duration::from_millis(200)).await;
     assert!(frames.is_empty(), "nothing plays after the barge-in");
     assert!(*h.stt.finalizes.lock() >= 1, "the VAD endpoint asked the STT to finalize");
+
+    // "כן" to a read-back cut off in the middle: the read-back again, not the booking.
+    h.stt.say("כן").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(400)).await;
+    assert!(!frames.is_empty(), "the read-back again");
+    while !collect(&mut ws, Duration::from_millis(300)).await.0.is_empty() {}
 
     // "כן" → filler immediately, then the booking result (mock backend, ~0.9 s).
     h.stt.say("כן").await;
@@ -480,6 +529,87 @@ async fn words_taken_for_noise_before_any_task_do_not_repeat_the_greeting() {
     h.stt.say("אה").await;
     let (frames, _) = collect(&mut ws, Duration::from_millis(3000)).await;
     assert!(frames.is_empty(), "the greeting is not said again");
+}
+
+#[tokio::test]
+async fn a_sound_with_no_words_gets_the_question_again_instead_of_silence() {
+    // Noise the recognizer returned nothing for: the silence reprompt had been cancelled by the
+    // sound, and nothing more was said until the caller spoke.
+    let h = start_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, "CA49", "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "connected" }).to_string().into())).await.unwrap();
+    ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ1", "start": { "streamSid": "MZ1", "callSid": "CA49", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    collect(&mut ws, Duration::from_millis(400)).await;
+    h.stt.say("צריך מונית").await;
+    while !collect(&mut ws, Duration::from_millis(300)).await.0.is_empty() {}
+
+    for _ in 0..20 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    for _ in 0..40 {
+        ws.send(Message::Text(quiet_frame().into())).await.unwrap();
+    }
+    let (frames, _) = collect(&mut ws, Duration::from_millis(1500)).await;
+    assert!(frames.is_empty(), "not at once: the words may still come");
+    let (frames, _) = collect(&mut ws, Duration::from_millis(1500)).await;
+    assert!(!frames.is_empty(), "the line is noisy, and the question again");
+}
+
+async fn noise_call() -> (Harness, Ws) {
+    let h = start_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, "CA-no-words", "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "start", "start": { "streamSid": "MZ1", "callSid": "CA-no-words", "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    collect(&mut ws, Duration::from_millis(400)).await;
+    h.stt.say("צריך מונית").await;
+    while !collect(&mut ws, Duration::from_millis(300)).await.0.is_empty() {}
+    for _ in 0..20 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    for _ in 0..40 {
+        ws.send(Message::Text(quiet_frame().into())).await.unwrap();
+    }
+    (h, ws)
+}
+
+#[tokio::test]
+async fn asr_progress_extends_the_grace_and_final_words_cancel_noise_recovery() {
+    let (h, mut ws) = noise_call().await;
+    assert!(collect(&mut ws, Duration::from_millis(1300)).await.0.is_empty());
+    let events = h.stt.events.lock().clone().unwrap();
+    events.send(SttEvent::Partial("ירוש".into())).await.unwrap();
+    assert!(
+        collect(&mut ws, Duration::from_millis(1000)).await.0.is_empty(),
+        "partial words extend ASR grace beyond the original deadline"
+    );
+    h.stt.say("מירושלים").await;
+    assert!(
+        !collect(&mut ws, Duration::from_millis(1400)).await.0.is_empty(),
+        "normal recognized speech gets its next question"
+    );
+    assert!(
+        collect(&mut ws, Duration::from_millis(2200)).await.0.is_empty(),
+        "no stale watchdog or duplicate question"
+    );
+}
+
+#[tokio::test]
+async fn new_speech_invalidates_the_old_no_words_watchdog() {
+    let (h, mut ws) = noise_call().await;
+    collect(&mut ws, Duration::from_millis(1300)).await;
+    for _ in 0..30 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    assert!(
+        collect(&mut ws, Duration::from_millis(1100)).await.0.is_empty(),
+        "the old utterance cannot interrupt new speech"
+    );
+    h.stt.say("מירושלים").await;
+    assert!(!collect(&mut ws, Duration::from_millis(500)).await.0.is_empty());
+    ws.close(None).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.telephony.hangups.lock().is_empty(), "caller stop does not generate an assistant hangup");
 }
 
 #[tokio::test]

@@ -187,7 +187,7 @@ impl Session {
     pub(super) fn arm_silence(&mut self) {
         self.silence_generation += 1;
         let generation = self.silence_generation;
-        let after = Duration::from_millis(self.business.config.silence.reprompt_after_ms);
+        let after = Duration::from_millis(self.engine.silence_after_ms());
         let tx = self.events.clone();
         tokio::spawn(async move {
             tokio::time::sleep(after).await;
