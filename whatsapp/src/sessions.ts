@@ -24,6 +24,9 @@ type Stored = { id: string; name: string; created_at: string; first_ready_at: st
 export class NotAllowed extends Error {}
 export class NotReady extends Error {}
 export class NotFound extends Error {}
+/** The message was handed to WhatsApp and something failed after: it may well be out, so it
+ * is never sent again on its own (a message sent again and again reached a group 8 times). */
+export class OutcomeUnknown extends Error {}
 
 class Session {
   status: Status = "starting";
@@ -285,10 +288,17 @@ export class Sessions {
       await state("typing");
       await new Promise((r) => setTimeout(r, Math.min(typingMs, 5000)));
     }
-    const message = await client.sendMessage(chatId, text, { sendSeen: false });
+    let message;
+    try {
+      message = await client.sendMessage(chatId, text, { sendSeen: false });
+    } catch (e) {
+      log(id, "send outcome unknown", e instanceof Error ? e.message : String(e));
+      throw new OutcomeUnknown("outcome_unknown");
+    }
     await state("stop");
-    if (!message) throw new Error("not_sent");
-    return { id: message.id._serialized };
+    // Sent, even with no message back: WhatsApp Web of September 2026 stores the sent message
+    // under another key than the one whatsapp-web.js looks it up by, so it hands back nothing.
+    return { id: message?.id?._serialized ?? null };
   }
 }
 

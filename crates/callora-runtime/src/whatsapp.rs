@@ -46,6 +46,9 @@ pub enum ServiceError {
     NotReady,
     NotFound,
     Unavailable(String),
+    /// The request may have reached WhatsApp (the service says so, or no answer came in
+    /// time): a message may be out, so it is not sent again on its own.
+    OutcomeUnknown(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -73,7 +76,13 @@ impl Service {
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let res = req.send().await.map_err(|e| ServiceError::Unavailable(e.to_string()))?;
+        let res = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                ServiceError::OutcomeUnknown(e.to_string())
+            } else {
+                ServiceError::Unavailable(e.to_string())
+            }
+        })?;
         let status = res.status();
         let value: Value =
             if status == StatusCode::NO_CONTENT { Value::Null } else { res.json().await.unwrap_or(Value::Null) };
@@ -83,6 +92,7 @@ impl Service {
             403 => Err(ServiceError::Refused(code)),
             404 => Err(ServiceError::NotFound),
             409 => Err(ServiceError::NotReady),
+            502 if code == "outcome_unknown" => Err(ServiceError::OutcomeUnknown(code)),
             _ => Err(ServiceError::Unavailable(format!("{status} {code}"))),
         }
     }
@@ -329,6 +339,13 @@ pub async fn run_sender(pool: PgPool, service: Arc<Service>) {
                 )
                 .bind(id)
                 .bind(refusal(code)),
+                // Maybe sent: never again on its own (each retry of a message whose answer was
+                // lost reached the group). The dashboard's retry is there if it did not arrive.
+                Err(ServiceError::OutcomeUnknown(_)) => sqlx::query(
+                    "UPDATE callora_v2.whatsapp_outbox SET status = 'failed', attempts = attempts + 1, last_error = $2 WHERE id = $1",
+                )
+                .bind(id)
+                .bind("ייתכן שנשלח: לא נשלח שוב כדי שלא תהיה כפילות. אם לא הגיע, נסו שוב"),
                 Err(e) => {
                     let failed = attempts + 1 >= MAX_ATTEMPTS;
                     sqlx::query(
@@ -339,7 +356,9 @@ pub async fn run_sender(pool: PgPool, service: Arc<Service>) {
                     .bind(match e {
                         ServiceError::NotReady => "החשבון לא מחובר".to_string(),
                         ServiceError::NotFound => "החשבון לא נמצא".to_string(),
-                        ServiceError::Unavailable(m) | ServiceError::Refused(m) => format!("שירות הוואטסאפ לא זמין ({m})"),
+                        ServiceError::Unavailable(m) | ServiceError::Refused(m) | ServiceError::OutcomeUnknown(m) => {
+                            format!("שירות הוואטסאפ לא זמין ({m})")
+                        }
                     })
                     .bind(failed)
                     .bind(backoff(attempts))
@@ -409,7 +428,7 @@ fn service_error(e: ServiceError) -> Response {
         ServiceError::Refused(code) => (StatusCode::FORBIDDEN, Json(json!({ "error": code }))).into_response(),
         ServiceError::NotReady => (StatusCode::CONFLICT, Json(json!({ "error": "not_ready" }))).into_response(),
         ServiceError::NotFound => StatusCode::NOT_FOUND.into_response(),
-        ServiceError::Unavailable(m) => {
+        ServiceError::Unavailable(m) | ServiceError::OutcomeUnknown(m) => {
             tracing::warn!(error = %m, "whatsapp service unavailable");
             (StatusCode::BAD_GATEWAY, Json(json!({ "error": "unavailable" }))).into_response()
         }

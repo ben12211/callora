@@ -4,7 +4,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
-import { MAX_SESSIONS, NotAllowed, NotFound, NotReady, Sessions } from "./sessions.js";
+import { MAX_SESSIONS, NotAllowed, NotFound, NotReady, OutcomeUnknown, Sessions } from "./sessions.js";
 
 const TOKEN = process.env.WHATSAPP_TOKEN ?? "";
 const PORT = Number(process.env.PORT ?? 3100);
@@ -68,6 +68,7 @@ const server = http.createServer(async (req, res) => {
     if (e instanceof NotFound) return send(res, 404, { error: "not_found" });
     if (e instanceof NotReady) return send(res, 409, { error: "not_ready" });
     if (e instanceof NotAllowed) return send(res, 403, { error: e.message });
+    if (e instanceof OutcomeUnknown) return send(res, 502, { error: "outcome_unknown" });
     console.error(JSON.stringify({ at: new Date().toISOString(), error: e instanceof Error ? e.message : String(e), path: url.pathname }));
     return send(res, 500, { error: "failed" });
   }
