@@ -118,6 +118,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(twilio::MEDIA_PATH, get(media))
         .route(twilio::WHISPER_PATH, post(whisper))
         .route(twilio::DESK_PATH, post(desk_answered))
+        .route(twilio::DESK_STATUS_PATH, post(desk_status))
         .route("/api/settings", get(api_settings))
         .route("/api/settings/{business}", axum::routing::put(api_save_settings))
         .route("/api/businesses", get(api_businesses))
@@ -395,6 +396,25 @@ async fn desk_answered(
         Some(desk) => xml(desk.answered(&q.t, leg)),
         None => xml(twilio::twiml_hangup()),
     }
+}
+
+/// How a desk call ended: when the last desk number refuses, the caller is told at once.
+async fn desk_status(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    Query(q): Query<WhisperQuery>,
+    Form(params): Form<BTreeMap<String, String>>,
+) -> Response {
+    if !signed(&s, &headers, &uri, &params) {
+        return (StatusCode::FORBIDDEN, "invalid signature").into_response();
+    }
+    let leg = params.get("CallSid").map(String::as_str).unwrap_or("");
+    let status = params.get("CallStatus").map(String::as_str).unwrap_or("");
+    if let Some(desk) = &s.services.desk {
+        desk.leg_ended(&q.t, leg, status).await;
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[derive(Deserialize)]

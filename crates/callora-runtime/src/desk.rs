@@ -3,9 +3,11 @@
 //! The caller is moved into a Twilio conference of their own, where the hold music plays
 //! (`startConferenceOnEnter=false`). Every desk number is rung at once; the first one who
 //! answers hears the call's summary and joins, which starts the conference and stops the
-//! music. The others are cancelled. If no one answers within the configured wait, the
-//! caller hears that no one is available and the call ends. The caller leaving ends the
-//! conference (`endConferenceOnExit`), so a dispatcher is never left alone in it.
+//! music. The others are cancelled. If every number refuses or fails (busy, no route), or
+//! no one answers within the configured wait, the caller hears that no one is available
+//! and the call ends: a live call's desk number refused at once and the caller still
+//! waited a minute with the music. The caller leaving ends the conference
+//! (`endConferenceOnExit`), so a dispatcher is never left alone in it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,6 +27,12 @@ struct Transfer {
     summary: String,
     language: String,
     legs: Vec<String>,
+    /// Legs that ended without anyone answering (busy, failed, no answer, cancelled).
+    ended: Vec<String>,
+    /// Every leg has been created (a leg can fail before the last one is dialed).
+    dialed: bool,
+    /// What the caller hears when no one can take the call.
+    give_up: String,
     taken: bool,
     at: Instant,
 }
@@ -55,6 +63,7 @@ impl Desk {
         }
         let token = hex::encode(rand::random::<[u8; 16]>());
         let conference = format!("desk-{}", call.call_id.simple());
+        let give_up = twilio::twiml_say_hangup(unavailable, language);
         {
             let mut t = self.transfers.lock();
             t.retain(|_, x| x.at.elapsed() < Duration::from_secs(3600));
@@ -66,6 +75,9 @@ impl Desk {
                     summary: summary.text.clone(),
                     language: language.to_string(),
                     legs: Vec::new(),
+                    ended: Vec::new(),
+                    dialed: false,
+                    give_up: give_up.clone(),
                     taken: false,
                     at: Instant::now(),
                 },
@@ -77,9 +89,10 @@ impl Desk {
             return false;
         }
         let url = format!("{}{}?t={token}", self.base, twilio::DESK_PATH);
+        let status_url = format!("{}{}?t={token}", self.base, twilio::DESK_STATUS_PATH);
         let ring = desk.max_wait_seconds.clamp(15, 60);
         for number in &desk.numbers {
-            match self.telephony.dial(number, &call.to, &url, ring).await {
+            match self.telephony.dial(number, &call.to, &url, &status_url, ring).await {
                 Ok(sid) => {
                     if let Some(t) = self.transfers.lock().get_mut(&token) {
                         t.legs.push(sid);
@@ -88,12 +101,22 @@ impl Desk {
                 Err(e) => tracing::warn!(call = %call.call_sid, %number, error = %e, "could not ring a desk number"),
             }
         }
-        let rung = self.transfers.lock().get(&token).is_some_and(|t| !t.legs.is_empty());
-        let give_up = twilio::twiml_say_hangup(unavailable, language);
+        let rung = {
+            let mut t = self.transfers.lock();
+            match t.get_mut(&token) {
+                Some(x) => {
+                    x.dialed = true;
+                    !x.legs.is_empty()
+                }
+                None => false,
+            }
+        };
         if !rung {
             let _ = self.telephony.redirect(&call.call_sid, &give_up).await;
             return true;
         }
+        // A leg may have been refused while the others were still being dialed.
+        self.give_up_if_all_failed(&token).await;
         // No one answered in time: tell the caller, and stop ringing.
         let (transfers, telephony, caller) = (self.transfers.clone(), self.telephony.clone(), call.call_sid.clone());
         let wait_for = Duration::from_secs(u64::from(desk.max_wait_seconds));
@@ -116,6 +139,38 @@ impl Desk {
             }
         });
         true
+    }
+
+    /// A desk call ended without being answered (`status` is Twilio's: busy, failed,
+    /// no-answer, canceled). When that was the last number, the caller is told at once.
+    pub async fn leg_ended(&self, token: &str, leg: &str, status: &str) {
+        // A call that was answered and then ended is the conversation itself.
+        if !matches!(status, "busy" | "failed" | "no-answer" | "canceled") {
+            return;
+        }
+        {
+            let mut t = self.transfers.lock();
+            let Some(x) = t.get_mut(token) else { return };
+            if !x.ended.iter().any(|l| l == leg) {
+                x.ended.push(leg.to_string());
+            }
+        }
+        tracing::info!(leg, status, "a desk number did not answer");
+        self.give_up_if_all_failed(token).await;
+    }
+
+    async fn give_up_if_all_failed(&self, token: &str) {
+        let (caller, twiml) = {
+            let mut t = self.transfers.lock();
+            let Some(x) = t.get_mut(token) else { return };
+            if x.taken || !x.dialed || x.legs.is_empty() || !x.legs.iter().all(|l| x.ended.contains(l)) {
+                return;
+            }
+            x.taken = true;
+            (x.caller.clone(), x.give_up.clone())
+        };
+        tracing::info!(call = %caller, "every desk number refused or failed; telling the caller");
+        let _ = self.telephony.redirect(&caller, &twiml).await;
     }
 
     /// A desk number answered (`leg` is its call). The first one gets the summary and the
@@ -166,7 +221,7 @@ mod tests {
             self.log.lock().push(format!("redirect {sid} {twiml}"));
             Ok(())
         }
-        async fn dial(&self, to: &str, from: &str, url: &str, _: u32) -> anyhow::Result<String> {
+        async fn dial(&self, to: &str, from: &str, url: &str, _status: &str, _: u32) -> anyhow::Result<String> {
             self.log.lock().push(format!("dial {to} from {from} {url}"));
             Ok(format!("CA-{to}"))
         }
@@ -227,6 +282,55 @@ mod tests {
         assert!(desk.answered(&token, "CA-+972502222222").contains("<Hangup/>"), "the second one is too late");
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(fake.log.lock().iter().any(|l| l == "cancel CA-+972502222222"), "the other number stops ringing");
+    }
+
+    #[tokio::test]
+    async fn when_every_number_refuses_the_caller_is_told_at_once_not_after_the_wait() {
+        let fake = Arc::new(Fake::default());
+        let desk = Desk::new("https://calls.example".into(), fake.clone());
+        let call = CallInfo {
+            call_id: uuid::Uuid::from_u128(11),
+            call_sid: "CAcaller".into(),
+            business_id: "taxi".into(),
+            from: None,
+            to: "+972500000000".into(),
+        };
+        let settings =
+            DeskSettings { numbers: vec!["+972502222222".into(), "+972503333333".into()], ..DeskSettings::default() };
+        assert!(desk.transfer(&call, &summary(), &settings, "he-IL", "אין מוקדן פנוי").await);
+        let token = fake.log.lock().iter().find_map(|l| l.split("?t=").nth(1).map(str::to_string)).unwrap();
+        let told = || fake.log.lock().iter().filter(|l| l.contains("אין מוקדן פנוי")).count();
+
+        desk.leg_ended(&token, "CA-+972502222222", "busy").await;
+        assert_eq!(told(), 0, "one number is still ringing");
+        desk.leg_ended(&token, "CA-+972502222222", "busy").await;
+        assert_eq!(told(), 0, "the same number twice is still one");
+        desk.leg_ended(&token, "CA-+972503333333", "failed").await;
+        assert_eq!(told(), 1, "the last one refused: the caller is told now");
+        desk.leg_ended(&token, "CA-+972503333333", "failed").await;
+        assert_eq!(told(), 1, "and only once");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_after_someone_answered_changes_nothing() {
+        let fake = Arc::new(Fake::default());
+        let desk = Desk::new("https://calls.example".into(), fake.clone());
+        let call = CallInfo {
+            call_id: uuid::Uuid::from_u128(12),
+            call_sid: "CAcaller".into(),
+            business_id: "taxi".into(),
+            from: None,
+            to: "+972500000000".into(),
+        };
+        let settings =
+            DeskSettings { numbers: vec!["+972502222222".into(), "+972503333333".into()], ..DeskSettings::default() };
+        assert!(desk.transfer(&call, &summary(), &settings, "he-IL", "אין מוקדן פנוי").await);
+        let token = fake.log.lock().iter().find_map(|l| l.split("?t=").nth(1).map(str::to_string)).unwrap();
+        desk.answered(&token, "CA-+972502222222");
+        desk.leg_ended(&token, "CA-+972503333333", "canceled").await;
+        desk.leg_ended(&token, "CA-+972502222222", "completed").await;
+        desk.leg_ended("unknown-token", "CA-x", "busy").await;
+        assert!(!fake.log.lock().iter().any(|l| l.contains("אין מוקדן פנוי")), "the answered call is left alone");
     }
 
     #[tokio::test]

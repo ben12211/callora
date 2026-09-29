@@ -52,10 +52,26 @@ impl Telephony for TwilioRest {
         self.update(call_sid, &[("Twiml", twiml)]).await
     }
 
-    async fn dial(&self, to: &str, from: &str, url: &str, ring_seconds: u32) -> anyhow::Result<String> {
+    async fn dial(
+        &self,
+        to: &str,
+        from: &str,
+        url: &str,
+        status_url: &str,
+        ring_seconds: u32,
+    ) -> anyhow::Result<String> {
         let endpoint = format!("{}/2010-04-01/Accounts/{}/Calls.json", self.base_url, self.account_sid);
         let timeout = ring_seconds.to_string();
-        let form = [("To", to), ("From", from), ("Url", url), ("Method", "POST"), ("Timeout", timeout.as_str())];
+        let form = [
+            ("To", to),
+            ("From", from),
+            ("Url", url),
+            ("Method", "POST"),
+            ("Timeout", timeout.as_str()),
+            ("StatusCallback", status_url),
+            ("StatusCallbackMethod", "POST"),
+            ("StatusCallbackEvent", "completed"),
+        ];
         let resp =
             self.http.post(endpoint).basic_auth(&self.account_sid, Some(&self.auth_token)).form(&form).send().await?;
         let status = resp.status();

@@ -21,6 +21,8 @@ pub const MEDIA_PATH: &str = "/webhooks/twilio/media";
 pub const WHISPER_PATH: &str = "/webhooks/twilio/handoff-whisper";
 /// Fetched by Twilio when a desk number answers a transfer (see `desk.rs`).
 pub const DESK_PATH: &str = "/webhooks/twilio/desk";
+/// Told by Twilio how a desk call ended (busy, failed, no answer, ...).
+pub const DESK_STATUS_PATH: &str = "/webhooks/twilio/desk-status";
 
 /// `X-Twilio-Signature`: base64(HMAC-SHA1(auth_token, url + sorted(key + value)...)).
 pub fn signature(auth_token: &str, url: &str, params: &BTreeMap<String, String>) -> String {

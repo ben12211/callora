@@ -149,8 +149,16 @@ pub trait Telephony: Send + Sync {
     }
 
     /// Ring `to` from `from` (a number of ours); when answered, Twilio fetches `url` (POST)
-    /// for what to do. Returns the new call's sid.
-    async fn dial(&self, _to: &str, _from: &str, _url: &str, _ring_seconds: u32) -> anyhow::Result<String> {
+    /// for what to do, and when the call ends it tells `status_url` how it ended. Returns
+    /// the new call's sid.
+    async fn dial(
+        &self,
+        _to: &str,
+        _from: &str,
+        _url: &str,
+        _status_url: &str,
+        _ring_seconds: u32,
+    ) -> anyhow::Result<String> {
         anyhow::bail!("dialing out is not supported")
     }
 
