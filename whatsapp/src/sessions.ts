@@ -3,7 +3,7 @@
 // account's login lives under /data/auth/session-<id>, so a restart needs no new scan.
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import QRCode from "qrcode";
 import pkg from "whatsapp-web.js";
@@ -31,13 +31,31 @@ class Session {
   me: { number: string; name: string } | null = null;
   error: string | null = null;
   client: ClientType | null = null;
+  /** Each start is a generation; events of a browser that was replaced are ignored. */
+  private generation = 0;
+  private starting: Promise<void> | null = null;
+  private retried = false;
 
   constructor(
     public stored: Stored,
     private onChange: () => void,
   ) {}
 
-  async start() {
+  get busy(): boolean {
+    return this.starting !== null;
+  }
+
+  /** One start at a time: a second call while starting waits for the first. */
+  start(): Promise<void> {
+    if (!this.starting) this.starting = this.run().finally(() => (this.starting = null));
+    return this.starting;
+  }
+
+  private async run() {
+    const generation = ++this.generation;
+    // The previous browser must be gone, or the new one finds its profile locked.
+    await this.stop();
+    await freeProfile(this.stored.id);
     this.status = "starting";
     this.qr = null;
     this.error = null;
@@ -51,17 +69,22 @@ class Session {
       },
     });
     this.client = client;
+    const current = () => generation === this.generation;
     client.on("qr", (qr: string) => {
+      if (!current()) return;
       this.status = "qr";
       this.qr = qr;
     });
     client.on("authenticated", () => {
+      if (!current()) return;
       this.status = "authenticating";
       this.qr = null;
     });
     client.on("ready", () => {
+      if (!current()) return;
       this.status = "ready";
       this.qr = null;
+      this.retried = false;
       this.me = { number: client.info.wid.user, name: client.info.pushname ?? "" };
       if (!this.stored.first_ready_at) {
         this.stored.first_ready_at = new Date().toISOString();
@@ -70,11 +93,13 @@ class Session {
       log(this.stored.id, "ready", this.me.number);
     });
     client.on("auth_failure", (message: string) => {
+      if (!current()) return;
       this.status = "failed";
       this.error = message;
       log(this.stored.id, "auth failure", message);
     });
     client.on("disconnected", (reason: string) => {
+      if (!current()) return;
       this.status = "disconnected";
       this.error = String(reason);
       this.me = null;
@@ -83,9 +108,17 @@ class Session {
     try {
       await client.initialize();
     } catch (e) {
+      if (!current()) return;
       this.status = "failed";
       this.error = e instanceof Error ? e.message : String(e);
       log(this.stored.id, "failed to start", this.error);
+      // Once more on its own, a few seconds later, with the profile freed again.
+      if (!this.retried) {
+        this.retried = true;
+        setTimeout(() => {
+          if (current() && this.status === "failed") void this.start();
+        }, 5000);
+      }
     }
   }
 
@@ -110,6 +143,32 @@ class Session {
   ready(): ClientType {
     if (this.status !== "ready" || !this.client) throw new NotReady("not_ready");
     return this.client;
+  }
+}
+
+/** Ends any browser still running on an account's profile (a start that crashed leaves one)
+ * and removes the profile's lock files, so the next start can open it. */
+async function freeProfile(id: string) {
+  const profile = path.join(AUTH, `session-${id}`);
+  let killed = 0;
+  for (const pid of await readdir("/proc").catch(() => [] as string[])) {
+    if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+    const cmd = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+    if (cmd.includes("chrom") && cmd.includes(profile)) {
+      try {
+        process.kill(Number(pid), "SIGKILL");
+        killed++;
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  if (killed) {
+    log(id, "ended", killed, "leftover browser processes");
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  for (const lock of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+    await rm(path.join(profile, lock), { force: true }).catch(() => undefined);
   }
 }
 
@@ -163,10 +222,10 @@ export class Sessions {
     return session.view();
   }
 
+  /** Starts the account again; while it is already starting, a click changes nothing. */
   async restart(id: string) {
     const s = this.get(id);
-    await s.stop();
-    void s.start();
+    if (!s.busy) void s.start();
     return s.view();
   }
 
@@ -179,6 +238,7 @@ export class Sessions {
       /* already gone */
     }
     await s.stop();
+    await freeProfile(id);
     this.sessions.delete(id);
     await this.save();
     await rm(path.join(AUTH, `session-${id}`), { recursive: true, force: true });
