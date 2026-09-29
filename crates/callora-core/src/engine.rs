@@ -908,10 +908,14 @@ impl Engine {
         let explicit = raw.rsplit_once(',').and_then(|(street, city)| g.resolve_within(street, city.trim()));
         let explicit_given = explicit.is_some();
         let mut lookup = explicit.or(in_city_before).unwrap_or_else(|| g.resolve(spoken));
+        // The street as the caller said it: this answer's, or the one given before when this
+        // answer is only its city.
+        let mut said = raw.to_string();
         // The city for a street given before without one ("בן זכאי 45" ... "אלעד").
         if let (Lookup::Found(a), Some(street)) = (&lookup, self.state.place_streets.get(slot)) {
             if a.street.is_none() && a.number.is_none() {
                 if let Some(joined) = g.resolve_within(street, &a.city_said) {
+                    said = street.clone();
                     lookup = joined;
                 }
             }
@@ -1023,6 +1027,19 @@ impl Engine {
                      city it is in"
                 ));
                 *self.state.place_rejections.entry(slot.to_string()).or_default() += 1;
+                // "רמבם 12 בטרדיט" (ביתר עילית misheard): the street and number are kept, and only
+                // the city is asked; asked for all of it again, a live caller had to repeat the street.
+                if let Some(street) =
+                    street_before_city(raw).filter(|_| self.business.response("street_city_unknown").is_some())
+                {
+                    notes.push(format!("the street \"{street}\" is kept: pass only the city the caller names"));
+                    self.state
+                        .doubt_confirm
+                        .insert(slot.to_string(), vec![prompt("street_city_unknown", &[("street", street.clone())])]);
+                    self.state.place_streets.insert(slot.to_string(), street);
+                    rejected.push(slot.to_string());
+                    return None;
+                }
                 let unknown = format!("{}_unknown", self.pipeline_ask(slot).unwrap_or_default());
                 if self.business.response(&unknown).is_some() {
                     let heard = spoken.trim().to_string();
@@ -1052,8 +1069,10 @@ impl Engine {
             // "בית דחה 45, אלעד": a house number makes it a street, not a landmark, and אלעד
             // has no such street. Most likely misheard: ask once more; the second time it is
             // kept (the list may lack a new street).
+            // "רמבם" alone in ביתר עילית, which has הרמב"ן: offered too, not asked for a landmark's
+            // address (a live caller was asked three times, then booked on a street that is not there).
             Lookup::NoStreet { city, heard, closest }
-                if spoken.chars().any(|c| c.is_ascii_digit())
+                if (said.chars().any(|c| c.is_ascii_digit()) || (precise && !closest.is_empty()))
                     && !give_up
                     && self.state.doubted_streets.insert(slot.to_string()) =>
             {
@@ -1068,15 +1087,15 @@ impl Engine {
                 // Said back in so many words: not found there, did they mean the closest street, or
                 // is it in another city. Asked for the street again, a live caller who had just
                 // said it hung up. Insisting takes it as said; a third miss goes to a person.
-                let number: String = spoken.chars().filter(char::is_ascii_digit).collect();
+                let number: String = said.chars().filter(char::is_ascii_digit).collect();
                 let suggestion = closest.first().cloned();
                 // As the caller said them: "ארנוביץ" (not the matching key "ארנוביצ"), "תל אביב"
                 // (not "תל אביב - יפו").
                 // The agent's own "street, city" keeps the comma the parsed value lost.
-                let said_street: String = raw
+                let said_street: String = said
                     .split(',')
                     .next()
-                    .unwrap_or(raw)
+                    .unwrap_or(&said)
                     .chars()
                     .filter(|c| !c.is_ascii_digit())
                     .collect::<String>()
@@ -1097,7 +1116,7 @@ impl Engine {
                     _ => vec![],
                 };
                 let meant = suggestion
-                    .map(|s| format!("if they agree to {s}, pass \"{s} {number}, {city}\"; "))
+                    .map(|s| format!("if they agree to {s}, pass \"{}, {city}\"; ", format!("{s} {number}").trim()))
                     .unwrap_or_default();
                 notes.push(format!(
                     "{slot}: {city} has no street \"{heard}\"; it was not taken. The system said so and asked what they \
@@ -2100,4 +2119,18 @@ impl RenderContext<'_> {
         }
         RenderContext { slots: self.slots, result: None, customer: None, extra }
     }
+}
+
+/// The street and house number in a place whose city was not made out: "רמבם 12" of
+/// "רמבם 12 בטרדיט" (up to the number), or the part before the comma of "רמבם 12, בטרדיט".
+/// `None` when there is no street to tell from the rest ("אפרק").
+fn street_before_city(raw: &str) -> Option<String> {
+    let has_digit = |s: &str| s.chars().any(|c| c.is_ascii_digit());
+    if let Some((street, rest)) = raw.split_once(',') {
+        let (street, rest) = (street.trim(), rest.trim());
+        return (has_digit(street) && !rest.is_empty()).then(|| street.to_string());
+    }
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    let at = words.iter().position(|w| w.chars().all(|c| c.is_ascii_digit()))?;
+    (at > 0 && at + 1 < words.len()).then(|| words[..=at].join(" "))
 }

@@ -1822,3 +1822,67 @@ fn words_not_made_out_before_any_task_wait_for_the_silence_reprompt() {
     let (mut call, _) = Call::new(business(&[]));
     assert!(call.engine.on_unheard().is_empty());
 }
+
+fn beitar() -> Arc<callora_core::gazetteer::Gazetteer> {
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "3780\tביתר עילית\t118\tהרמב\"ן\tofficial\n3780\tביתר עילית\t118\tהרמבן\tsynonym\n\
+         3780\tביתר עילית\t118\tרמבן\tsynonym\n3780\tביתר עילית\t191\tהרמ\"ק\tofficial\n\
+         3780\tביתר עילית\t102\tרבי עקיבא\tofficial\n1309\tאלעד\t110\tבן זכאי\tofficial\n",
+    ))
+}
+
+#[test]
+fn a_street_said_with_a_city_not_made_out_is_kept_for_the_city() {
+    // The call of 12:10: "רמבם 12 בטרדיט" (ביתר עילית misheard); after "ביתר עילית" the street
+    // was asked again, though the caller had said it.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(beitar()));
+    let d = call.engine.on_agent_turn(
+        "רמבם 12 בטרדיט",
+        asking(&["destination"], decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "רמבם 12 בטרדיט")])),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None);
+    let said = spoken(&d);
+    assert!(said.contains("רמבם 12 באיזו עיר"), "the street kept, only the city asked: {said}");
+
+    // The city: the street said before is looked up there, and the closest street offered.
+    let d = call.engine.on_agent_turn(
+        "ביתר אליס",
+        asking(&["pickup"], decide(AgentAction::None, "", None, &[("pickup", "ביתר עילית")])),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("לא מצאתי את רמבם בביתר עילית") && said.contains("הרמב\"ן"), "{said}");
+    assert!(!said.contains("איזה רחוב") && !said.contains("איפה בביתר"), "the street is not asked again: {said}");
+
+    call.engine.on_agent_turn(
+        "כן הרמבן",
+        asking(&["destination"], decide(AgentAction::None, "", None, &[("pickup", "הרמב\"ן 12, ביתר עילית")])),
+        "",
+    );
+    assert_eq!(place(call.slot("pickup")), "הרמב\"ן 12, ביתר עילית");
+}
+
+#[test]
+fn a_street_without_a_number_the_city_lacks_gets_the_closest_offered() {
+    // The same call: "רמבם" alone in ביתר עילית was asked three times and then booked as said.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(beitar()));
+    let d = call.engine.on_agent_turn(
+        "רמבם בביתר עילית",
+        asking(&["destination"], decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "רמבם, ביתר עילית")])),
+        "",
+    );
+    assert_eq!(call.slot("pickup"), None);
+    let said = spoken(&d);
+    assert!(said.contains("לא מצאתי את רמבם בביתר עילית") && said.contains("הרמב\"ן"), "{said}");
+
+    // Yes to it: the street, then its number on its own.
+    let d = call.engine.on_agent_turn(
+        "כן",
+        asking(&["pickup"], decide(AgentAction::None, "", None, &[("pickup", "הרמב\"ן, ביתר עילית")])),
+        "",
+    );
+    assert!(spoken(&d).contains("באיזה מספר בית לאסוף"), "{}", spoken(&d));
+}

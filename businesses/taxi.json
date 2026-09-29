@@ -476,6 +476,7 @@
     "ask_destination_unknown": { "variants": ["לא הכרתי את {heard}. לאיזו עיר נוסעים?"] },
     "street_not_found_suggest": { "variants": ["לא מצאתי את {heard} ב{city}. התכוונת ל{suggestion}?"] },
     "street_not_found": { "variants": ["לא מצאתי את {heard} ב{city}. אולי זה בעיר אחרת?"] },
+    "street_city_unknown": { "variants": ["לא הבנתי את העיר. {street} באיזו עיר?"] },
     "ask_again_passengers": { "variants": ["רק כדי שלא תהיה טעות, כמה נוסעים? במונית עד עשרים."] },
     "ask_name": { "variants": ["על שם מי לרשום את ההזמנה?"] },
     "ask_notes": { "variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?"] },
