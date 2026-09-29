@@ -36,8 +36,9 @@ impl Sessions {
         Self { password: password.to_string(), key: mac.finalize().into_bytes().to_vec(), failures: Mutex::default() }
     }
 
+    /// Never true while no password is configured.
     pub fn password_matches(&self, given: &str) -> bool {
-        bool::from(given.as_bytes().ct_eq(self.password.as_bytes()))
+        !self.password.is_empty() && bool::from(given.as_bytes().ct_eq(self.password.as_bytes()))
     }
 
     fn sign(&self, expires: i64) -> String {
@@ -124,6 +125,8 @@ mod tests {
     fn guessing_is_stopped_after_five_wrong_passwords() {
         let s = Sessions::new("12345678", "k");
         assert!(s.password_matches("12345678") && !s.password_matches("1234567"));
+        let unset = Sessions::new("", "k");
+        assert!(!unset.password_matches("") && !unset.password_matches("12345678"), "no password, no sign-in");
         for _ in 0..5 {
             assert!(s.allowed("1.2.3.4"));
             s.failed("1.2.3.4");

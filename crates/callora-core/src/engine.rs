@@ -1695,12 +1695,13 @@ impl Engine {
                 if failure.outcome_unknown {
                     // The ride may be on its way: never "no driver available" for it. A person
                     // checks, with the details in the handoff summary.
-                    if let Some(r) = &pipeline.on_unknown {
-                        let ctx = self.render_ctx(None);
-                        self.say(&mut out, r, ctx, true);
-                    }
                     let result = json!({ "error": failure.error, "outcome_unknown": true, "run_id": run_id });
                     if self.has_desk() {
+                        // "A dispatcher will make sure it went through": only when one can.
+                        if let Some(r) = &pipeline.on_unknown {
+                            let ctx = self.render_ctx(None);
+                            self.say(&mut out, r, ctx, true);
+                        }
                         self.handoff(&mut out, "action_outcome_unknown");
                         self.close_run("unknown", Some(result));
                     } else {

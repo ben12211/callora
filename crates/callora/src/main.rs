@@ -708,9 +708,11 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         admin_api_key: env("ADMIN_API_KEY").filter(|k| k.len() >= 8),
         skip_signature_validation,
         prices: callora_runtime::pricing::parse_prices(&env("AGENT_PRICES").unwrap_or_default()),
-        dashboard_password: env("DASHBOARD_PASSWORD").unwrap_or_else(|| {
-            tracing::warn!("DASHBOARD_PASSWORD is not set: the dashboard's password is the default 12345678");
-            "12345678".into()
+        // No password, no sign-in: a default one would let anyone read every call and, from the
+        // settings, send callers to a number of their choosing.
+        dashboard_password: env("DASHBOARD_PASSWORD").filter(|p| p.chars().count() >= 8).unwrap_or_else(|| {
+            tracing::error!("DASHBOARD_PASSWORD is not set (8+ characters): nobody can sign in to the dashboard");
+            String::new()
         }),
         web_dir: web_dir(),
         whatsapp: env("WHATSAPP_URL").zip(env("WHATSAPP_TOKEN").filter(|t| t.len() >= 16)),
