@@ -154,6 +154,7 @@ impl Session {
         if self.engine.state.continues_answer {
             tracing::info!(call = %self.info.call_sid, caller = %transcript, "the caller began before the last reply: finishing the previous answer");
         }
+        self.engine.hint_towns(&transcript);
         let request = agent::build_request(&self.business, &self.engine.state, &transcript);
         self.engine.state.continues_answer = false;
         let timeout = Duration::from_millis(cfg.timeout_ms);

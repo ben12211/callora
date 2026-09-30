@@ -334,6 +334,34 @@ impl Gazetteer {
         added
     }
 
+    /// Words of `text` that are no locality's name but sound like exactly one town's ("מפרט":
+    /// מ + אפרת, the same consonants): each word as heard, with the town. Towns only (enough
+    /// streets), and three consonants at least, so a common word does not become a village.
+    pub fn towns_sounding_like(&self, text: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for word in norm(text).split(' ').filter(|w| w.chars().count() >= 3) {
+            if self.city_keys.contains_key(word) {
+                continue;
+            }
+            let forms = std::iter::once(word).chain(strip_prefix(word)).filter(|f| !self.city_keys.contains_key(*f));
+            for form in forms {
+                let heard = sound(form);
+                if heard.chars().count() < 3 {
+                    continue;
+                }
+                let mut towns = self.city_keys.iter().filter(|(k, (ci, _))| {
+                    !k.contains(' ') && self.cities[*ci].streets.len() >= 20 && sound(k) == heard
+                });
+                if let (Some((_, (_, name))), None) = (towns.next(), towns.next()) {
+                    if !out.iter().any(|(w, _)| w == word) {
+                        out.push((word.to_string(), name.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Rows of `city_code, city_name, street_code, street_name, official|synonym`, tab
     /// separated; `#` lines are comments.
     pub fn from_tsv(text: &str) -> Self {

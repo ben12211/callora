@@ -204,7 +204,8 @@ impl Engine {
             desk: self.desk,
         };
         probe.state.remember(Speaker::Caller, transcript);
-        let fields = probe.answer_in_place(transcript, fields);
+        let fields = probe.by_preposition(transcript, fields);
+        let fields = probe.answer_in_place(transcript, &fields);
         !probe.apply_agent_fields(&fields).1.is_empty()
     }
 
@@ -432,7 +433,8 @@ impl Engine {
             }
         }
         let was_confirming = self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
-        let fields = self.answer_in_place(transcript, &turn.fields);
+        let fields = self.by_preposition(transcript, &turn.fields);
+        let fields = self.answer_in_place(transcript, &fields);
         let (changed, rejected) = self.apply_agent_fields(&fields);
         // A detail changed after the read-back ("לא 40, 45"): read it back again, so the next
         // "יאללה" sends the corrected task instead of meeting another read-back.
@@ -666,6 +668,25 @@ impl Engine {
         }
     }
 
+    /// Tells the agent, before it decides, of words that sound like a town but are none ("מפרט"
+    /// for "מאפרת": a live caller said it three times and was asked about ביתר).
+    pub fn hint_towns(&mut self, transcript: &str) {
+        let Some(g) = &self.gazetteer else { return };
+        // The business's own words are what they are: "מונית" sounds like the kibbutz מענית.
+        let known: Vec<String> = self.business.stt_keyterms().iter().map(|t| crate::text::normalize(t)).collect();
+        for (heard, town) in g.towns_sounding_like(transcript) {
+            if known.iter().any(|k| k.split(' ').any(|w| w == crate::text::normalize(&heard))) {
+                continue;
+            }
+            let note = format!(
+                "\"{heard}\" is no place, but sounds like {town} (the same consonants): if that fits, it is {town}"
+            );
+            if !self.state.agent_notes.contains(&note) {
+                self.state.agent_notes.push(note);
+            }
+        }
+    }
+
     /// A place's city as understood. Another city than before is a correction ("לא ברקת,
     /// בני ברק"): what was doubted about a street of the other city no longer holds.
     fn note_city(&mut self, slot: &str, city: String) {
@@ -820,6 +841,47 @@ impl Engine {
         }
         self.state.agent_notes.extend(notes);
         kept
+    }
+
+    /// A place passed for the pickup that the caller said with the destination's "ל" ("לביתר"),
+    /// or the other way round: it is the other place (a live call took "מאפרת לביתר" for a
+    /// pickup in ביתר). Only when the reply does not pass the other place itself.
+    fn by_preposition(&self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {
+        let heard = crate::text::normalize(transcript);
+        let words: Vec<&str> = heard.split(' ').filter(|w| !w.is_empty()).collect();
+        let prefixes = |slot: &str| -> Vec<String> {
+            self.business.config.slots.get(slot).map(|c| c.strip_prefixes.clone()).unwrap_or_default()
+        };
+        // Whether the place's first word was said with one of these prefixes before it.
+        let said_with = |value: &str, with: &[String]| {
+            let first = crate::text::normalize(value.split(',').next().unwrap_or(value));
+            let Some(first) = first.split(' ').next().filter(|w| w.chars().count() >= 2) else { return false };
+            words.iter().any(|w| with.iter().any(|p| w.strip_prefix(p.as_str()) == Some(first)))
+        };
+        let places: Vec<&str> = ["pickup", "destination"]
+            .into_iter()
+            .filter(|s| self.business.config.slots.get(*s).is_some_and(|c| c.kind == crate::config::SlotKind::Place))
+            .collect();
+        if places.len() != 2 {
+            return fields.to_vec();
+        }
+        fields
+            .iter()
+            .map(|(slot, value)| {
+                let Some(other) = places.iter().find(|p| **p != slot && places.contains(&slot.as_str())) else {
+                    return (slot.clone(), value.clone());
+                };
+                let (own, theirs) = (prefixes(slot), prefixes(other));
+                let moves =
+                    !fields.iter().any(|(s, _)| s == other) && said_with(value, &theirs) && !said_with(value, &own);
+                if moves {
+                    tracing::info!(%slot, %value, to = other, "said with the other place's preposition; moved");
+                    (other.to_string(), value.clone())
+                } else {
+                    (slot.clone(), value.clone())
+                }
+            })
+            .collect()
     }
 
     fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> (bool, Vec<String>) {

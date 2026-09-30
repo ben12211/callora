@@ -1778,7 +1778,8 @@ fn elad_efrat() -> Arc<callora_core::gazetteer::Gazetteer> {
 }
 
 #[test]
-fn the_house_number_is_asked_on_its_own_and_can_be_skipped() {
+fn a_street_is_taken_without_its_house_number() {
+    // The owner does not need house numbers: a street is enough, and a number said is kept.
     let (mut call, _) = Call::new(business(&[]));
     call.engine.set_gazetteer(Some(elad_efrat()));
     let d = call.engine.on_agent_turn(
@@ -1786,34 +1787,15 @@ fn the_house_number_is_asked_on_its_own_and_can_be_skipped() {
         asking(&["destination"], decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "בן זכאי, אלעד")])),
         "",
     );
-    assert_eq!(call.slot("pickup"), None, "not without its number yet");
-    assert!(spoken(&d).contains("באיזה מספר בית לאסוף"), "{}", spoken(&d));
-    let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "45");
-    assert!(next.user.contains("NOW: the caller is giving the house number on בן זכאי in אלעד"), "{}", next.user);
+    assert_eq!(place(call.slot("pickup")), "בן זכאי, אלעד");
+    assert!(!spoken(&d).contains("מספר בית"), "{}", spoken(&d));
 
     call.engine.on_agent_turn(
-        "45",
-        asking(&["destination"], decide(AgentAction::None, "לאיזו עיר נוסעים?", None, &[("pickup", "45")])),
+        "לז'בוטינסקי 3 בבני ברק",
+        asking(&["passengers"], decide(AgentAction::None, "", None, &[("destination", "ז'בוטינסקי 3, בני ברק")])),
         "",
     );
-    assert_eq!(place(call.slot("pickup")), "בן זכאי 45, אלעד", "the number joins its street");
-
-    // The destination's number, not known: its street is taken as it is.
-    call.engine.on_agent_turn(
-        "לז'בוטינסקי בבני ברק",
-        asking(&["destination"], decide(AgentAction::None, "", None, &[("destination", "ז'בוטינסקי, בני ברק")])),
-        "",
-    );
-    assert_eq!(call.slot("destination"), None);
-    call.engine.on_agent_turn(
-        "לא יודע",
-        asking(
-            &["passengers"],
-            decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "ז'בוטינסקי, בני ברק")]),
-        ),
-        "",
-    );
-    assert_eq!(place(call.slot("destination")), "ז'בוטינסקי, בני ברק");
+    assert_eq!(place(call.slot("destination")), "ז'בוטינסקי 3, בני ברק", "a number said is kept");
 }
 
 #[test]
@@ -1944,13 +1926,14 @@ fn a_street_without_a_number_the_city_lacks_gets_the_closest_offered() {
     let said = spoken(&d);
     assert!(said.contains("לא מצאתי את רמבם בביתר עילית") && said.contains("הרמב\"ן"), "{said}");
 
-    // Yes to it: the street, then its number on its own.
+    // Yes to it: the street, with no house number asked.
     let d = call.engine.on_agent_turn(
         "כן",
         asking(&["pickup"], decide(AgentAction::None, "", None, &[("pickup", "הרמב\"ן, ביתר עילית")])),
         "",
     );
-    assert!(spoken(&d).contains("באיזה מספר בית לאסוף"), "{}", spoken(&d));
+    assert_eq!(place(call.slot("pickup")), "הרמב\"ן, ביתר עילית");
+    assert!(!spoken(&d).contains("מספר בית"), "{}", spoken(&d));
 }
 
 #[test]
@@ -2395,4 +2378,51 @@ fn a_price_asked_with_only_the_cities_known_takes_them() {
     let (_, _, input) = action(&d).expect("the price is asked: {d:?}");
     assert_eq!(input["slots"]["price_from"]["spoken"], "אלעד");
     assert_eq!(input["slots"]["price_to"]["spoken"], "ירושלים");
+}
+
+// The live call of 2026-09-30 20:09: "מאפרת לביתר" came back "מפרט לביתר", ביתר was taken for the
+// pickup, and "מפרט" was not heard as אפרת.
+
+#[test]
+fn a_place_said_with_the_destinations_preposition_is_the_destination() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(beitar()));
+    let d = call.engine.on_agent_turn(
+        "אני צריך מפרט לביתר",
+        decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "ביתר")]),
+        "",
+    );
+    assert!(
+        call.engine.state.place_cities.get("destination").is_some_and(|c| c.contains("ביתר")),
+        "{:?}",
+        call.engine.state.place_cities
+    );
+    assert!(!call.engine.state.place_cities.contains_key("pickup"));
+    assert!(!spoken(&d).contains("לאסוף"), "not asked where in ביתר to pick up: {}", spoken(&d));
+    // Said with its own preposition, it stays.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(beitar()));
+    call.engine.on_agent_turn("מביתר", decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "ביתר")]), "");
+    assert!(call.engine.state.place_cities.contains_key("pickup"));
+}
+
+#[test]
+fn a_word_that_sounds_like_a_town_is_told_to_the_agent() {
+    let mut tsv = String::new();
+    for i in 0..25 {
+        for (code, town) in [("3650", "אפרת"), ("3780", "ביתר עילית"), ("1111", "מענית")] {
+            tsv.push_str(&format!("{code}\t{town}\t{}\tרחוב {i}\tofficial\n", 100 + i));
+        }
+    }
+    let g = callora_core::gazetteer::Gazetteer::from_tsv(&tsv);
+    assert_eq!(g.towns_sounding_like("אני צריך מפרט לביתר"), vec![("מפרט".to_string(), "אפרת".to_string())]);
+    assert!(g.towns_sounding_like("מאפרת לביתר").is_empty(), "the real names need no hint");
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(g)));
+    call.engine.hint_towns("אני צריך מפרט לביתר");
+    call.engine.hint_towns("אני צריך מפרט לביתר");
+    call.engine.hint_towns("צריך מונית");
+    let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "אני צריך מפרט לביתר");
+    assert_eq!(request.user.matches("sounds like אפרת").count(), 1, "{}", request.user);
+    assert!(!request.user.contains("מענית"), "the business's own word \"מונית\" is no town: {}", request.user);
 }
