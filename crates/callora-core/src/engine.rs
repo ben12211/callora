@@ -204,7 +204,8 @@ impl Engine {
             desk: self.desk,
         };
         probe.state.remember(Speaker::Caller, transcript);
-        let fields = probe.by_preposition(transcript, fields);
+        let fields = probe.with_patterns(transcript, fields);
+        let fields = probe.by_preposition(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
         !probe.apply_agent_fields(&fields).1.is_empty()
     }
@@ -249,7 +250,8 @@ impl Engine {
             desk: self.desk,
         };
         probe.state.remember(Speaker::Caller, transcript);
-        let fields = probe.by_preposition(transcript, fields);
+        let fields = probe.with_patterns(transcript, fields);
+        let fields = probe.by_preposition(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
         probe.apply_agent_fields(&fields);
         probe.expected_slot().filter(|next| !asks.contains(next))
@@ -480,7 +482,8 @@ impl Engine {
             }
         }
         let was_confirming = self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
-        let fields = self.by_preposition(transcript, &turn.fields);
+        let fields = self.with_patterns(transcript, &turn.fields);
+        let fields = self.by_preposition(transcript, &fields);
         let fields = self.answer_in_place(transcript, &fields);
         let (changed, rejected) = self.apply_agent_fields(&fields);
         // A detail changed after the read-back ("לא 40, 45"): read it back again, so the next
@@ -946,6 +949,34 @@ impl Engine {
                 }
             })
             .collect()
+    }
+
+    /// Details the caller said in words the business's patterns know ("אנחנו שלושה", "השארתי
+    /// תיק") that the agent left out of its reply: taken too, so no detail said is lost and
+    /// asked for again. Not places (the agent and the street list read those), not a bare
+    /// answer, and only while details are being collected.
+    fn with_patterns(&self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {
+        let Some(run) = &self.state.run else { return fields.to_vec() };
+        if !matches!(run.step, Step::Collecting { .. }) {
+            return fields.to_vec();
+        }
+        let pipeline = self.pipeline_of(run);
+        let ctx = crate::understanding::Context { awaiting_slot: None, awaiting_confirmation: false, ..self.context() };
+        let (u, _) = crate::understanding::fast_path(&self.business, &ctx, transcript);
+        let mut out = fields.to_vec();
+        for fill in u.slots {
+            let Some(cfg) = self.business.config.slots.get(&fill.slot) else { continue };
+            let wanted = cfg.kind != crate::config::SlotKind::Place
+                && !cfg.patterns.is_empty()
+                && pipeline.slots.iter().any(|ps| ps.slot == fill.slot)
+                && !run.slots.contains_key(&fill.slot)
+                && !out.iter().any(|(s, _)| *s == fill.slot);
+            if wanted {
+                tracing::info!(slot = %fill.slot, value = %fill.value.spoken(), "said, and left out by the agent; taken");
+                out.push((fill.slot.clone(), fill.value.spoken()));
+            }
+        }
+        out
     }
 
     /// A value passed under the name of the detail another task takes it from ("destination"

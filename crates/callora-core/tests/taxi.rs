@@ -2579,3 +2579,23 @@ fn a_price_question_takes_the_bookings_names_for_its_places() {
     );
     assert_eq!(place(call.slot("price_to")), "נתב״ג");
 }
+
+#[test]
+fn details_said_in_known_words_are_kept_when_the_agent_leaves_them_out() {
+    // Eval: "צריך מונית מהרצל 10 ברעננה לבאר שבע, אנחנו שלושה" came back without the passengers;
+    // "השארתי תיק במונית" without the item.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "צריך מונית מהרצל 10 ברעננה לבאר שבע, אנחנו שלושה",
+        decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "הרצל 10, רעננה"), ("destination", "באר שבע")]),
+        "",
+    );
+    assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 3 }));
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "השארתי תיק במונית אתמול בערב",
+        decide(AgentAction::None, "", Some("lost_item"), &[]),
+        "",
+    );
+    assert!(call.slot("item").is_some_and(|v| v.spoken().contains("תיק")), "{:?}", call.slot("item"));
+}
