@@ -2359,3 +2359,40 @@ fn the_silence_reprompt_does_not_say_the_line_is_noisy_again() {
     let said = spoken(&d);
     assert!(said.contains("שומעים אותי") && said.contains("כמה נוסעים") && !said.contains("רעש"), "{said}");
 }
+
+// The live call of 2026-09-30 19:16: "כן, רק כמה זה עולה?" to the read-back was answered with
+// "מאיפה הנסיעה?"; the agent passed the price question without the booking's places.
+
+#[test]
+fn a_price_asked_at_the_read_back_takes_the_bookings_route_and_passengers() {
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn(
+        "כן, רק כמה זה עולה?",
+        decide(AgentAction::Submit, "", Some("price_question"), &[]),
+        "",
+    );
+    let (run_id, name, input) = action(&d).expect("the price is asked at once: {d:?}");
+    assert_eq!(name, "estimate_price");
+    assert!(!spoken(&d).contains("מאיפה"), "{}", spoken(&d));
+    assert_eq!(input["slots"]["price_from"]["address"], "רבן יוחנן בן זכאי 40, אלעד");
+    assert_eq!(input["slots"]["price_to"]["spoken"], "סוכות 12, ירושלים");
+    assert_eq!(input["slots"]["passengers"], 3, "the quote is for the booking's passengers");
+    let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "price": 180, "response": "price_answer" })));
+    let said = spoken(&d);
+    assert!(said.contains("180₪") && said.contains("לשלוח"), "the price, then the read-back again: {said}");
+}
+
+#[test]
+fn a_price_asked_with_only_the_cities_known_takes_them() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "מאלעד לירושלים",
+        decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "אלעד"), ("destination", "ירושלים")]),
+        "",
+    );
+    let d = call.engine.on_agent_turn("כמה זה עולה?", decide(AgentAction::Submit, "", Some("price_question"), &[]), "");
+    let (_, _, input) = action(&d).expect("the price is asked: {d:?}");
+    assert_eq!(input["slots"]["price_from"]["spoken"], "אלעד");
+    assert_eq!(input["slots"]["price_to"]["spoken"], "ירושלים");
+}

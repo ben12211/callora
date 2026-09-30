@@ -427,6 +427,7 @@ impl Engine {
                         }
                     }
                     self.state.run = Some(self.new_run(p, &intent.id));
+                    self.fill_from_other_tasks();
                 }
             }
         }
@@ -928,7 +929,48 @@ impl Engine {
     }
 
     /// Defaults and customer-known values for anything still missing.
+    /// Details this task takes from another task of the call (`from_slot`): the booking under
+    /// way (suspended), then tasks done, then a place of which only the city is known yet.
+    fn fill_from_other_tasks(&mut self) {
+        let Some(run) = &self.state.run else { return };
+        let pipeline = self.pipeline_of(run).clone();
+        let mut found: Vec<(String, SlotValue)> = Vec::new();
+        for ps in &pipeline.slots {
+            let Some(source) = &ps.from_slot else { continue };
+            if run.slots.contains_key(&ps.slot) {
+                continue;
+            }
+            let value = self
+                .state
+                .suspended
+                .iter()
+                .rev()
+                .find_map(|r| r.slots.get(source).map(|s| s.value.clone()))
+                .or_else(|| self.state.completed.iter().rev().find_map(|c| c.slots.get(source).cloned()))
+                .or_else(|| {
+                    self.state.place_cities.get(source).map(|city| SlotValue::Place {
+                        spoken: city.clone(),
+                        address: None,
+                        customer_place: None,
+                    })
+                });
+            if let Some(v) = value {
+                found.push((ps.slot.clone(), v));
+            }
+        }
+        if let Some(run) = &mut self.state.run {
+            for (slot, value) in found {
+                tracing::info!(%slot, value = %value.spoken(), "taken from another task of the call");
+                run.slots.insert(
+                    slot,
+                    SlotState { value, confidence: 0.9, provenance: Provenance::Confirmed, confirmed: false },
+                );
+            }
+        }
+    }
+
     fn fill_defaults(&mut self, pipeline: &PipelineConfig) {
+        self.fill_from_other_tasks();
         let customer = self.state.customer.clone();
         let Some(run) = &mut self.state.run else { return };
         for ps in &pipeline.slots {

@@ -357,9 +357,9 @@
     "price_question": {
       "description": "הערכת מחיר",
       "slots": [
-        { "slot": "price_from", "required": true, "ask": "ask_price_from" },
-        { "slot": "price_to", "required": true, "ask": "ask_destination_price" },
-        { "slot": "passengers" },
+        { "slot": "price_from", "required": true, "ask": "ask_price_from", "from_slot": "pickup" },
+        { "slot": "price_to", "required": true, "ask": "ask_destination_price", "from_slot": "destination" },
+        { "slot": "passengers", "from_slot": "passengers" },
         { "slot": "round_trip" }
       ],
       "action": "estimate_price",

@@ -428,6 +428,12 @@ pub struct PipelineSlot {
     /// Take the value from the customer record when known (e.g. `home` for pickup).
     #[serde(default)]
     pub from_customer: Option<String>,
+    /// Take the value this slot has in another task of the call: a price question asked during
+    /// a booking takes its pickup, destination and passengers ("כן, רק כמה זה עולה?" was
+    /// answered with "מאיפה הנסיעה?" on a live call). A place of which only the city is known
+    /// yet is taken as that city.
+    #[serde(default)]
+    pub from_slot: Option<SlotId>,
     /// Optional, but asked once before the read-back when never asked or given (the note
     /// for the driver).
     #[serde(default)]
