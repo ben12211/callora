@@ -234,6 +234,10 @@ pub struct CallState {
     /// street in the city the caller names next.
     #[serde(default)]
     pub doubted_numbers: BTreeMap<String, String>,
+    /// Streets the system offered ("התכוונת לרבן יוחנן בן זכאי?"): a "yes" takes one without
+    /// the caller having said its words.
+    #[serde(default)]
+    pub offered_streets: Vec<String>,
     /// The caller turn at which the agent last said the line is noisy: said once per turn,
     /// not every time noise cuts in.
     #[serde(default)]
@@ -280,6 +284,7 @@ impl CallState {
             next_action_run: 1,
             waiting: false,
             doubted_numbers: BTreeMap::new(),
+            offered_streets: Vec::new(),
             noise_apology_turn: None,
         }
     }

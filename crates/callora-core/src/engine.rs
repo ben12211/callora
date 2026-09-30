@@ -834,10 +834,16 @@ impl Engine {
             .map(|t| t.text.as_str())
             .collect::<Vec<_>>()
             .join(". ");
-        // What the second hearing heard counts as said too.
+        // What the second hearing heard counts as said too, and the streets the system offered
+        // (a "yes" to "התכוונת לרבן יוחנן בן זכאי?" was refused as words never said).
         let heard = match &self.state.second_hearing {
             Some(second) => format!("{heard}. {second}"),
             None => heard,
+        };
+        let heard = if self.state.offered_streets.is_empty() {
+            heard
+        } else {
+            format!("{heard}. {}", self.state.offered_streets.join(". "))
         };
         // The optional questions asked before the read-back ("יש משהו שהנהג צריך לדעת?"): a "no"
         // to one is its answer, not its value (a live ride went out with the note "לא").
@@ -1211,6 +1217,11 @@ impl Engine {
                 let said_street = if said_street.is_empty() { heard.clone() } else { said_street };
                 let said_city =
                     city_before.clone().unwrap_or_else(|| city.split(" - ").next().unwrap_or(&city).to_string());
+                if let Some(s) = &suggestion {
+                    if !self.state.offered_streets.contains(s) {
+                        self.state.offered_streets.push(s.clone());
+                    }
+                }
                 let prompts = match &suggestion {
                     Some(s) if self.business.response("street_not_found_suggest").is_some() => vec![prompt(
                         "street_not_found_suggest",
@@ -1983,6 +1994,17 @@ impl Engine {
         }
     }
 
+    /// A plan without the "the line is noisy" said at its start.
+    fn without_noise_apology(&self, mut plan: SpeechPlan) -> SpeechPlan {
+        let apologies: Vec<String> = self
+            .business
+            .response("noisy_line")
+            .map(|r| r.variants.iter().map(|v| crate::text::normalize(v)).collect())
+            .unwrap_or_default();
+        plan.segments.retain(|s| !apologies.contains(&crate::text::normalize(&s.text)));
+        plan
+    }
+
     /// The last question alone ("לאן נוסעים?", not the "סגור." said before it).
     fn last_question(&self) -> Option<SpeechPlan> {
         self.state.last_plan.as_ref().and_then(|p| {
@@ -2035,19 +2057,15 @@ impl Engine {
                 return self.finish(out);
             }
         }
-        match &silence.response {
-            Some(r) => {
-                let ctx = self.render_ctx(None);
-                self.say(&mut out, r, ctx, false);
-                if let Some(last) = self.state.last_plan.clone() {
-                    out.speak(last, false);
-                }
-            }
-            None => {
-                if let Some(last) = self.state.last_plan.clone() {
-                    out.speak(last, false);
-                }
-            }
+        // What was said last, without its "סליחה, יש קצת רעש בקו.": a live call heard "הלו,
+        // שומעים אותי? סליחה, יש קצת רעש בקו. צריך מונית?".
+        let last = self.state.last_plan.clone().map(|p| self.without_noise_apology(p));
+        if let Some(r) = &silence.response {
+            let ctx = self.render_ctx(None);
+            self.say(&mut out, r, ctx, false);
+        }
+        if let Some(last) = last.filter(|p| !p.is_empty()) {
+            out.speak(last, false);
         }
         self.finish(out)
     }

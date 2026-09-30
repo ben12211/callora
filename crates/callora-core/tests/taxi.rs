@@ -2241,3 +2241,66 @@ fn hesitation_in_english_letters_is_noise() {
         assert!(fast_path(&b, &call.engine.context(), um).0.noise, "{um}");
     }
 }
+
+// The live call of 2026-09-30 16:48: "בן זכאי" came back "בן זה קיץ" and "באיזה קו"; the
+// silence reprompt said "סליחה, יש קצת רעש בקו" again.
+
+fn elad_streets() -> Arc<callora_core::gazetteer::Gazetteer> {
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         1309\tאלעד\t120\tרבי עקיבא\tofficial\n1309\tאלעד\t130\tשמעון הצדיק\tofficial\n\
+         1309\tאלעד\t140\tהרי\"ף\tofficial\n1309\tאלעד\t150\tבעלי התוספות\tofficial\n",
+    ))
+}
+
+#[test]
+fn a_street_that_sounds_like_the_one_heard_is_offered() {
+    for heard in ["בן זה קיץ 46, אלעד", "באיזה קו 46, אלעד"] {
+        let (mut call, _) = Call::new(business(&[]));
+        call.engine.set_gazetteer(Some(elad_streets()));
+        call.engine.on_agent_turn(
+            "מבן זכאי 45 באלעד לאלעד",
+            decide(
+                AgentAction::None,
+                "",
+                Some("book_ride"),
+                &[("pickup", "בן זכאי 45, אלעד"), ("destination", "אלעד")],
+            ),
+            "",
+        );
+        let d = call.engine.on_agent_turn(
+            heard,
+            decide(AgentAction::None, "", Some("book_ride"), &[("destination", heard)]),
+            "",
+        );
+        let said = spoken(&d);
+        assert!(said.contains("התכוונת") && said.contains("בן זכאי"), "{heard}: {said}");
+        assert_eq!(call.slot("destination"), None);
+        // "כן": the street offered, with the number said.
+        call.engine.on_agent_turn(
+            "כן",
+            decide(AgentAction::None, "", Some("book_ride"), &[("destination", "רבן יוחנן בן זכאי 46, אלעד")]),
+            "",
+        );
+        assert_eq!(place(call.slot("destination")), "רבן יוחנן בן זכאי 46, אלעד");
+    }
+}
+
+#[test]
+fn the_silence_reprompt_does_not_say_the_line_is_noisy_again() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "מאלעד בן זכאי 45 לירושלים",
+        decide(
+            AgentAction::None,
+            "סגור. כמה נוסעים?",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 45, אלעד"), ("destination", "ירושלים")],
+        ),
+        "",
+    );
+    assert!(spoken(&call.engine.on_unheard()).contains("רעש"));
+    let d = call.engine.on_silence();
+    let said = spoken(&d);
+    assert!(said.contains("שומעים אותי") && said.contains("כמה נוסעים") && !said.contains("רעש"), "{said}");
+}

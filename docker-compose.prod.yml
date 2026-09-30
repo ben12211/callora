@@ -48,6 +48,7 @@ services:
       # ElevenLabs speaks (library + dynamic), the LLMs only help understanding. Each one
       # missing degrades the service instead of stopping it.
       STT_PROVIDER: ${STT_PROVIDER:-}
+      OPENAI_STT_HINTS: ${OPENAI_STT_HINTS:-}
       DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
       DEEPGRAM_STT_MODEL: ${DEEPGRAM_STT_MODEL:-}
       CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}

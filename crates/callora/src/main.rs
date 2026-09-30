@@ -79,6 +79,13 @@ enum Command {
         file: PathBuf,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// The hints a call gives while this city's street is asked: the city, its streets and
+        /// the business's words.
+        #[arg(long)]
+        city: Option<String>,
+        /// The business's words as hints (what a call gives between street questions).
+        #[arg(long)]
+        business_words: bool,
     },
     /// Print the agent's system prompt and reply schema, as JSON.
     AgentPrompt {
@@ -266,12 +273,15 @@ fn load_gazetteer() -> Option<Arc<callora_core::gazetteer::Gazetteer>> {
 fn speech_to_text() -> Arc<dyn SpeechToText> {
     let openai = || {
         env("OPENAI_API_KEY").map(|key| {
-            Arc::new(callora_providers::openai_stt::OpenAiStt::new(
-                key,
-                env("OPENAI_STT_URL"),
-                env("OPENAI_STT_MODEL"),
-                env("OPENAI_STT_PROMPT"),
-            )) as Arc<dyn SpeechToText>
+            Arc::new(
+                callora_providers::openai_stt::OpenAiStt::new(
+                    key,
+                    env("OPENAI_STT_URL"),
+                    env("OPENAI_STT_MODEL"),
+                    env("OPENAI_STT_PROMPT"),
+                )
+                .with_hints(env("OPENAI_STT_HINTS").as_deref() == Some("1")),
+            ) as Arc<dyn SpeechToText>
         })
     };
     let deepgram = || {
@@ -407,9 +417,21 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::SttProbe { file, limit } => {
+        Command::SttProbe { file, limit, city, business_words } => {
             init_tracing();
-            stt_probe(&file, limit).await
+            let mut terms = Vec::new();
+            if let Some(city) = &city {
+                let g = load_gazetteer().context("the streets list is needed for --city")?;
+                terms.push(city.clone());
+                terms.extend(g.street_keyterms(city, 38));
+            }
+            if city.is_some() || business_words {
+                let reg = load_registry(&cli.businesses)?;
+                terms.extend(reg.by_id("taxi").context("no taxi business")?.stt_keyterms());
+            }
+            let mut seen = std::collections::HashSet::new();
+            terms.retain(|t| seen.insert(t.clone()));
+            stt_probe(&file, limit, &terms).await
         }
         Command::Understand { business, text } => {
             let reg = load_registry(&cli.businesses)?;
@@ -516,7 +538,7 @@ impl SpeechToText for SttWithBackup {
 /// `callora stt-probe`: stored caller utterances (the JSON lines the calls export makes:
 /// `heard`, `audio` as base64 μ-law) through the configured recognizer, as a call streams
 /// them, with the time from the end of speech to the transcript.
-async fn stt_probe(file: &Path, limit: usize) -> anyhow::Result<()> {
+async fn stt_probe(file: &Path, limit: usize, keyterms: &[String]) -> anyhow::Result<()> {
     use base64::Engine as _;
     let stt = speech_to_text();
     println!("recognizer: {}", stt.name());
@@ -526,7 +548,7 @@ async fn stt_probe(file: &Path, limit: usize) -> anyhow::Result<()> {
         let row: serde_json::Value = serde_json::from_str(&line.replace(&bs.repeat(2), &bs))?;
         let b64: String = row["audio"].as_str().unwrap_or("").chars().filter(|c| !c.is_whitespace()).collect();
         let audio = base64::engine::general_purpose::STANDARD.decode(b64)?;
-        let mut session = stt.open("he-IL", &[]).await?;
+        let mut session = stt.open("he-IL", keyterms).await?;
         for frame in audio.chunks(160) {
             session.input.send(callora_runtime::ports::SttInput::Audio(bytes::Bytes::copy_from_slice(frame))).await?;
             tokio::time::sleep(Duration::from_millis(20)).await;

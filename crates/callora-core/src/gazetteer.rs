@@ -618,6 +618,25 @@ impl Gazetteer {
                 place: None,
             });
         }
+        // By sound first: "בן זה קיץ" and "באיזה קו" are "בן זכאי" (ב-נ-ז-ק), letters apart
+        // but a consonant away; one clear match is offered before the spelling neighbours.
+        let heard_sound = sound(&candidates[0]);
+        let mut by_sound: Vec<(usize, &String)> = if heard_sound.chars().count() >= 3 {
+            city.street_keys
+                .iter()
+                .filter(|(k, _)| sound(k).chars().count() >= 3)
+                .map(|(k, &si)| (distance(&heard_sound, &sound(k)), &city.streets[si]))
+                .filter(|(d, _)| *d <= 1)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        by_sound.sort();
+        by_sound.dedup_by(|a, b| a.1 == b.1);
+        let sounds_like = match by_sound.as_slice() {
+            [(0, s)] | [(0, s), (1, _), ..] | [(1, s)] => Some((*s).clone()),
+            _ => None,
+        };
         let mut near: Vec<(usize, &String)> = city
             .street_keys
             .iter()
@@ -625,7 +644,7 @@ impl Gazetteer {
             .chain(city.place_keys.iter().map(|(k, &pi)| (distance(&candidates[0], k), &city.places[pi].name)))
             .collect();
         near.sort();
-        let mut closest: Vec<String> = Vec::new();
+        let mut closest: Vec<String> = sounds_like.into_iter().collect();
         for (d, s) in near {
             // Only names a third off at most: "עונה" is three letters from anything short.
             if d > (candidates[0].chars().count() / 3).max(1) || closest.len() == 3 {

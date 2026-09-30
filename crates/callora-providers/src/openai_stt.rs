@@ -27,11 +27,17 @@ pub const DEFAULT_PROMPT: &str = "A phone call in Hebrew to a business in Israel
                                   house numbers, numbers of people, and names. Write everything in Hebrew letters, \
                                   names and English words too: דוד, ביי, אוקיי.";
 
+/// Hints at most: the prompt is context, not a list the recognizer must pick from.
+const MAX_HINTS: usize = 40;
+
 pub struct OpenAiStt {
     api_key: String,
     url: String,
     model: String,
     prompt: String,
+    /// The words the call expects (keyterms) go into the prompt. Off by default: a place
+    /// list made another recognizer write places nobody said.
+    hints: bool,
 }
 
 impl OpenAiStt {
@@ -42,11 +48,28 @@ impl OpenAiStt {
             url: nonblank(url).unwrap_or_else(|| DEFAULT_URL.into()),
             model: nonblank(model).unwrap_or_else(|| DEFAULT_MODEL.into()),
             prompt: nonblank(prompt).unwrap_or_else(|| DEFAULT_PROMPT.into()),
+            hints: false,
         }
     }
 
-    pub fn session_update(&self, language: &str) -> Value {
+    pub fn with_hints(mut self, hints: bool) -> Self {
+        self.hints = hints;
+        self
+    }
+
+    /// The prompt, with the words the call expects when hints are on: "בן זכאי" in אלעד was
+    /// written "בן זה קיץ" and "באיזה קו" without them.
+    fn prompt_for(&self, keyterms: &[String]) -> String {
+        let terms: Vec<&str> = keyterms.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).take(MAX_HINTS).collect();
+        if !self.hints || terms.is_empty() {
+            return self.prompt.clone();
+        }
+        format!("{} Words that may come up: {}.", self.prompt, terms.join(", "))
+    }
+
+    pub fn session_update(&self, language: &str, keyterms: &[String]) -> Value {
         let lang = language.split('-').next().unwrap_or(language);
+        let prompt = self.prompt_for(keyterms);
         json!({
             "type": "session.update",
             "session": {
@@ -54,7 +77,7 @@ impl OpenAiStt {
                 "audio": {
                     "input": {
                         "format": { "type": "audio/pcm", "rate": 24000 },
-                        "transcription": { "model": self.model, "prompt": self.prompt, "languages": [lang] },
+                        "transcription": { "model": self.model, "prompt": prompt, "languages": [lang] },
                         "turn_detection": null
                     }
                 }
@@ -119,14 +142,14 @@ fn event(v: &Value, partial: &mut String) -> Option<SttEvent> {
 
 #[async_trait]
 impl SpeechToText for OpenAiStt {
-    async fn open(&self, language: &str, _keyterms: &[String]) -> anyhow::Result<SttSession> {
+    async fn open(&self, language: &str, keyterms: &[String]) -> anyhow::Result<SttSession> {
         let mut request = self.url.as_str().into_client_request()?;
         request.headers_mut().insert("Authorization", format!("Bearer {}", self.api_key).parse()?);
         let (ws, _) =
             tokio::time::timeout(std::time::Duration::from_secs(8), tokio_tungstenite::connect_async(request))
                 .await??;
         let (mut sink, mut stream) = ws.split();
-        sink.send(Message::Text(self.session_update(language).to_string().into())).await?;
+        sink.send(Message::Text(self.session_update(language, keyterms).to_string().into())).await?;
         let (in_tx, mut in_rx) = mpsc::channel::<SttInput>(512);
         let (ev_tx, ev_rx) = mpsc::channel::<SttEvent>(64);
 
@@ -173,7 +196,7 @@ mod tests {
     #[test]
     fn the_session_asks_for_hebrew_pcm_and_manual_turns() {
         let s = OpenAiStt::new("k".into(), None, None, None);
-        let u = s.session_update("he-IL");
+        let u = s.session_update("he-IL", &["בן זכאי".into()]);
         assert_eq!(u["session"]["type"], "transcription");
         let input = &u["session"]["audio"]["input"];
         assert_eq!(input["format"], json!({ "type": "audio/pcm", "rate": 24000 }));
@@ -181,6 +204,24 @@ mod tests {
         assert_eq!(input["transcription"]["languages"], json!(["he"]));
         assert!(input["turn_detection"].is_null(), "the runtime's VAD ends the turn");
         assert!(input["transcription"].get("keywords").is_none(), "no place lists: they invent places");
+        assert!(
+            !input["transcription"]["prompt"].as_str().unwrap_or("").contains("בן זכאי"),
+            "hints are off by default"
+        );
+    }
+
+    #[test]
+    fn hints_go_into_the_prompt_when_on() {
+        let s = OpenAiStt::new("k".into(), None, None, None).with_hints(true);
+        let terms: Vec<String> = (0..60).map(|i| format!("רחוב {i}")).collect();
+        let u = s.session_update("he-IL", &terms);
+        let prompt = u["session"]["audio"]["input"]["transcription"]["prompt"].as_str().unwrap_or("").to_string();
+        assert!(prompt.starts_with(DEFAULT_PROMPT) && prompt.contains("רחוב 0, רחוב 1"), "{prompt}");
+        assert!(prompt.contains("רחוב 39") && !prompt.contains("רחוב 40"), "forty at most");
+        assert_eq!(
+            s.session_update("he-IL", &[])["session"]["audio"]["input"]["transcription"]["prompt"],
+            DEFAULT_PROMPT
+        );
     }
 
     #[test]
