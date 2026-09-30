@@ -756,9 +756,12 @@ impl Session {
                 }
             }
             Ev::AgentAsks { turn, asks } => {
+                let (transcript, fields) =
+                    self.pending_agent.as_ref().map(|p| (p.transcript.clone(), p.fields.clone())).unwrap_or_default();
                 let held = self
                     .engine
-                    .moves_on(&self.pending_agent.as_ref().map(|p| p.fields.clone()).unwrap_or_default(), &asks);
+                    .moves_on(&fields, &asks)
+                    .or_else(|| self.engine.out_of_order(&transcript, &fields, &asks));
                 if let Some(p) = self.pending_agent.as_mut().filter(|p| p.turn == turn) {
                     p.asks.clone_from(&asks);
                     if let Some(slot) = held {

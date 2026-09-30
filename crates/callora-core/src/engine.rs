@@ -209,6 +209,50 @@ impl Engine {
         !probe.apply_agent_fields(&fields).1.is_empty()
     }
 
+    /// The detail a task with a fixed order (`strict_order`) asks for next: the first one
+    /// missing, a required one until it is given, an optional one until it was asked once.
+    pub fn expected_slot(&self) -> Option<String> {
+        let run = self.state.run.as_ref()?;
+        let pipeline = self.pipeline_of(run);
+        if !pipeline.strict_order || !matches!(run.step, Step::Collecting { .. }) {
+            return None;
+        }
+        pipeline
+            .slots
+            .iter()
+            .find(|ps| {
+                !run.slots.contains_key(&ps.slot)
+                    && ps.default.is_none()
+                    && (ps.required
+                        || (ps.ask.is_some()
+                            && !self.state.asked_slots.contains(&ps.slot)
+                            && !self.state.asked_before_confirm.contains(&ps.slot)))
+            })
+            .map(|ps| ps.slot.clone())
+    }
+
+    /// The detail next in the order, when a question asking for `asks` would be out of it,
+    /// with this reply's values taken (on a copy of the call). The runtime holds the question
+    /// back and the engine asks the right one.
+    pub fn out_of_order(&self, transcript: &str, fields: &[(String, String)], asks: &[String]) -> Option<String> {
+        if asks.is_empty() {
+            return None;
+        }
+        let mut probe = Engine {
+            business: self.business.clone(),
+            state: self.state.clone(),
+            chooser: self.chooser.clone(),
+            offered_more: self.offered_more,
+            gazetteer: self.gazetteer.clone(),
+            desk: self.desk,
+        };
+        probe.state.remember(Speaker::Caller, transcript);
+        let fields = probe.by_preposition(transcript, fields);
+        let fields = probe.answer_in_place(transcript, &fields);
+        probe.apply_agent_fields(&fields);
+        probe.expected_slot().filter(|next| !asks.contains(next))
+    }
+
     /// A place, before `slot` in the task's order, of which only part is known (its city, or a
     /// street waiting for its number): its question comes first.
     fn partial_place_before(&self, slot: &str) -> Option<String> {
@@ -268,6 +312,7 @@ impl Engine {
     /// given, and the caller's next answer is taken as the answer to it.
     fn note_asked(&mut self, slots: &[String]) {
         self.state.last_asks = slots.to_vec();
+        self.state.asked_slots.extend(slots.iter().cloned());
         for slot in slots {
             if !self.state.open_questions.contains(slot) {
                 self.state.open_questions.push(slot.clone());
@@ -515,6 +560,21 @@ impl Engine {
             return self.finish(out);
         }
 
+        // A task with a fixed order: a question about any other detail than the next is replaced
+        // by the next one ("כמה נוסעים?" with the destination still missing).
+        if spoken.is_empty() && action == AgentAction::None {
+            let mut asks = turn.asks.clone();
+            if let Some(slot) = turn.phrase.as_deref().and_then(|p| self.slot_asked_by(p)) {
+                asks.push(slot);
+            }
+            if !asks.is_empty() {
+                if let Some(next) = self.expected_slot().filter(|next| !asks.contains(next)) {
+                    tracing::info!(transcript, ?asks, %next, "a question out of the task's order; asking the next one");
+                    self.next_question(&mut out);
+                    return self.finish(out);
+                }
+            }
+        }
         // Its recorded question asks past a place given only in part: that place's question.
         if spoken.is_empty() && action == AgentAction::None {
             let asked = turn.phrase.as_deref().and_then(|p| self.slot_asked_by(p));
@@ -790,6 +850,8 @@ impl Engine {
                 && ps.default.is_none()
                 && (ps.required || ps.ask.is_some())
                 && !(ps.ask_before_confirm && self.state.asked_before_confirm.contains(&ps.slot))
+                // In a fixed order, an optional question is asked once ("על שם מי?" "לא משנה").
+                && !(pipeline.strict_order && !ps.required && self.state.asked_slots.contains(&ps.slot))
         });
         match next.map(|ps| (ps.slot.clone(), ps.ask_before_confirm)) {
             Some((slot, before_confirm)) => {

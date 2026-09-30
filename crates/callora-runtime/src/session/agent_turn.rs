@@ -319,6 +319,17 @@ impl Session {
             p.hold_say = true;
             return;
         }
+        // Out of the task's order: the engine asks the next question instead.
+        if let Some(slot) = asked.clone() {
+            if let Some(next) = self.engine.out_of_order(&p.transcript, &p.fields, &[slot]) {
+                tracing::info!(call = %self.info.call_sid, phrase = %id, %next, "the phrase is out of the task's order; held");
+                if let Some(p) = self.pending_agent.as_mut() {
+                    p.hold_say = true;
+                    p.held_for = Some(next);
+                }
+                return;
+            }
+        }
         // One that asks past a place given only in part: the engine asks for the place first.
         if self.engine.phrase_skips_a_place(&p.transcript, &p.fields, &id) {
             tracing::info!(call = %self.info.call_sid, phrase = %id, "the phrase skips a place given in part; held");

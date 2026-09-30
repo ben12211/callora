@@ -251,7 +251,7 @@
     "rules": [
       "Service area: all of Israel. Any Israeli city, street or landmark is a valid place.",
       "For a ride you need pickup, destination and the number of passengers; pickup time is now unless the caller says otherwise.",
-      "A ride needs the pickup (city and street, or a named place in a city), the destination (city and street; a named place is fine). Never ask for a house number; when the caller says one, pass it with the street and the number of passengers; the time is now unless the caller says otherwise. Before the read-back also: the name for the booking (\"על שם מי לרשום את ההזמנה?\"; skip it when the system knows the customer) and one question about the driver (\"יש משהו שהנהג צריך לדעת?\"; luggage, a child seat or \"call when you arrive\" go in notes; \"אין\" means none). Take every detail the caller gives, in any order. Ask for places one at a time and one step at a time, the pickup before the destination: its city, then its street, then its house number, each in a question of its own that names which place it is (\"מאיזו עיר לאסוף?\", \"איפה באלעד לאסוף?\", \"באיזה מספר בית לאסוף?\", then \"לאיזו עיר נוסעים?\", \"לאן בבני ברק?\"). Never ask about two places in one question. Other details may share a question (\"כמה נוסעים, ועל שם מי לרשום?\"). When everything is in, read_back.",
+      "A ride needs the pickup (city and street, or a named place in a city), the destination (city and street; a named place is fine). Never ask for a house number; when the caller says one, pass it with the street and the number of passengers; the time is now unless the caller says otherwise. Before the read-back also: the name for the booking (\"על שם מי לרשום את ההזמנה?\"; skip it when the system knows the customer) and one question about the driver (\"יש משהו שהנהג צריך לדעת?\"; luggage, a child seat or \"call when you arrive\" go in notes; \"אין\" means none). Take every detail the caller gives, in any order. Ask for places one at a time and one step at a time, the pickup before the destination: its city, then its street, then its house number, each in a question of its own that names which place it is (\"מאיזו עיר לאסוף?\", \"איפה באלעד לאסוף?\", \"באיזה מספר בית לאסוף?\", then \"לאיזו עיר נוסעים?\", \"לאן בבני ברק?\"). Never ask about two places in one question. Other details may share a question (\"כמה נוסעים, ועל שם מי לרשום?\"). When everything is in, read_back. The questions come in a fixed order, always: pickup (city, then street), destination (city, then street), passengers, name, the note for the driver, then the read-back. Ask only for the first detail still missing in that order; details the caller gives early are kept and not asked again. A question about any other detail is replaced by the system.",
       "Examples: nothing known yet → phrase ask_route (\"מאיפה לאן?\"). Caller \"מאלעד לבני ברק\" → both cities are noted → the pickup street first: \"איפה באלעד לאסוף?\"; then \"לאן בבני ברק?\". Caller \"מבן זכאי 45 באלעד לבני ברק\" → the pickup is complete → \"לאן בבני ברק?\". Caller \"לא יודע\" to a street question about the destination → the city is enough → go on.",
       "Small talk together with a request gets one short answer that goes straight to the request: caller \"מה המצב? אני יכול להזמין מונית?\" → say \"סבבה, מאיפה לאן?\" (never only \"הכל טוב\" when they asked for something).",
       "When the system did not accept a detail, ask for it again with the short question (\"כמה נוסעים?\"); do not explain the system's limits.",
@@ -336,6 +336,7 @@
         { "slot": "notes", "ask": "ask_notes", "ask_before_confirm": true }
       ],
       "confirm": { "response": "confirm_ride", "ask_change": "ask_change" },
+      "strict_order": true,
       "action": "create_ride",
       "filler": "filler_searching",
       "on_success": "ride_booked",
@@ -369,6 +370,7 @@
         { "slot": "round_trip" },
         { "slot": "asks_about" }
       ],
+      "strict_order": true,
       "action": "estimate_price",
       "filler": "filler_checking",
       "on_success": "price_answer",

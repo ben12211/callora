@@ -238,6 +238,9 @@ pub struct CallState {
     /// the caller having said its words.
     #[serde(default)]
     pub offered_streets: Vec<String>,
+    /// Every detail a question has asked for in this call.
+    #[serde(default)]
+    pub asked_slots: BTreeSet<String>,
     /// The caller turn at which the agent last said the line is noisy: said once per turn,
     /// not every time noise cuts in.
     #[serde(default)]
@@ -285,6 +288,7 @@ impl CallState {
             waiting: false,
             doubted_numbers: BTreeMap::new(),
             offered_streets: Vec::new(),
+            asked_slots: BTreeSet::new(),
             noise_apology_turn: None,
         }
     }

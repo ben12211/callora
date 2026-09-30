@@ -1582,7 +1582,8 @@ fn a_question_that_moves_on_past_an_unanswered_one_asks_it_again() {
     assert!(said.contains("איפה באלעד לאסוף"), "the street again, by its own question, in its city: {said}");
     assert!(!said.contains("על שם מי"), "not the next question: {said}");
 
-    // The street given: the open question is closed and the call goes on.
+    // The street given: the open question is closed, and the next question is the next in the
+    // booking's order (the destination), not the name the agent asked for.
     let d = call.engine.on_agent_turn(
         "בן זכאי 45",
         asking(
@@ -1591,8 +1592,12 @@ fn a_question_that_moves_on_past_an_unanswered_one_asks_it_again() {
         ),
         "",
     );
-    assert!(spoken(&d).contains("על שם מי"), "{}", spoken(&d));
-    assert!(callora_core::engine::open_questions(call.engine.business(), &call.engine.state).is_empty());
+    assert!(spoken(&d).contains("לאן") && !spoken(&d).contains("על שם מי"), "{}", spoken(&d));
+    assert_eq!(
+        callora_core::engine::open_questions(call.engine.business(), &call.engine.state),
+        ["destination"],
+        "the pickup's question is closed; the destination's is open"
+    );
 }
 
 #[test]
@@ -1748,6 +1753,14 @@ fn the_street_question_names_the_city_and_a_wrong_city_is_corrected() {
     );
     let (mut call, _) = Call::new(business(&[]));
     call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "מז'בוטינסקי 3 בבני ברק",
+        asking(
+            &["destination"],
+            decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "ז'בוטינסקי 3, בני ברק")]),
+        ),
+        "",
+    );
     call.engine.on_agent_turn(
         "לברקת",
         asking(&["destination"], decide(AgentAction::None, "", Some("book_ride"), &[("destination", "ברקת")])),
@@ -2451,4 +2464,52 @@ fn how_long_a_ride_takes_is_said_from_the_price_list() {
         serde_json::json!({ "price": 120, "duration": "34 דקות", "distance_km": 22, "response": "ride_time_answer" });
     let said = spoken(&call.engine.on_action_result(run_id, Ok(quote)));
     assert!(said.contains("הנסיעה בערך 34 דקות, 22 קילומטר."), "{said}");
+}
+
+#[test]
+fn the_booking_asks_in_its_order_whatever_the_agent_writes() {
+    // The owner: a fixed order the agent cannot change. Pickup, destination, passengers,
+    // name, note; details given early are kept, and an optional question is asked once.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    // The agent asks for the passengers first: the pickup is asked instead.
+    let d = call.engine.on_agent_turn(
+        "צריך מונית",
+        asking(&["passengers"], decide(AgentAction::None, "", Some("book_ride"), &[])),
+        "",
+    );
+    assert!(spoken(&d).contains("לאסוף") || spoken(&d).contains("אוספים"), "{}", spoken(&d));
+    // The pickup and the passengers together: both kept; the agent's name question gives way
+    // to the destination.
+    let d = call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד, אנחנו שלושה",
+        asking(
+            &["customer_name"],
+            decide(AgentAction::None, "", None, &[("pickup", "בן זכאי 40, אלעד"), ("passengers", "3")]),
+        ),
+        "",
+    );
+    assert_eq!(call.slot("passengers").map(|v| v.spoken()).as_deref(), Some("3"));
+    assert!(spoken(&d).contains("לאן"), "{}", spoken(&d));
+    // The destination given: the passengers are known, so the name comes next.
+    let d = call.engine.on_agent_turn(
+        "לסוכות 12 בירושלים",
+        asking(&["notes"], decide(AgentAction::None, "", None, &[("destination", "סוכות 12, ירושלים")])),
+        "",
+    );
+    assert!(spoken(&d).contains("על שם מי"), "{}", spoken(&d));
+    // No name: asked once, the note comes next and the name is not asked again.
+    let d =
+        call.engine.on_agent_turn("לא משנה", asking(&["customer_name"], decide(AgentAction::None, "", None, &[])), "");
+    assert!(spoken(&d).contains("נהג") && !spoken(&d).contains("על שם מי"), "{}", spoken(&d));
+    // In the runtime, the agent's question out of order is held before it plays.
+    let fields = [("destination".to_string(), "סוכות 12, ירושלים".to_string())];
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "", Some("book_ride"), &[]), "");
+    assert_eq!(
+        call.engine.out_of_order("לסוכות 12 בירושלים", &fields, &["passengers".into()]).as_deref(),
+        Some("pickup")
+    );
+    assert_eq!(call.engine.out_of_order("לסוכות 12 בירושלים", &fields, &["pickup".into()]), None);
 }

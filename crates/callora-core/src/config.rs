@@ -410,6 +410,11 @@ pub struct PipelineConfig {
     /// What to do once the pipeline finishes.
     #[serde(default)]
     pub after: AfterPipeline,
+    /// The questions come in the order of `slots`, always: a question the agent writes about
+    /// any other detail is held back and the next one in the order asked instead. Details the
+    /// caller gives out of order are taken; an optional question is asked once.
+    #[serde(default)]
+    pub strict_order: bool,
     /// Said after the task instead of "anything else?", when no task under way is resumed
     /// ("להזמין מונית?" after a price).
     #[serde(default)]
