@@ -953,8 +953,9 @@ impl Engine {
 
     /// Details the caller said in words the business's patterns know ("אנחנו שלושה", "השארתי
     /// תיק") that the agent left out of its reply: taken too, so no detail said is lost and
-    /// asked for again. Not places (the agent and the street list read those), not a bare
-    /// answer, and only while details are being collected.
+    /// asked for again. Not a place that needs its street (the agent and the street list read
+    /// those; a city is enough for a price: "לנתב״ג"), not a bare answer, and only while
+    /// details are being collected.
     fn with_patterns(&self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {
         let Some(run) = &self.state.run else { return fields.to_vec() };
         if !matches!(run.step, Step::Collecting { .. }) {
@@ -964,9 +965,17 @@ impl Engine {
         let ctx = crate::understanding::Context { awaiting_slot: None, awaiting_confirmation: false, ..self.context() };
         let (u, _) = crate::understanding::fast_path(&self.business, &ctx, transcript);
         let mut out = fields.to_vec();
-        for fill in u.slots {
+        for mut fill in u.slots {
+            // Read under the name of the detail this task takes it from ("destination" for a
+            // price question's "price_to").
+            if !pipeline.slots.iter().any(|ps| ps.slot == fill.slot) {
+                if let Some(t) = pipeline.slots.iter().find(|ps| ps.from_slot.as_deref() == Some(fill.slot.as_str())) {
+                    fill.slot = t.slot.clone();
+                }
+            }
             let Some(cfg) = self.business.config.slots.get(&fill.slot) else { continue };
-            let wanted = cfg.kind != crate::config::SlotKind::Place
+            let street_needed = cfg.kind == crate::config::SlotKind::Place && (cfg.precise || cfg.street_once);
+            let wanted = !street_needed
                 && !cfg.patterns.is_empty()
                 && pipeline.slots.iter().any(|ps| ps.slot == fill.slot)
                 && !run.slots.contains_key(&fill.slot)

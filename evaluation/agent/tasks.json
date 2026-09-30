@@ -44,7 +44,7 @@
         "caller": "השארתי תיק במונית אתמול בערב",
         "expect": {
           "task": "lost_item",
-          "fields": {
+          "slots": {
             "item": "תיק"
           }
         }

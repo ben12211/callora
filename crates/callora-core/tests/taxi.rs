@@ -2599,3 +2599,15 @@ fn details_said_in_known_words_are_kept_when_the_agent_leaves_them_out() {
     );
     assert!(call.slot("item").is_some_and(|v| v.spoken().contains("תיק")), "{:?}", call.slot("item"));
 }
+
+#[test]
+fn a_price_questions_place_said_is_kept_when_the_agent_leaves_it_out() {
+    // Eval: "כמה עולה מונית לנתב\"ג?" came back with no fields and "מאיפה יוצאים?".
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "כמה עולה מונית לנתב\"ג?",
+        asking(&["price_from"], decide(AgentAction::None, "מאיפה יוצאים?", Some("price_question"), &[])),
+        "",
+    );
+    assert!(place(call.slot("price_to")).contains("נתב"), "{:?}", call.slot("price_to"));
+}
