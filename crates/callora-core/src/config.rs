@@ -480,6 +480,9 @@ fn default_timeout_ms() -> u64 {
 fn default_attempts() -> u32 {
     1
 }
+fn default_cache_minutes() -> u64 {
+    30
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -491,6 +494,16 @@ pub enum ActionBackend {
         /// Optional environment variable holding a bearer token.
         #[serde(default)]
         token_env: Option<String>,
+    },
+    /// A price-list bot asked in a chat (WhatsApp) on the business's behalf: the question from
+    /// `query` ("מ {from} ל{to}", the cities of the task's places), the answer read as a
+    /// price list and quoted for the ride (see `price_list`). Unavailable until the owner
+    /// picks the account and the bot's chat on the settings page.
+    PriceBot {
+        query: String,
+        /// Minutes the answer to the same question is used again without asking.
+        #[serde(default = "default_cache_minutes")]
+        cache_minutes: u64,
     },
     /// A fixed result. For demos, tests, and businesses not yet integrated.
     Mock {

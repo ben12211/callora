@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Headphones, PhoneForwarded, PhoneIncoming, PhoneOutgoing, Plus, Trash2, UserRoundCheck } from "lucide-react";
 import { type DeskSettings, type SettingsData, Unauthorized, useApi } from "../api";
 import { Badge, Button, Card, Field, FIELD, Input, PageHeader, Problem, Skeleton, cx, useToast } from "../ui";
+import { PriceBotCard } from "./PriceBot";
 
 const MUSIC: Record<string, string> = {
   classical: "קלאסית",
@@ -22,7 +23,7 @@ export function Settings() {
   const settings = useApi<SettingsData>("/api/settings");
   return (
     <>
-      <PageHeader title="הגדרות" subtitle="מה קורה כשהשיחה צריכה בן אדם" />
+      <PageHeader title="הגדרות" subtitle="העברה למוקד, ומאיפה הסוכן יודע מחירים" />
       {settings.error && <Problem>{settings.error}</Problem>}
       {!settings.data && !settings.error ? (
         <div className="grid max-w-3xl gap-6">
@@ -50,6 +51,9 @@ export function Settings() {
           </ol>
           {settings.data.businesses.map((b) => (
             <DeskCard key={b.id} id={b.id} name={b.name} desk={b.desk} music={settings.data!.music} canSave={settings.data!.saving} />
+          ))}
+          {settings.data.businesses.map((b) => (
+            <PriceBotCard key={`price-${b.id}`} id={b.id} bot={b.price_bot} whatsapp={settings.data!.whatsapp} canSave={settings.data!.saving} />
           ))}
         </div>
       ) : null}

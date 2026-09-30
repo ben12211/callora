@@ -108,9 +108,71 @@ impl Service {
         self.call(reqwest::Method::GET, &format!("/sessions/{}/chats", enc(id)), None).await
     }
 
+    /// Asks a chat (a price bot) and returns what it wrote back: the messages after the
+    /// question, once one has `until` in it and a moment passed with nothing more.
+    pub async fn ask(
+        &self,
+        id: &str,
+        chat_id: &str,
+        text: &str,
+        timeout: Duration,
+        until: &str,
+    ) -> Result<Vec<String>, ServiceError> {
+        let body = json!({
+            "chat_id": chat_id,
+            "text": text,
+            "timeout_ms": timeout.as_millis() as u64,
+            "quiet_ms": 1500,
+            "until": until,
+        });
+        let v = self.call(reqwest::Method::POST, &format!("/sessions/{}/ask", enc(id)), Some(body)).await?;
+        Ok(v["replies"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(str::to_string)).collect())
+    }
+
     pub async fn send(&self, id: &str, chat_id: &str, text: &str, typing_ms: u64) -> Result<(), ServiceError> {
         let body = json!({ "chat_id": chat_id, "text": text, "typing_ms": typing_ms });
         self.call(reqwest::Method::POST, &format!("/sessions/{}/send", enc(id)), Some(body)).await.map(|_| ())
+    }
+}
+
+/// A business's price bot, asked from the WhatsApp account chosen on the settings page.
+pub struct WhatsAppChatBot {
+    service: Service,
+    settings: Arc<crate::settings::SettingsStore>,
+}
+
+impl WhatsAppChatBot {
+    pub fn new(service: Service, settings: Arc<crate::settings::SettingsStore>) -> Self {
+        Self { service, settings }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::ports::ChatBot for WhatsAppChatBot {
+    async fn ask(
+        &self,
+        business_id: &str,
+        text: &str,
+        until: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<String>> {
+        let Some(bot) = self.settings.price_bot(business_id) else { return Ok(None) };
+        let started = Instant::now();
+        let replies =
+            self.service.ask(&bot.account, &bot.chat_id, text, timeout, until).await.map_err(|e| match e {
+                ServiceError::Unavailable(m) if m.contains("no_reply") => anyhow::anyhow!("no answer in time"),
+                ServiceError::NotReady => anyhow::anyhow!("the WhatsApp account is not connected"),
+                ServiceError::Refused(m) => anyhow::anyhow!("refused: {m} (is the bot a saved contact?)"),
+                other => anyhow::anyhow!("{other:?}"),
+            })?;
+        tracing::info!(
+            business_id,
+            question = text,
+            ms = started.elapsed().as_millis() as u64,
+            messages = replies.len(),
+            "the price bot answered"
+        );
+        Ok(Some(replies.join("\n\n")))
     }
 }
 

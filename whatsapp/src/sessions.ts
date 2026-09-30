@@ -7,7 +7,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import path from "node:path";
 import QRCode from "qrcode";
 import pkg from "whatsapp-web.js";
-import type { Client as ClientType } from "whatsapp-web.js";
+import type { Client as ClientType, Message } from "whatsapp-web.js";
 
 const { Client, LocalAuth } = pkg;
 
@@ -27,6 +27,8 @@ export class NotFound extends Error {}
 /** The message was handed to WhatsApp and something failed after: it may well be out, so it
  * is never sent again on its own (a message sent again and again reached a group 8 times). */
 export class OutcomeUnknown extends Error {}
+/** A question asked in a chat that brought no answer in time. */
+export class NoReply extends Error {}
 
 class Session {
   status: Status = "starting";
@@ -38,6 +40,13 @@ class Session {
   private generation = 0;
   private starting: Promise<void> | null = null;
   private retried = false;
+  /** Who waits for the messages the account receives (a question asked of a bot). */
+  private readers = new Set<(m: Message) => void>();
+
+  listen(reader: (m: Message) => void): () => void {
+    this.readers.add(reader);
+    return () => this.readers.delete(reader);
+  }
 
   constructor(
     public stored: Stored,
@@ -97,6 +106,10 @@ class Session {
         this.onChange();
       }
       log(this.stored.id, "ready", this.me.number);
+    });
+    client.on("message", (m: Message) => {
+      if (!current()) return;
+      for (const reader of this.readers) reader(m);
     });
     client.on("auth_failure", (message: string) => {
       if (!current()) return;
@@ -184,6 +197,9 @@ function log(id: string, ...what: unknown[]) {
 
 export class Sessions {
   private sessions = new Map<string, Session>();
+  /** One question at a time in each chat: two calls asking a price bot at once must not take
+   * each other's answer. */
+  private asking = new Map<string, Promise<unknown>>();
 
   async load() {
     await mkdir(AUTH, { recursive: true });
@@ -300,7 +316,70 @@ export class Sessions {
     // under another key than the one whatsapp-web.js looks it up by, so it hands back nothing.
     return { id: message?.id?._serialized ?? null };
   }
+
+  /** Asks a chat (a price bot) and collects what it writes back. One question at a time in
+   * each chat: two calls asking at once must not take each other's answer. */
+  ask(id: string, a: Ask): Promise<{ replies: string[] }> {
+    const key = `${id} ${a.chatId}`;
+    const before = this.asking.get(key) ?? Promise.resolve();
+    const mine = before.catch(() => undefined).then(() => this.askNow(id, a));
+    const tail = mine.catch(() => undefined);
+    this.asking.set(key, tail);
+    void tail.then(() => {
+      if (this.asking.get(key) === tail) this.asking.delete(key);
+    });
+    return mine;
+  }
+
+  /** Sends the question and collects the messages from that chat after it, until one has
+   * `until` in it (the bot's answer, not the ad it sends first) and then `quietMs` pass with
+   * nothing more, or `timeoutMs` in all. */
+  private async askNow(id: string, a: Ask): Promise<{ replies: string[] }> {
+    const session = this.get(id);
+    session.ready();
+    const number = a.chatId.split("@")[0];
+    const replies: string[] = [];
+    let answered = false;
+    let finish: () => void = () => undefined;
+    const finished = new Promise<void>((resolve) => (finish = resolve));
+    let quiet: NodeJS.Timeout | null = null;
+    const since = Math.floor(Date.now() / 1000) - 2;
+    const stop = session.listen((m) => {
+      void (async () => {
+        if (m.fromMe || m.timestamp < since || !m.body?.trim()) return;
+        // The chat may be addressed by another id than the one asked (WhatsApp's newer "lid").
+        let fromBot = m.from === a.chatId;
+        if (!fromBot) {
+          const c = await m.getContact().catch(() => null);
+          fromBot = c?.number === number || c?.id?._serialized === a.chatId;
+        }
+        if (!fromBot) return;
+        replies.push(m.body);
+        if (!a.until || m.body.includes(a.until)) answered = true;
+        if (answered) {
+          if (quiet) clearTimeout(quiet);
+          quiet = setTimeout(finish, a.quietMs);
+        }
+      })();
+    });
+    const timer = setTimeout(finish, Math.min(a.timeoutMs, MAX_ASK_MS));
+    try {
+      await this.send(id, a.chatId, a.text, 0);
+      await finished;
+    } finally {
+      stop();
+      clearTimeout(timer);
+      if (quiet) clearTimeout(quiet);
+    }
+    if (!answered) throw new NoReply("no_reply");
+    return { replies };
+  }
 }
+
+/** How long a question may wait for its answer, at most. */
+const MAX_ASK_MS = 30_000;
+
+export type Ask = { chatId: string; text: string; timeoutMs: number; quietMs: number; until: string };
 
 function page(client: ClientType): import("puppeteer-core").Page {
   return (client as unknown as { pupPage: import("puppeteer-core").Page }).pupPage;

@@ -274,11 +274,25 @@ pub fn system_prompt(b: &Business) -> String {
 
 /// Details of any task that are optional and never asked for: the agent must not ask about
 /// them either (a caller who wants one brings it up).
+/// A detail another task needs (the passengers of a booking, optional for a price) is not one.
 fn optional_details(b: &Business) -> Vec<String> {
+    let needed: Vec<&str> = b
+        .config
+        .pipelines
+        .values()
+        .flat_map(|p| &p.slots)
+        .filter(|ps| ps.required)
+        .map(|ps| ps.slot.as_str())
+        .collect();
     let mut out: Vec<String> = Vec::new();
     for p in b.config.pipelines.values() {
         for ps in &p.slots {
-            if !ps.required && ps.ask.is_none() && ps.default.is_none() && !out.contains(&ps.slot) {
+            if !ps.required
+                && ps.ask.is_none()
+                && ps.default.is_none()
+                && !needed.contains(&ps.slot.as_str())
+                && !out.contains(&ps.slot)
+            {
                 out.push(ps.slot.clone());
             }
         }

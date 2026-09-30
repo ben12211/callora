@@ -94,3 +94,55 @@ async fn a_backend_that_cannot_be_reached_has_not_booked_anything() {
     let failure = runner(&url).run(&taxi(), "create_ride", json!({ "run_id": 1 }), &call()).await.unwrap_err();
     assert!(!failure.outcome_unknown, "{failure}");
 }
+
+/// A price bot that answers with the price list of the fixture, and counts the questions.
+struct PriceBot {
+    asked: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl callora_runtime::ports::ChatBot for PriceBot {
+    async fn ask(
+        &self,
+        _business: &str,
+        text: &str,
+        until: &str,
+        _timeout: Duration,
+    ) -> anyhow::Result<Option<String>> {
+        assert_eq!(until, "₪");
+        self.asked.lock().push(text.to_string());
+        Ok(Some(include_str!("../../callora-core/tests/fixtures/price_list_bnei_brak_jerusalem.txt").to_string()))
+    }
+}
+
+#[tokio::test]
+async fn a_price_comes_from_the_price_bot_and_is_used_again_for_a_while() {
+    let bot = Arc::new(PriceBot { asked: Mutex::new(Vec::new()) });
+    let actions = ConfiguredActions::new(reqwest::Client::new(), HashMap::new()).with_chat_bot(bot.clone());
+    let b = taxi();
+    let input = json!({
+        "run_id": 1,
+        "slots": {
+            "price_from": { "spoken": "אהרונוביץ 32, בני ברק", "address": "אהרונוביץ ראובן 32, בני ברק" },
+            "price_to": { "spoken": "גילה, ירושלים" },
+            "passengers": 3
+        }
+    });
+    let quote = actions.run(&b, "estimate_price", input.clone(), &call()).await.unwrap();
+    assert_eq!(bot.asked.lock().as_slice(), ["מ בני ברק לירושלים"], "the cities, as the bot is asked");
+    assert_eq!(quote["price"], 240, "a four-seater at the price of the neighbourhood (גילה)");
+    assert_eq!(quote["response"], "price_answer");
+    assert_eq!(quote["cached"], false);
+    let again = actions.run(&b, "estimate_price", input, &call()).await.unwrap();
+    assert_eq!(again["cached"], true);
+    assert_eq!(bot.asked.lock().len(), 1, "the same question is not asked again within the half hour");
+}
+
+#[tokio::test]
+async fn no_price_bot_means_no_price() {
+    let actions = ConfiguredActions::new(reqwest::Client::new(), HashMap::new());
+    let input =
+        json!({ "run_id": 1, "slots": { "price_from": { "spoken": "בני ברק" }, "price_to": { "spoken": "ירושלים" } } });
+    let err = actions.run(&taxi(), "estimate_price", input, &call()).await.unwrap_err();
+    assert!(err.error.contains("no backend"), "never a made-up price: {}", err.error);
+}

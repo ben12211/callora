@@ -12,7 +12,8 @@
 //! connection) is reported as an unknown outcome, never as "failed".
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -21,17 +22,87 @@ use callora_core::business::Business;
 use callora_core::config::ActionBackend;
 use callora_core::engine::ActionFailure;
 
-use crate::ports::{ActionRunner, CallInfo};
+use callora_core::price_list;
+
+use crate::ports::{ActionRunner, CallInfo, ChatBot};
 
 pub struct ConfiguredActions {
     http: reqwest::Client,
     env: HashMap<String, String>,
+    chat_bot: Option<Arc<dyn ChatBot>>,
+    /// A price bot's answers by business and question, with when they came.
+    answers: parking_lot::Mutex<HashMap<String, (Instant, String)>>,
 }
 
 impl ConfiguredActions {
     /// `env` is a snapshot of the process environment (injectable for tests).
     pub fn new(http: reqwest::Client, env: HashMap<String, String>) -> Self {
-        Self { http, env }
+        Self { http, env, chat_bot: None, answers: parking_lot::Mutex::new(HashMap::new()) }
+    }
+
+    pub fn with_chat_bot(mut self, bot: Arc<dyn ChatBot>) -> Self {
+        self.chat_bot = Some(bot);
+        self
+    }
+
+    /// The price of the ride in `input`, from the business's price bot. `None`: no bot set up.
+    async fn price_from_bot(
+        &self,
+        business: &Business,
+        action: &str,
+        input: &Value,
+        query: &str,
+        cache_minutes: u64,
+        timeout: Duration,
+    ) -> Option<Result<Value, ActionFailure>> {
+        let bot = self.chat_bot.as_ref()?;
+        let slots = &input["slots"];
+        let place = |names: [&str; 2]| {
+            names.iter().find_map(|n| {
+                let v = &slots[*n];
+                let spoken = v["spoken"].as_str().or(v.as_str()).map(str::to_string);
+                let address = v["address"].as_str().map(str::to_string);
+                spoken.clone().or(address.clone()).map(|s| (s, address))
+            })
+        };
+        let (Some((from, from_address)), Some((to, to_address))) =
+            (place(["price_from", "pickup"]), place(["price_to", "destination"]))
+        else {
+            return Some(Err(ActionFailure::failed(format!("{action}: the route is not known"))));
+        };
+        let (from_city, to_city) = (price_list::city_of(&from), price_list::city_of(&to));
+        let question = query.replace("{from}", &from_city).replace("{to}", &to_city);
+        let key = format!("{}|{question}", business.config.id);
+        let fresh = Duration::from_secs(cache_minutes * 60);
+        let cached = self.answers.lock().get(&key).filter(|(at, _)| at.elapsed() < fresh).map(|(_, a)| a.clone());
+        let (answer, from_cache) = match cached {
+            Some(a) => (a, true),
+            None => match bot.ask(&business.config.id, &question, "₪", timeout).await {
+                Ok(Some(a)) => (a, false),
+                Ok(None) => return None,
+                Err(e) => return Some(Err(ActionFailure::failed(format!("{action}: the price bot: {e:#}")))),
+            },
+        };
+        let Some(list) = price_list::parse(&answer) else {
+            return Some(Err(ActionFailure::failed(format!("{action}: no prices in the bot's answer"))));
+        };
+        if !from_cache {
+            self.answers.lock().insert(key, (Instant::now(), answer.clone()));
+        }
+        let passengers = slots["passengers"].as_u64().and_then(|p| u32::try_from(p).ok());
+        let round_trip = slots["round_trip"].as_bool().unwrap_or(false);
+        let places: Vec<&str> =
+            [Some(from.as_str()), from_address.as_deref(), Some(to.as_str()), to_address.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect();
+        let Some(mut quote) = list.quote(passengers, round_trip, &places) else {
+            return Some(Err(ActionFailure::failed(format!("{action}: no car in the list for this group"))));
+        };
+        quote["question"] = json!(question);
+        quote["answer"] = json!(answer);
+        quote["cached"] = json!(from_cache);
+        Some(Ok(quote))
     }
 
     fn var(&self, name: &str) -> Option<&str> {
@@ -109,6 +180,12 @@ impl ActionRunner for ConfiguredActions {
                         return Err(ActionFailure::failed(format!("{action}: {err}")));
                     }
                     return Ok(value);
+                }
+                ActionBackend::PriceBot { query, cache_minutes } => {
+                    match self.price_from_bot(business, action, &input, query, *cache_minutes, timeout).await {
+                        Some(result) => return result,
+                        None => continue,
+                    }
                 }
                 ActionBackend::Mock { result, latency_ms, error } => {
                     if *latency_ms > 0 {

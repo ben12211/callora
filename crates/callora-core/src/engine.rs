@@ -1782,7 +1782,13 @@ impl Engine {
         let max_attempts = self.business.config.actions.get(&action_id).map_or(1, |a| a.max_attempts);
         match result {
             Ok(value) => {
-                if let Some(r) = &pipeline.on_success {
+                // A result may name its own response (a price by car size, or there and back).
+                let named = value
+                    .get("response")
+                    .and_then(|r| r.as_str())
+                    .filter(|r| self.business.response(r).is_some())
+                    .map(str::to_string);
+                if let Some(r) = named.as_ref().or(pipeline.on_success.as_ref()) {
                     let ctx = self.render_ctx(Some(&value));
                     let ctx = RenderContext { result: Some(&value), ..ctx };
                     self.say(&mut out, r, ctx, true);
@@ -1820,7 +1826,12 @@ impl Engine {
                     return self.finish(out);
                 }
                 let error = failure.error;
-                self.state.action_failures += 1;
+                // Only a task that changes something counts toward handing the call over: a
+                // price bot that did not answer is no reason to.
+                let changes = self.business.config.actions.get(&action_id).is_some_and(|a| a.requires_confirmation);
+                if changes {
+                    self.state.action_failures += 1;
+                }
                 if let Some(r) = &pipeline.on_failure {
                     let ctx = self.render_ctx(None);
                     self.say(&mut out, r, ctx, true);

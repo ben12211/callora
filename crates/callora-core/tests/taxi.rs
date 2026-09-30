@@ -685,7 +685,7 @@ fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
     // Nothing of the taxi business is written in the generic prompt: its words come from its file.
     assert!(system.contains("experienced human dispatcher"), "the role comes from agent.prompt");
     assert!(
-        system.contains("(luggage, wheelchair, child_seat, vehicle)"),
+        system.contains("(luggage, wheelchair, child_seat, vehicle, round_trip)"),
         "optional details come from the pipelines: {system}"
     );
     assert!(request.user.ends_with("CALLER NOW: \"היי\""), "{}", request.user);
@@ -865,17 +865,71 @@ fn known_customer_home_alias_and_default_pickup() {
 }
 
 #[test]
-fn price_question_then_booking_carries_the_destination() {
+fn a_price_is_asked_of_the_price_list_with_the_cities_alone() {
     let (mut call, _) = Call::new(with_desk());
-    call.say("כמה עולה נסיעה לנתב\"ג?");
-    let (run_id, name, _) = action(&call.say("מרבי עקיבא 12")).expect("estimate runs once both places are known");
+    let d = call.engine.on_agent_turn(
+        "כמה עולה מבני ברק לירושלים?",
+        decide(AgentAction::Submit, "", Some("price_question"), &[("price_from", "בני ברק"), ("price_to", "ירושלים")]),
+        "",
+    );
+    let (run_id, name, input) = action(&d).expect("the price is asked at once: no street needed");
     assert_eq!(name, "estimate_price");
-    let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "price": 82 })));
-    assert!(spoken(&d).contains("שמונים ושניים שקלים"), "{}", spoken(&d));
+    assert_eq!(input["slots"]["price_from"]["spoken"], "בני ברק");
+    assert!(spoken(&d).contains("בודק"), "the filler while the list is asked: {}", spoken(&d));
+    // Who is coming is not known: the price by car size, as the result names it.
+    let quote = serde_json::json!({ "price": 220, "price_6": 300, "response": "price_answer_sizes" });
+    let said = spoken(&call.engine.on_action_result(run_id, Ok(quote)));
+    assert!(said.contains("עד ארבעה נוסעים 220₪, ועד שישה 300₪."), "{said}");
+}
 
-    call.say("אוקיי תזמין לי מונית");
-    assert_eq!(place(call.slot("destination")), "נתב״ג");
-    assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12");
+#[test]
+fn a_price_asked_during_a_booking_goes_back_to_the_booking() {
+    let (mut call, _) = Call::new(with_desk());
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד לסוכות 12 בירושלים",
+        decide(
+            AgentAction::None,
+            "כמה נוסעים?",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות 12, ירושלים")],
+        ),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "רגע כמה זה עולה?",
+        decide(AgentAction::Submit, "", Some("price_question"), &[("price_from", "אלעד"), ("price_to", "ירושלים")]),
+        "",
+    );
+    let (run_id, _, _) = action(&d).expect("the price is asked");
+    let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "price": 180, "response": "price_answer" })));
+    let said = spoken(&d);
+    assert!(
+        said.contains("180₪") && (said.contains("נוסעים") || said.contains("אתם")),
+        "the price, then the booking's question: {said}"
+    );
+    assert_eq!(place(call.slot("pickup")), "בן זכאי 40, אלעד", "the booking is kept");
+}
+
+#[test]
+fn a_price_list_that_does_not_answer_sends_no_one_to_the_desk() {
+    let (mut call, _) = Call::new(with_desk());
+    for _ in 0..3 {
+        let d = call.engine.on_agent_turn(
+            "כמה עולה מבני ברק לירושלים?",
+            decide(
+                AgentAction::Submit,
+                "",
+                Some("price_question"),
+                &[("price_from", "בני ברק"), ("price_to", "ירושלים")],
+            ),
+            "",
+        );
+        let (run_id, _, _) = action(&d).expect("the price is asked");
+        let d = call.engine.on_action_result(run_id, Err("the price bot: no answer in time".into()));
+        assert!(spoken(&d).contains("אין לי כרגע מחיר"), "{}", spoken(&d));
+        assert!(!d.iter().any(|d| matches!(d, Directive::Handoff { .. } | Directive::Hangup)), "{d:?}");
+    }
 }
 
 #[test]
@@ -900,7 +954,8 @@ fn voice_library_is_mostly_pregenerated() {
     let b = with_desk();
     let entries = library_entries(&b);
     assert!(entries.iter().any(|e| e.text == "סבבה, קיבלנו את הפרטים. נחפש נהג מתאים, והוא יתקשר בדקות הקרובות."));
-    assert!(entries.iter().any(|e| e.text == "זה יוצא בערך שמונים ושניים שקלים."));
+    // A price is said live: any sum, from the price list.
+    assert!(!entries.iter().any(|e| e.response_id == "price_answer"));
     assert!(entries.iter().any(|e| e.text == "מאיפה לאסוף?" && e.delivery == "slow"));
     assert!(!entries.iter().any(|e| e.text.contains('{')));
 }

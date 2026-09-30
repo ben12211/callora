@@ -4,7 +4,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
-import { MAX_SESSIONS, NotAllowed, NotFound, NotReady, OutcomeUnknown, Sessions } from "./sessions.js";
+import { MAX_SESSIONS, NoReply, NotAllowed, NotFound, NotReady, OutcomeUnknown, Sessions } from "./sessions.js";
 
 const TOKEN = process.env.WHATSAPP_TOKEN ?? "";
 const PORT = Number(process.env.PORT ?? 3100);
@@ -63,12 +63,29 @@ const server = http.createServer(async (req, res) => {
       if (!text.trim()) return send(res, 400, { error: "empty" });
       return send(res, 200, await sessions.send(id, chatId, text.slice(0, 4000), Number(b.typing_ms ?? 0)));
     }
+    if (action === "ask" && method === "POST") {
+      const b = await body(req);
+      const text = String(b.text ?? "");
+      if (!text.trim()) return send(res, 400, { error: "empty" });
+      return send(
+        res,
+        200,
+        await sessions.ask(id, {
+          chatId: String(b.chat_id ?? ""),
+          text: text.slice(0, 500),
+          timeoutMs: Number(b.timeout_ms ?? 12_000),
+          quietMs: Number(b.quiet_ms ?? 1_500),
+          until: String(b.until ?? ""),
+        }),
+      );
+    }
     return send(res, 404, { error: "not_found" });
   } catch (e) {
     if (e instanceof NotFound) return send(res, 404, { error: "not_found" });
     if (e instanceof NotReady) return send(res, 409, { error: "not_ready" });
     if (e instanceof NotAllowed) return send(res, 403, { error: e.message });
     if (e instanceof OutcomeUnknown) return send(res, 502, { error: "outcome_unknown" });
+    if (e instanceof NoReply) return send(res, 504, { error: "no_reply" });
     console.error(JSON.stringify({ at: new Date().toISOString(), error: e instanceof Error ? e.message : String(e), path: url.pathname }));
     return send(res, 500, { error: "failed" });
   }

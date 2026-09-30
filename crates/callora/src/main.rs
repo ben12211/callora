@@ -695,6 +695,20 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
                 env("ELEVENLABS_BATCH_STT_MODEL"),
             )) as Arc<dyn callora_runtime::ports::Transcriber>
         });
+    let settings_store = Arc::new(match &db {
+        Some(pool) => callora_runtime::settings::SettingsStore::load(pool).await.unwrap_or_else(|e| {
+            tracing::error!(error = %e, "saved settings unreadable; using the business files");
+            Default::default()
+        }),
+        None => Default::default(),
+    });
+    let mut actions = ConfiguredActions::new(client.clone(), env_snapshot());
+    if let Some((url, token)) = env("WHATSAPP_URL").zip(env("WHATSAPP_TOKEN").filter(|t| t.len() >= 16)) {
+        actions = actions.with_chat_bot(Arc::new(callora_runtime::whatsapp::WhatsAppChatBot::new(
+            callora_runtime::whatsapp::Service::new(url, token),
+            settings_store.clone(),
+        )));
+    }
     let services = Services {
         stt,
         llm,
@@ -703,18 +717,12 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         gazetteer,
         tts,
         tts_cache: TtsCache::new(env("TTS_CACHE_ENTRIES").and_then(|v| v.parse().ok()).unwrap_or(2000)),
-        actions: Arc::new(ConfiguredActions::new(client.clone(), env_snapshot())),
+        actions: Arc::new(actions),
         telephony,
         store,
         whisper: Arc::new(NoWhisper),
         metrics: Arc::new(Metrics::default()),
-        settings: Arc::new(match &db {
-            Some(pool) => callora_runtime::settings::SettingsStore::load(pool).await.unwrap_or_else(|e| {
-                tracing::error!(error = %e, "saved settings unreadable; using the business files");
-                Default::default()
-            }),
-            None => Default::default(),
-        }),
+        settings: settings_store,
         desk: None,
     };
     let mut session = SessionConfig { dynamic_model: env("ELEVENLABS_DYNAMIC_MODEL"), ..SessionConfig::default() };

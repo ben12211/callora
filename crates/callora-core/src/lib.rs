@@ -15,6 +15,7 @@ pub mod gazetteer;
 pub mod hebrew;
 pub mod llm;
 pub mod orders;
+pub mod price_list;
 pub mod render;
 pub mod speech;
 pub mod state;

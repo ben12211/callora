@@ -127,6 +127,20 @@ pub trait LanguageModel: Send + Sync {
 // ---------------------------------------------------------------------------------------
 // Business actions
 
+/// A bot asked in a chat on a business's behalf (a price-list bot on WhatsApp).
+#[async_trait]
+pub trait ChatBot: Send + Sync {
+    /// The bot's answer, once a message with `until` in it came; `Ok(None)` when no bot is set
+    /// up for the business.
+    async fn ask(
+        &self,
+        business_id: &str,
+        text: &str,
+        until: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<Option<String>>;
+}
+
 #[async_trait]
 pub trait ActionRunner: Send + Sync {
     async fn run(

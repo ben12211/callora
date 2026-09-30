@@ -122,6 +122,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(twilio::DESK_CONFERENCE_PATH, post(desk_conference))
         .route("/api/settings", get(api_settings))
         .route("/api/settings/{business}", axum::routing::put(api_save_settings))
+        .route("/api/settings/{business}/price-bot", axum::routing::put(api_save_price_bot))
+        .route("/api/settings/{business}/price-bot/test", post(api_test_price_bot))
         .route("/api/businesses", get(api_businesses))
         .route("/api/calls", get(api_calls))
         .route("/api/orders", get(api_orders))
@@ -622,15 +624,93 @@ async fn api_settings(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Res
     let businesses: Vec<_> = s
         .registry
         .all()
-        .map(|b| json!({ "id": b.config.id, "name": b.config.name, "desk": s.services.settings.desk(b) }))
+        .map(|b| {
+            json!({
+                "id": b.config.id,
+                "name": b.config.name,
+                "desk": s.services.settings.desk(b),
+                "price_bot": s.services.settings.price_bot(&b.config.id),
+            })
+        })
         .collect();
     Json(json!({
         "businesses": businesses,
         "music": crate::settings::DeskSettings::music_names(),
         "saving": s.db.is_some(),
         "transfers": s.services.desk.is_some(),
+        "whatsapp": s.whatsapp.is_some(),
     }))
     .into_response()
+}
+
+async fn api_save_price_bot(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(business): Path<String>,
+    Json(bot): Json<Option<crate::settings::PriceBotSettings>>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if s.registry.by_id(&business).is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    let bot = bot.filter(|b| !b.account.trim().is_empty() && !b.chat_id.trim().is_empty());
+    match s.services.settings.save_price_bot(pool, &business, bot.clone()).await {
+        Ok(()) => Json(bot).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "saving the price bot failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PriceTest {
+    from: String,
+    to: String,
+    #[serde(default)]
+    passengers: Option<u32>,
+}
+
+/// The price of a route, as a call would get it: the question sent, the bot's answer and the
+/// quote read from it.
+async fn api_test_price_bot(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(business): Path<String>,
+    Json(t): Json<PriceTest>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(b) = s.registry.by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(action) =
+        b.config.actions.iter().find(|(_, a)| {
+            a.backends.iter().any(|k| matches!(k, callora_core::config::ActionBackend::PriceBot { .. }))
+        })
+    else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "לעסק אין פעולת מחיר מבוט" }))).into_response();
+    };
+    let mut slots = json!({ "price_from": { "spoken": t.from }, "price_to": { "spoken": t.to } });
+    if let Some(p) = t.passengers {
+        slots["passengers"] = json!(p);
+    }
+    let call = crate::ports::CallInfo {
+        call_id: uuid::Uuid::new_v4(),
+        call_sid: "dashboard-test".into(),
+        from: None,
+        to: String::new(),
+        business_id: b.config.id.clone(),
+    };
+    let started = std::time::Instant::now();
+    let result = s.services.actions.run(&b, action.0, json!({ "run_id": 0, "slots": slots }), &call).await;
+    let ms = started.elapsed().as_millis() as u64;
+    match result {
+        Ok(quote) => Json(json!({ "ok": true, "ms": ms, "quote": quote })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "ms": ms, "error": e.error })).into_response(),
+    }
 }
 
 async fn api_save_settings(

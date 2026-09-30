@@ -7,10 +7,30 @@
         "expect": {
           "task": "price_question",
           "fields": {
-            "destination": "נתב"
+            "price_to": "נתב"
           },
           "says_none": [
             "שקל"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "price_between_two_cities",
+    "note": "the cities are enough for the price list: no street asked, no number said by the agent",
+    "turns": [
+      {
+        "caller": "כמה עולה מבני ברק לירושלים?",
+        "expect": {
+          "task": "price_question",
+          "fields": {
+            "price_from": "בני ברק",
+            "price_to": "ירושלים"
+          },
+          "says_none": [
+            "שקל",
+            "רחוב"
           ]
         }
       }

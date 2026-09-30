@@ -1,7 +1,7 @@
 // The call flow, written out: what the agent does and which rules hold it in place.
 
 import { useMemo, useState } from "react";
-import { Ban, CarTaxiFront, CheckCheck, Headset, MapPin, MessagesSquare, Mic, Search, ShieldCheck, Zap } from "lucide-react";
+import { BadgeDollarSign, Ban, CarTaxiFront, CheckCheck, Headset, MapPin, MessagesSquare, Mic, Search, ShieldCheck, Zap } from "lucide-react";
 import { Badge, Card, Empty, Input, PageHeader, Segmented, cx } from "../ui";
 
 /** Who holds the rule: the code (the model cannot get around it) or the prompt (the model is told to). */
@@ -124,6 +124,21 @@ const SECTIONS: Section[] = [
       { text: "כל פעולה נושאת מפתח שלא משתנה בין ניסיונות, כך שניסיון חוזר לא יוצר הזמנה כפולה.", kind: "code" },
       { text: "תקלת זמן אחרי ששלחנו נחשבת ״לא ידוע אם נקלט״ ולא ״נכשל״. הכרטיס מסומן לבדיקה והמתקשר עובר למוקדן.", kind: "code" },
       { text: "כרטיס עם כל הפרטים נשמר בדף ההזמנות ונשלח לוואטסאפ.", kind: "code" },
+    ],
+  },
+  {
+    id: "prices",
+    title: "מחירים",
+    note: "הבוט והחשבון ששואל אותו נבחרים בדף ההגדרות.",
+    icon: BadgeDollarSign,
+    rules: [
+      { text: "שאלת מחיר נשלחת לבוט המחירון בוואטסאפ (״מ בני ברק לירושלים״), והמחיר נקרא מהתשובה שלו. מספיקות ערים, בלי רחוב.", kind: "code" },
+      { text: "מספר הנוסעים לא ידוע: ״עד ארבעה נוסעים 220₪, ועד שישה 300₪״. ידוע: רק המחיר שמתאים (עד 4, 6 מקומות, 7 מקומות).", kind: "code" },
+      { text: "״הלוך חזור״ או ״צדדים״: המחיר לכיוון אחד ולהלוך חזור.", kind: "code" },
+      { text: "שכונה מרשימת התוספת של הבוט (גילה, פסגת זאב…): המחיר של השכונה.", kind: "code" },
+      { text: "אותה שאלה בתוך חצי שעה נענית מהזיכרון, בלי לשאול את הבוט שוב.", kind: "code" },
+      { text: "הסוכן אף פעם לא אומר מחיר בעצמו. אין תשובה מהבוט תוך 15 שניות: ״אין לי כרגע מחיר מדויק, אפשר להזמין והנהג יגיד״, והשיחה ממשיכה.", kind: "code" },
+      { text: "שאלת מחיר באמצע הזמנה: אחרי המחיר חוזרים להזמנה מאיפה שעצרה.", kind: "code" },
     ],
   },
   {

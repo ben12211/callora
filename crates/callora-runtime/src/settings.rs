@@ -90,9 +90,22 @@ impl DeskSettings {
     }
 }
 
+/// The price-list bot a business asks prices of: the WhatsApp account that asks and the bot's
+/// chat (a saved contact of that account).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceBotSettings {
+    pub account: String,
+    pub chat_id: String,
+    /// The bot's name as the account knows it, for the settings page.
+    #[serde(default)]
+    pub chat_name: String,
+}
+
 #[derive(Default)]
 pub struct SettingsStore {
     desks: RwLock<HashMap<String, DeskSettings>>,
+    price_bots: RwLock<HashMap<String, PriceBotSettings>>,
 }
 
 impl SettingsStore {
@@ -101,8 +114,12 @@ impl SettingsStore {
         let rows =
             sqlx::query("SELECT business_id, settings FROM callora_v2.business_settings").fetch_all(pool).await?;
         let mut desks = HashMap::new();
+        let mut price_bots = HashMap::new();
         for r in rows {
             let settings: serde_json::Value = r.get("settings");
+            if let Ok(bot) = serde_json::from_value::<PriceBotSettings>(settings["price_bot"].clone()) {
+                price_bots.insert(r.get::<String, _>("business_id"), bot);
+            }
             match serde_json::from_value::<DeskSettings>(settings["desk"].clone()) {
                 Ok(d) => {
                     desks.insert(r.get::<String, _>("business_id"), d);
@@ -110,7 +127,7 @@ impl SettingsStore {
                 Err(e) => tracing::warn!(error = %e, "unreadable saved settings; ignored"),
             }
         }
-        Ok(Self { desks: RwLock::new(desks) })
+        Ok(Self { desks: RwLock::new(desks), price_bots: RwLock::new(price_bots) })
     }
 
     /// The desk a call of this business hands off to: the saved settings, else the
@@ -120,6 +137,32 @@ impl SettingsStore {
             return d.clone();
         }
         DeskSettings { numbers: business.handoff_number.iter().cloned().collect(), ..DeskSettings::default() }
+    }
+
+    pub fn price_bot(&self, business_id: &str) -> Option<PriceBotSettings> {
+        self.price_bots.read().get(business_id).cloned()
+    }
+
+    /// `None` stops asking the bot.
+    pub async fn save_price_bot(
+        &self,
+        pool: &PgPool,
+        business_id: &str,
+        bot: Option<PriceBotSettings>,
+    ) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO callora_v2.business_settings (business_id, settings) VALUES ($1, jsonb_build_object('price_bot', $2::jsonb))
+             ON CONFLICT (business_id) DO UPDATE SET settings = callora_v2.business_settings.settings || jsonb_build_object('price_bot', $2::jsonb), updated_at = now()",
+        )
+        .bind(business_id)
+        .bind(serde_json::to_value(&bot).unwrap_or_default())
+        .execute(pool)
+        .await?;
+        match bot {
+            Some(b) => self.price_bots.write().insert(business_id.to_string(), b),
+            None => self.price_bots.write().remove(business_id),
+        };
+        Ok(())
     }
 
     pub async fn save_desk(&self, pool: &PgPool, business_id: &str, desk: DeskSettings) -> sqlx::Result<()> {

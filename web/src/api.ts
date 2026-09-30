@@ -106,11 +106,14 @@ export type Order = {
 
 export type DeskSettings = { numbers: string[]; caller_id?: string | null; hold_music: string; max_wait_seconds: number };
 
+export type PriceBotSettings = { account: string; chat_id: string; chat_name: string };
+
 export type SettingsData = {
-  businesses: { id: string; name: string; desk: DeskSettings }[];
+  businesses: { id: string; name: string; desk: DeskSettings; price_bot: PriceBotSettings | null }[];
   music: string[];
   saving: boolean;
   transfers: boolean;
+  whatsapp: boolean;
 };
 
 export type Session = { businesses: { id: string; name: string }[]; database: boolean };
