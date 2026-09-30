@@ -2513,3 +2513,19 @@ fn the_booking_asks_in_its_order_whatever_the_agent_writes() {
     );
     assert_eq!(call.engine.out_of_order("לסוכות 12 בירושלים", &fields, &["pickup".into()]), None);
 }
+
+#[test]
+fn a_question_off_the_business_is_refused_and_its_answer_never_said() {
+    // The call of 21:29: "כמה זה שמונה ועוד ארבעים?" got "ארבעים ושמונה", and the first prime
+    // minister got "דוד בן־גוריון".
+    let b = business(&[]);
+    assert!(!callora_core::agent::say_after_phrase(&b, "off_topic", "שמונה ועוד ארבעים זה ארבעים ושמונה."));
+    assert!(!callora_core::agent::say_after_phrase(&b, "off_topic", "דוד בן־גוריון."));
+    let (mut call, _) = Call::new(b);
+    let turn = AgentTurn {
+        phrase: Some("off_topic".into()), ..decide(AgentAction::None, "ארבעים ושמונה.", None, &[])
+    };
+    let said = spoken(&call.engine.on_agent_turn("כמה זה שמונה ועוד ארבעים?", turn, ""));
+    assert!(said.contains("רק בשביל מוניות") || said.contains("רק במוניות"), "{said}");
+    assert!(!said.contains("ארבעים ושמונה"), "{said}");
+}

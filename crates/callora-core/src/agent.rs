@@ -78,6 +78,9 @@ pub fn phrases(b: &Business) -> Vec<String> {
 /// לאסוף?") and again, reworded, in `say` ("מאיזו עיר לאסוף?").
 pub fn say_after_phrase(b: &Business, phrase: &str, sentence: &str) -> bool {
     let Some(r) = b.response(phrase) else { return true };
+    if r.alone {
+        return false;
+    }
     let said = crate::text::normalize(sentence);
     if said.is_empty() || r.variants.iter().any(|v| crate::text::normalize(v) == said) {
         return false;

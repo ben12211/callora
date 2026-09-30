@@ -546,6 +546,10 @@ pub struct ResponseConfig {
     /// Another response spoken first as its own audio segment (usually an acknowledgement).
     #[serde(default)]
     pub prefix: Option<ResponseId>,
+    /// Said alone: as the agent's phrase, none of its own words after it are said (the refusal
+    /// of a question off the business must not be followed by the answer).
+    #[serde(default)]
+    pub alone: bool,
     /// Delivery style name (see `voice.deliveries`). Defaults to `normal`.
     #[serde(default)]
     pub delivery: Option<String>,
