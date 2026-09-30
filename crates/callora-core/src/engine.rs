@@ -221,8 +221,9 @@ impl Engine {
             .slots
             .iter()
             .find(|ps| {
+                let known_name = ps.from_customer.as_deref() == Some("name") && self.customer_gives(ps).is_some();
                 !run.slots.contains_key(&ps.slot)
-                    && !(ps.from_customer.as_deref() == Some("name") && self.from_customer(ps).is_some())
+                    && !known_name
                     && ps.default.is_none()
                     && (ps.required
                         || (ps.ask.is_some()
@@ -1119,7 +1120,7 @@ impl Engine {
 
     /// What the customer record gives a detail (`from_customer`): a saved place ("home"), or the
     /// customer's name ("name").
-    fn from_customer(&self, ps: &crate::config::PipelineSlot) -> Option<SlotValue> {
+    fn customer_gives(&self, ps: &crate::config::PipelineSlot) -> Option<SlotValue> {
         let (key, c) = (ps.from_customer.as_ref()?, self.state.customer.as_ref()?);
         if key == "name" {
             return c.name.clone().filter(|n| !n.trim().is_empty()).map(|text| SlotValue::Text { text });
@@ -1138,7 +1139,7 @@ impl Engine {
             .slots
             .iter()
             .filter(|ps| ps.from_customer.as_deref() == Some("name"))
-            .filter_map(|ps| self.from_customer(ps).map(|v| (ps.slot.clone(), v)))
+            .filter_map(|ps| self.customer_gives(ps).map(|v| (ps.slot.clone(), v)))
             .collect();
         if let Some(run) = &mut self.state.run {
             for (slot, value) in known {
