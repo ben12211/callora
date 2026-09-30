@@ -100,10 +100,8 @@ impl Session {
                     self.last_utterance.drain(..cut);
                 }
             }
-            None if self.vad.is_speaking() => {
-                if self.utterance.len() < MAX_BYTES {
-                    self.utterance.extend_from_slice(frame);
-                }
+            None if self.vad.is_speaking() && self.utterance.len() < MAX_BYTES => {
+                self.utterance.extend_from_slice(frame);
             }
             _ => {}
         }

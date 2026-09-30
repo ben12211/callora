@@ -96,7 +96,7 @@ impl PhraseSet {
             .filter(|p| !normalize(p).is_empty())
             .map(|p| Phrase::new(p, allow_prefixes))
             .collect::<Result<Vec<_>, _>>()?;
-        phrases.sort_by(|a, b| b.text.chars().count().cmp(&a.text.chars().count()));
+        phrases.sort_by_key(|p| std::cmp::Reverse(p.text.chars().count()));
         Ok(Self { phrases })
     }
 

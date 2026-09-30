@@ -91,7 +91,7 @@ pub struct Pronouncer {
 impl Pronouncer {
     pub fn new<'a>(dictionary: impl IntoIterator<Item = (&'a String, &'a String)>) -> Result<Self, regex::Error> {
         let mut entries: Vec<_> = dictionary.into_iter().collect();
-        entries.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.0.chars().count()));
         let rules = entries
             .into_iter()
             .map(|(word, spoken)| {

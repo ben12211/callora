@@ -399,11 +399,9 @@ async fn media_socket(s: Arc<AppState>, socket: WebSocket) {
         while let Some(Ok(msg)) = stream.next().await {
             let Message::Text(text) = msg else { continue };
             match serde_json::from_str::<StreamMessage>(&text) {
-                Ok(StreamMessage::Media { media }) => {
-                    if media.track.as_deref().is_none_or(|t| t == "inbound") {
-                        if let Some(audio) = media.audio() {
-                            let _ = in_tx.try_send(Inbound::Audio(audio));
-                        }
+                Ok(StreamMessage::Media { media }) if media.track.as_deref().is_none_or(|t| t == "inbound") => {
+                    if let Some(audio) = media.audio() {
+                        let _ = in_tx.try_send(Inbound::Audio(audio));
                     }
                 }
                 Ok(StreamMessage::Stop) => break,
