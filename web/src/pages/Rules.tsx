@@ -1,7 +1,7 @@
 // The call flow, written out: what the agent does and which rules hold it in place.
 
 import { useMemo, useState } from "react";
-import { BadgeDollarSign, Ban, CarTaxiFront, CheckCheck, Headset, MapPin, MessagesSquare, Mic, Search, ShieldCheck, Zap } from "lucide-react";
+import { BadgeDollarSign, Ban, CarTaxiFront, Smile, CheckCheck, Headset, MapPin, MessagesSquare, Mic, Search, ShieldCheck, Zap } from "lucide-react";
 import { Badge, Card, Empty, Input, PageHeader, Segmented, cx } from "../ui";
 
 /** Who holds the rule: the code (the model cannot get around it) or the prompt (the model is told to). */
@@ -89,6 +89,22 @@ const SECTIONS: Section[] = [
       { text: "השיחה מסתיימת רק על פרידה אמיתית, או ״לא תודה״ אחרי ״משהו נוסף?״.", kind: "code" },
       { text: "המודל נכשל או לא ענה תוך 4 שניות: החוקים הקבועים מטפלים בתור הזה.", kind: "code" },
       { text: "כשצריך לשאול שוב, אומרים למה: ״סליחה, יש קצת רעש בקו.״ ואז השאלה. אף פעם לא ״לא הבנתי״.", kind: "prompt" },
+    ],
+  },
+  {
+    id: "human",
+    title: "אנושיות",
+    note: "שיחה עם בן אדם, לא עם טופס.",
+    icon: Smile,
+    rules: [
+      { text: "כל משפט קבוע נאמר בכמה נוסחים (ברכה, ״מאיפה לאן?״, אישורים, פרידות), כך שאף שיחה לא נשמעת כמו הקודמת.", kind: "code" },
+      { text: "קול עם הבעה: ברכה בחום, פרידה ואישור הזמנה בעליזות.", kind: "code" },
+      { text: "הקראה בעברית מדוברת: ״מבן זכאי 40 באלעד לסוכות 12 בירושלים״, לא ״בן זכאי 40, אלעד״.", kind: "code" },
+      { text: "לקוח חוזר נשמע מוכר: ״אהלן דוד! שוב מאלעד לירושלים?״. ״כן״ לוקח את אותה נסיעה, ומספר הנוסעים נשאל שוב.", kind: "code" },
+      { text: "״אממ...״ קצר כשהסוכן עוד חושב, בלי שתיקה ארוכה.", kind: "code" },
+      { text: "מחזיר בכמה מילים כתובת ששמע (״בן זכאי 45 באלעד, סבבה. לאן?״), פונה בשם אחרי שקיבל אותו, ומתאים את עצמו למתקשר: סלנג עם מי שמדבר בסלנג, נימוס עם מבוגר.", kind: "prompt" },
+      { text: "רגש לפי ההקשר: ״אוי, מצטער לשמוע״ על איחור או תלונה, ״טיסה טובה!״ לנתב״ג, ״נסיעה טובה לירושלים!״ בפרידה.", kind: "prompt" },
+      { text: "נשאל אם הוא בן אדם או בוט: אומר בכנות שהוא העוזר הקולי של העסק.", kind: "prompt" },
     ],
   },
   {

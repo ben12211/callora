@@ -101,6 +101,46 @@ impl AppState {
     }
 }
 
+/// The customer record with the caller's last ride from our own orders: their name when the
+/// record has none, the places ("last_pickup", "last_destination") and, for the greeting and
+/// the agent, `last_from`, `last_to`, their cities and the passengers.
+fn with_last_ride(
+    customer: Option<Customer>,
+    last: Option<(serde_json::Value, chrono::DateTime<chrono::Utc>)>,
+) -> Option<Customer> {
+    let Some((card, at)) = last else { return customer };
+    let detail = |field: &str| {
+        card["details"].as_array()?.iter().find(|d| d["field"] == field).and_then(|d| {
+            let value = d["value"].as_str().filter(|v| !v.trim().is_empty())?.to_string();
+            Some((value, d["address"].as_str().map(str::to_string)))
+        })
+    };
+    let (Some((from, from_address)), Some((to, to_address))) = (detail("pickup"), detail("destination")) else {
+        return customer;
+    };
+    let mut c = customer.unwrap_or_default();
+    if c.name.is_none() {
+        c.name = detail("customer_name").map(|(n, _)| n);
+    }
+    let city =
+        |value: &str, address: &Option<String>| callora_core::price_list::city_of(address.as_deref().unwrap_or(value));
+    c.data.insert("last_from_city".into(), json!(city(&from, &from_address)));
+    c.data.insert("last_to_city".into(), json!(city(&to, &to_address)));
+    c.data.insert("last_from".into(), json!(from));
+    c.data.insert("last_to".into(), json!(to));
+    c.data.insert("last_ride_at".into(), json!(at));
+    if let Some((p, _)) = detail("passengers") {
+        c.data.insert("last_passengers".into(), json!(p));
+    }
+    c.places
+        .entry("last_pickup".into())
+        .or_insert(callora_core::customer::CustomerPlace { spoken: from, address: from_address });
+    c.places
+        .entry("last_destination".into())
+        .or_insert(callora_core::customer::CustomerPlace { spoken: to, address: to_address });
+    Some(c)
+}
+
 struct PendingCall {
     from: Option<String>,
     to: String,
@@ -216,6 +256,7 @@ async fn voice(
         customer_rx = Some(rx);
         let runner = s.services.actions.clone();
         let b = business.clone();
+        let db = s.db.clone();
         let info = CallInfo {
             call_id: uuid::Uuid::nil(),
             call_sid: call_sid.clone(),
@@ -224,14 +265,21 @@ async fn voice(
             to: to.clone(),
         };
         tokio::spawn(async move {
-            let customer = match runner.run(&b, &lookup.action, json!({ "phone": caller }), &info).await {
+            let (looked_up, last) =
+                tokio::join!(runner.run(&b, &lookup.action, json!({ "phone": caller }), &info), async {
+                    match &db {
+                        Some(pool) => crate::store::last_ride(pool, &b.config.id, &caller).await.ok().flatten(),
+                        None => None,
+                    }
+                });
+            let customer = match looked_up {
                 Ok(v) => Customer::from_json(&v),
                 Err(e) => {
                     tracing::warn!(error = %e, "customer lookup failed");
                     None
                 }
             };
-            let _ = tx.send(customer);
+            let _ = tx.send(with_last_ride(customer, last));
         });
     }
     {
@@ -856,5 +904,30 @@ async fn api_call(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): 
             tracing::error!(error = %e, "reading call failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod last_ride_tests {
+    use super::*;
+
+    #[test]
+    fn a_last_ride_makes_a_returning_customer() {
+        let card = json!({
+            "details": [
+                { "field": "pickup", "value": "בן זכאי 40, אלעד", "address": "רבן יוחנן בן זכאי 40, אלעד" },
+                { "field": "destination", "value": "סוכות 12, ירושלים", "address": null },
+                { "field": "passengers", "value": "3" },
+                { "field": "customer_name", "value": "דוד" }
+            ],
+            "result": { "ride_id": "R-1" }
+        });
+        let c = with_last_ride(None, Some((card, chrono::Utc::now()))).expect("a customer");
+        assert_eq!(c.name.as_deref(), Some("דוד"));
+        assert_eq!(c.data["last_from_city"], "אלעד");
+        assert_eq!(c.data["last_to_city"], "ירושלים");
+        assert_eq!(c.data["last_passengers"], "3");
+        assert!(c.places.contains_key("last_pickup"));
+        assert!(with_last_ride(None, None).is_none(), "no ride, no customer");
     }
 }

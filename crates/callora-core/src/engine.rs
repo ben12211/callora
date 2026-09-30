@@ -387,17 +387,23 @@ impl Engine {
     /// The greeting. Call once, as soon as the call connects.
     pub fn start(&mut self) -> Vec<Directive> {
         let mut out = Out::default();
+        // A returning caller hears their last ride, a known one their name; whichever cannot be
+        // said (no name to put in it) gives way to the next, down to the plain greeting.
+        let lookup = self.business.config.customer_lookup.as_ref();
         let known = self.state.customer.as_ref().is_some_and(|c| c.name.is_some());
-        let greeting = match (&self.business.config.customer_lookup, known) {
-            (Some(cl), true) => cl.known_greeting.clone().unwrap_or_else(|| self.business.config.greeting.clone()),
-            _ => self.business.config.greeting.clone(),
-        };
-        self.say(
-            &mut out,
-            &greeting,
-            RenderContext { customer: self.state.customer.as_ref(), ..Default::default() }.into_owned(),
-            true,
-        );
+        let returning = self.state.customer.as_ref().is_some_and(|c| c.data.contains_key("last_to_city"));
+        let candidates = [
+            lookup.and_then(|l| l.returning_greeting.clone()).filter(|_| returning),
+            lookup.and_then(|l| l.known_greeting.clone()).filter(|_| known),
+            Some(self.business.config.greeting.clone()),
+        ];
+        let ctx = RenderContext { customer: self.state.customer.as_ref(), ..Default::default() }.into_owned();
+        for greeting in candidates.into_iter().flatten() {
+            if let Some(plan) = self.render_plan(&greeting, &ctx) {
+                out.speak(plan, true);
+                break;
+            }
+        }
         self.finish(out)
     }
 
@@ -1041,6 +1047,10 @@ impl Engine {
         // And the cities it understood from them: "מביתר" is ביתר עילית, and the agent writing it
         // in full ("הרמב״ן 16, ביתר עילית") made up no word ("עילית" was refused).
         let mut understood: Vec<String> = self.state.place_cities.values().cloned().collect();
+        // And the places of the customer's record (their last ride): "כן, כמו פעם שעברה".
+        if let Some(c) = &self.state.customer {
+            understood.extend(c.places.values().flat_map(|p| [Some(p.spoken.clone()), p.address.clone()]).flatten());
+        }
         // And the full names of the towns the caller named now: "מביתר" is ביתר עילית.
         if let Some(g) = &self.gazetteer {
             understood.extend(g.towns_named(&heard));
@@ -2702,8 +2712,17 @@ impl RenderContext<'_> {
     /// Detach from borrowed data (the customer is copied into `extra`).
     fn into_owned(self) -> RenderContext<'static> {
         let mut extra = self.extra;
-        if let Some(name) = self.customer.and_then(|c| c.name.clone()) {
-            extra.insert("customer_name".into(), name);
+        if let Some(c) = self.customer {
+            if let Some(name) = c.name.clone() {
+                extra.insert("customer_name".into(), name);
+            }
+            // The record's own values too ("last_from_city" for a returning caller's greeting).
+            for (k, v) in &c.data {
+                let value = v.as_str().map(str::to_string).or_else(|| v.as_i64().map(|n| n.to_string()));
+                if let Some(value) = value {
+                    extra.entry(k.clone()).or_insert(value);
+                }
+            }
         }
         RenderContext { slots: self.slots, result: None, customer: None, extra }
     }

@@ -133,8 +133,10 @@ impl Session {
 
     pub(super) fn tts_request(&self, seg: &SpeechSegment) -> Option<TtsRequest> {
         let c = &self.business.config;
+        let spoken =
+            prepare_for_tts(&seg.text, &c.language, self.business.pronouncer_for(self.engine.state.address_form));
         Some(TtsRequest {
-            text: prepare_for_tts(&seg.text, &c.language, self.business.pronouncer_for(self.engine.state.address_form)),
+            text: callora_audio::library::with_tone(&self.business, &seg.response_id, spoken),
             voice_id: self.business.voice_id.clone()?,
             model: self.cfg.dynamic_model.clone().unwrap_or_else(|| c.voice.dynamic_model.clone()),
             settings: c.voice.settings_for(&seg.delivery),
@@ -152,6 +154,10 @@ impl Session {
     /// The business's short opener, from the library only (it must never need TTS itself).
     pub(super) fn cover_live_tts(&mut self, gain_db: f32) {
         let turn = self.engine.state.turns;
+        // Not before the greeting: "אממ, כן. אהלן דוד!" opened calls of known customers.
+        if turn == 0 {
+            return;
+        }
         if self.cover_turn.is_some_and(|t| t + 1 >= turn) || self.filler_turn.is_some_and(|t| t + 1 >= turn) {
             return;
         }

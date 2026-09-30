@@ -216,6 +216,23 @@ async fn voice_library_builds_incrementally_and_loads() {
     assert_eq!(clip.len(), 160);
     assert!(lib.get("slow", "מאיפה לאסוף?").is_some());
 
+    // New voice settings make every clip again, not only the changed sentences.
+    let restyled = Arc::new(
+        Business::from_json(&TAXI.replace("\"style\": 0.35", "\"style\": 0.2"), "taxi.json", &|_| None).unwrap(),
+    );
+    let third = LibraryBuilder {
+        business: &restyled,
+        synthesizer: synth.clone(),
+        voice_id: "voice-1".into(),
+        model: "eleven_v3".into(),
+        root: dir.clone(),
+        concurrency: 8,
+    }
+    .build()
+    .await
+    .unwrap();
+    assert_eq!(third.generated, expected, "made again with the new settings");
+
     // A library generated for another voice is not used.
     let other = Arc::new(
         Business::from_json(TAXI, "taxi.json", &|k| (k == "ELEVENLABS_VOICE_ID").then(|| "voice-2".to_string()))

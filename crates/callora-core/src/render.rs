@@ -172,10 +172,22 @@ fn speak(raw: Raw, param: Option<&ParamConfig>) -> Option<(String, bool)> {
             match raw {
                 Raw::Number(n) => n.to_string(),
                 Raw::Text(t) => t,
+                Raw::Slot(v @ SlotValue::Place { .. }) => place_in_sentence(&v.spoken()),
                 Raw::Slot(v) => v.spoken(),
             },
             false,
         )),
+    }
+}
+
+/// A place as a sentence says it: its city after "ב" ("בן זכאי 45 באלעד"), where the value
+/// has it after a comma ("בן זכאי 45, אלעד", which read back sounded like a form).
+pub fn place_in_sentence(spoken: &str) -> String {
+    match spoken.rsplit_once(", ") {
+        Some((street, city)) if !street.trim().is_empty() && !city.trim().is_empty() && !city.contains(',') => {
+            format!("{} ב{}", street.trim(), city.trim())
+        }
+        _ => spoken.to_string(),
     }
 }
 

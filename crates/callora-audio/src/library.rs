@@ -24,6 +24,15 @@ use crate::tts::{Synthesizer, TtsRequest};
 
 pub const FORMAT: &str = "mulaw_8000";
 
+/// The text for TTS with the response's tone before it ("[warmly] אהלן, איך אפשר לעזור?"): an
+/// audio tag eleven_v3 follows and does not say.
+pub fn with_tone(b: &Business, response_id: &str, spoken: String) -> String {
+    match b.response(response_id).and_then(|r| r.tone.as_deref()).filter(|t| !t.trim().is_empty()) {
+        Some(tone) => format!("[{}] {spoken}", tone.trim()),
+        None => spoken,
+    }
+}
+
 pub fn clip_key(delivery: &str, text: &str) -> String {
     let mut h = Sha256::new();
     h.update(delivery.as_bytes());
@@ -49,8 +58,11 @@ pub struct ManifestEntry {
     pub response_id: String,
     pub delivery: String,
     pub text: String,
-    /// The text actually sent to TTS (after pronunciation and normalization).
+    /// The text actually sent to TTS (after pronunciation and normalization, with its tone).
     pub spoken: String,
+    /// The voice settings it was made with: new settings make it again.
+    #[serde(default)]
+    pub settings: Option<String>,
     pub file: String,
     pub bytes: usize,
 }
@@ -186,9 +198,10 @@ impl LibraryBuilder<'_> {
         let mut todo = Vec::new();
         for e in entries {
             let key = clip_key(&e.delivery, &e.text);
-            let spoken = prepare_for_tts(&e.text, &b.config.language, &b.pronouncer);
+            let spoken = with_tone(b, &e.response_id, prepare_for_tts(&e.text, &b.config.language, &b.pronouncer));
+            let settings = serde_json::to_string(&b.config.voice.settings_for(&e.delivery)).ok();
             match reusable.get(&key) {
-                Some(prev) if prev.spoken == spoken => {
+                Some(prev) if prev.spoken == spoken && prev.settings == settings => {
                     report.reused += 1;
                     done.push(prev.clone());
                 }
@@ -226,12 +239,14 @@ impl LibraryBuilder<'_> {
                     let file = format!("{key}.ulaw");
                     std::fs::write(dir.join(&file), &audio)?;
                     report.generated += 1;
+                    let settings = serde_json::to_string(&b.config.voice.settings_for(&e.delivery)).ok();
                     done.push(ManifestEntry {
                         key,
                         response_id: e.response_id,
                         delivery: e.delivery,
                         text: e.text,
                         spoken,
+                        settings,
                         file,
                         bytes: audio.len(),
                     });
@@ -252,5 +267,18 @@ impl LibraryBuilder<'_> {
         std::fs::write(&tmp, serde_json::to_vec_pretty(&manifest)?)?;
         std::fs::rename(&tmp, dir.join("manifest.json"))?;
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tone_tests {
+    use super::*;
+
+    #[test]
+    fn a_tone_goes_to_the_voice_before_the_words() {
+        let text = include_str!("../../../businesses/taxi.json");
+        let b = Business::from_json(text, "taxi.json", &|_| None).expect("taxi");
+        assert_eq!(with_tone(&b, "greeting", "אהלן".into()), "[warmly] אהלן");
+        assert_eq!(with_tone(&b, "ask_route", "מאיפה לאן?".into()), "מאיפה לאן?", "no tone, no tag");
     }
 }

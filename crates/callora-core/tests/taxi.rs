@@ -95,7 +95,8 @@ fn config_is_valid_and_routes_by_number() {
 #[test]
 fn md_example_29_full_booking_in_one_sentence() {
     let (mut call, greeting) = Call::new(with_desk());
-    assert_eq!(spoken(&greeting), "אהלן, איך אפשר לעזור?");
+    let greetings = &call.engine.business().response("greeting").unwrap().variants;
+    assert!(greetings.contains(&spoken(&greeting)), "{}", spoken(&greeting));
 
     let d = call.say("צריך מונית עכשיו מרבי עקיבא 12 לנתב\"ג, אנחנו ארבעה.");
     assert_eq!(place(call.slot("pickup")), "רבי עקיבא 12");
@@ -115,7 +116,7 @@ fn md_example_29_full_booking_in_one_sentence() {
     let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "eta_minutes": 4 })));
     let text = spoken(&d);
     // No arrival time is promised: the driver calls the customer.
-    assert!(text.contains("נהג מתאים") && !text.contains("דקות ממך"), "{text}");
+    assert!(text.contains("נהג") && !text.contains("דקות ממך") && !text.contains("4"), "{text}");
     assert!(call.engine.state.run.is_none());
     // The confirmation is pre-recorded, not dynamic TTS.
     let Directive::Speak { plan, .. } = &d[0] else { panic!() };
@@ -228,7 +229,7 @@ fn wait_says_so_changes_nothing_and_waits_longer() {
     assert_eq!(call.engine.state.run, before);
     assert_eq!(call.engine.silence_after_ms(), 15_000, "a longer wait before \"שומעים אותי?\"");
     let d = call.engine.on_silence();
-    assert!(spoken(&d).contains("שומעים אותי"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("הלו"), "{}", spoken(&d));
     assert_eq!(call.engine.silence_after_ms(), 5_000, "then the usual wait");
 }
 
@@ -653,7 +654,12 @@ fn speech_already_streamed_is_recorded_not_repeated() {
 fn an_empty_decision_never_leaves_the_caller_in_silence() {
     let (mut call, _) = Call::new(business(&[]));
     let d = call.engine.on_agent_turn("...", decide(AgentAction::None, "", None, &[]), "");
-    assert_eq!(spoken(&d), "אהלן, איך אפשר לעזור?", "the question again, not \"say it again?\"");
+    let said = spoken(&d);
+    let greetings = &call.engine.business().response("greeting").unwrap().variants;
+    assert!(
+        said.ends_with('?') && greetings.iter().any(|g| g.ends_with(&said)),
+        "the greeting's question again, not \"say it again?\": {said}"
+    );
 }
 
 #[test]
@@ -957,7 +963,7 @@ fn faq_mid_flow_answers_then_resumes() {
 fn voice_library_is_mostly_pregenerated() {
     let b = with_desk();
     let entries = library_entries(&b);
-    assert!(entries.iter().any(|e| e.text == "סבבה, קיבלנו את הפרטים. נחפש נהג מתאים, והוא יתקשר בדקות הקרובות."));
+    assert!(entries.iter().any(|e| e.text == "סגור, ההזמנה יצאה. נהג יתקשר ממש בקרוב."));
     // A price is said live: any sum, from the price list.
     assert!(!entries.iter().any(|e| e.response_id == "price_answer"));
     assert!(entries.iter().any(|e| e.text == "מאיפה לאסוף?" && e.delivery == "slow"));
@@ -2068,7 +2074,7 @@ fn a_silent_caller_with_details_given_is_waited_for() {
         "",
     );
     for _ in 0..2 {
-        assert!(spoken(&call.engine.on_silence()).contains("שומעים אותי"));
+        assert!(spoken(&call.engine.on_silence()).contains("הלו"));
     }
     assert_eq!(call.engine.silence_after_ms(), 5_000);
     for _ in 0..2 {
@@ -2497,7 +2503,7 @@ fn the_booking_asks_in_its_order_whatever_the_agent_writes() {
         asking(&["notes"], decide(AgentAction::None, "", None, &[("destination", "סוכות 12, ירושלים")])),
         "",
     );
-    assert!(spoken(&d).contains("על שם מי"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("שם"), "{}", spoken(&d));
     // No name: asked once, the note comes next and the name is not asked again.
     let d =
         call.engine.on_agent_turn("לא משנה", asking(&["customer_name"], decide(AgentAction::None, "", None, &[])), "");
@@ -2651,4 +2657,65 @@ fn a_towns_full_name_is_heard_in_its_short_name_said_in_the_same_breath() {
     assert!(spoken(&d).contains("בביתר עילית"), "{}", spoken(&d));
     let g = beitar();
     assert_eq!(g.towns_named("צריך מונית מביתר"), vec!["ביתר עילית".to_string()]);
+}
+
+// The owner: more charisma, less robot.
+
+#[test]
+fn the_read_back_says_a_place_as_a_person_would() {
+    let call = read_back_ride();
+    let said = call.engine.state.last_plan.as_ref().map(|p| p.text()).unwrap_or_default();
+    assert!(said.contains("מבן זכאי 40 באלעד") && said.contains("לסוכות 12 בירושלים"), "{said}");
+    assert_eq!(callora_core::render::place_in_sentence("נתב״ג"), "נתב״ג");
+}
+
+fn returning(name: Option<&str>) -> Customer {
+    let mut c = Customer { name: name.map(str::to_string), ..Customer::default() };
+    for (k, v) in [
+        ("last_from_city", "אלעד"),
+        ("last_to_city", "ירושלים"),
+        ("last_from", "בן זכאי 40, אלעד"),
+        ("last_to", "סוכות 12, ירושלים"),
+    ] {
+        c.data.insert(k.into(), serde_json::json!(v));
+    }
+    c.places.insert(
+        "last_pickup".into(),
+        CustomerPlace {
+            spoken: "בן זכאי 40, אלעד".into(), address: Some("רבן יוחנן בן זכאי 40, אלעד".into())
+        },
+    );
+    c.places.insert("last_destination".into(), CustomerPlace { spoken: "סוכות 12, ירושלים".into(), address: None });
+    c
+}
+
+#[test]
+fn a_returning_caller_hears_their_last_ride_and_a_yes_takes_it() {
+    let b = business(&[]);
+    let mut engine = Engine::new(b.clone(), 7);
+    engine.set_gazetteer(Some(elad()));
+    engine.set_customer(Some(returning(Some("דוד"))));
+    let said = spoken(&engine.start());
+    assert!(said.contains("דוד") && said.contains("שוב מאלעד לירושלים"), "{said}");
+    let request = callora_core::agent::build_request(&b, &engine.state, "כן");
+    assert!(request.user.contains("Their last ride: from בן זכאי 40, אלעד to סוכות 12, ירושלים"), "{}", request.user);
+    // "כן": the agent passes the same places, never said in this call, and they are taken.
+    engine.on_agent_turn(
+        "כן",
+        decide(
+            AgentAction::None,
+            "",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות 12, ירושלים")],
+        ),
+        "",
+    );
+    let run = engine.state.run.as_ref().expect("a booking");
+    assert!(run.slots.contains_key("pickup") && run.slots.contains_key("destination"), "{:?}", run.slots.keys());
+
+    // No name to greet with: the greeting that can be said.
+    let mut engine = Engine::new(b, 7);
+    engine.set_customer(Some(returning(None)));
+    let said = spoken(&engine.start());
+    assert!(!said.is_empty() && !said.contains('{'), "{said}");
 }

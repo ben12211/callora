@@ -309,6 +309,26 @@ pub async fn utterance_audio(pool: &PgPool, id: i64) -> sqlx::Result<Option<Vec<
 }
 
 /// The newest order cards, with the calling number and time.
+/// The caller's last ride with the business: the card of their latest order that went out
+/// (not one left for a person to check), and when.
+pub async fn last_ride(
+    pool: &PgPool,
+    business_id: &str,
+    phone: &str,
+) -> sqlx::Result<Option<(Value, chrono::DateTime<chrono::Utc>)>> {
+    let row = sqlx::query(
+        "SELECT o.card, o.at FROM callora_v2.orders o JOIN callora_v2.calls c ON c.id = o.call_id
+         WHERE c.business_id = $1 AND c.from_number = $2 AND o.card ? 'result'
+           AND NOT coalesce((o.card->>'verify')::boolean, false)
+         ORDER BY o.at DESC LIMIT 1",
+    )
+    .bind(business_id)
+    .bind(phone)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| (r.get("card"), r.get("at"))))
+}
+
 pub async fn list_orders(pool: &PgPool, limit: i64) -> sqlx::Result<Vec<Value>> {
     let rows = sqlx::query(
         "SELECT o.card, o.at, c.from_number, c.id AS call_id FROM callora_v2.orders o

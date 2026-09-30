@@ -546,6 +546,10 @@ pub struct ResponseConfig {
     /// Another response spoken first as its own audio segment (usually an acknowledgement).
     #[serde(default)]
     pub prefix: Option<ResponseId>,
+    /// How it is said: an audio tag for the voice model ("warmly", "cheerfully"), sent with the
+    /// text to TTS and never said or shown.
+    #[serde(default)]
+    pub tone: Option<String>,
     /// Said alone: as the agent's phrase, none of its own words after it are said (the refusal
     /// of a question off the business must not be followed by the answer).
     #[serde(default)]
@@ -707,6 +711,10 @@ pub struct CustomerLookupConfig {
     /// Greeting used instead of the default when the customer is known; may use `{name}`.
     #[serde(default)]
     pub known_greeting: Option<ResponseId>,
+    /// Greeting for a caller whose last ride is known ("אהלן דוד! שוב מאלעד לירושלים?"): may
+    /// use `{customer_name}`, `{last_from_city}`, `{last_to_city}`.
+    #[serde(default)]
+    pub returning_greeting: Option<ResponseId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
