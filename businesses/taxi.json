@@ -31,9 +31,9 @@
   "acknowledgement": "ack",
 
   "lexicon": {
-    "affirm": ["כן", "כן כן", "בטח", "סבבה", "יאללה", "נכון", "אוקיי", "אוקי", "בדיוק", "מאשר", "תשלח", "שלח", "יופי", "מעולה", "בסדר", "טוב", "כן תשלח", "נכון מאוד", "yes"],
+    "affirm": ["כן", "כן כן", "בטח", "סבבה", "יאללה", "נכון", "אוקיי", "אוקי", "בדיוק", "מאשר", "תשלח", "שלח", "יופי", "מעולה", "בסדר", "טוב", "כן תשלח", "נכון מאוד", "yes", "ok", "okay"],
     "deny": ["לא", "לא לא", "ממש לא", "אל תשלח", "לא נכון", "no"],
-    "fillers": ["אה", "אממ", "אמ", "אהה", "אהמ", "כאילו", "בעצם", "בבקשה", "לי", "לנו", "טוב", "שמע", "תשמע", "אחי", "אחותי", "מותק", "צריך", "רוצה", "אני", "היי", "הלו", "אהלן", "תודה", "רבה"],
+    "fillers": ["אה", "אממ", "אמ", "אהה", "אהמ", "כאילו", "בעצם", "בבקשה", "לי", "לנו", "טוב", "שמע", "תשמע", "אחי", "אחותי", "מותק", "צריך", "רוצה", "אני", "היי", "הלו", "אהלן", "תודה", "רבה", "thanks", "thank you"],
     "now": ["עכשיו", "כמה שיותר מהר", "מיד", "כרגע", "דחוף", "בהקדם", "עכשיו עכשיו", "הכי מהר"],
     "correct": ["לא", "רגע", "טעיתי", "טעות", "תתקן", "תשנה", "בעצם", "התכוונתי", "סליחה", "אופס", "לא לא", "אבל"],
     "harmless": ["סליחה", "אין בעיה", "לא צריך כלום", "לא צריך שום דבר"],
@@ -62,7 +62,7 @@
       "phrases": ["נציג", "נציגה", "מוקדן", "מוקדנית", "בן אדם", "נציג אנושי", "לדבר עם מישהו", "לדבר עם בן אדם"]
     },
     "goodbye": {
-      "exact": ["ביי", "להתראות", "תודה ביי", "יאללה ביי", "זהו תודה", "זה הכל", "זהו", "תודה זהו", "ביי ביי", "זהו זה"],
+      "exact": ["ביי", "להתראות", "תודה ביי", "יאללה ביי", "זהו תודה", "זה הכל", "זהו", "תודה זהו", "ביי ביי", "זהו זה", "bye", "bye bye", "ok bye", "okay bye", "thanks bye", "thank you bye"],
       "response": "goodbye"
     },
     "wait": { "exact": ["רגע", "שנייה", "רק רגע", "חכה", "רגע רגע", "לא לא רגע", "שנייה אחת", "רגע אחד"], "response": "wait_ack" }
@@ -245,7 +245,7 @@
       "Examples: nothing known yet → phrase ask_route (\"מאיפה לאן?\"). Caller \"מאלעד לבני ברק\" → both cities are noted → the pickup street first: \"איפה באלעד לאסוף?\"; then its house number; then \"לאן בבני ברק?\". Caller \"מבן זכאי 45 באלעד לבני ברק\" → the pickup is complete → \"לאן בבני ברק?\". Caller \"לא יודע\" to a street question about the destination → the city is enough → go on. Caller \"לא יודע\" to a house number → pass the street again, it is taken as it is.",
       "Small talk together with a request gets one short answer that goes straight to the request: caller \"מה המצב? אני יכול להזמין מונית?\" → say \"סבבה, מאיפה לאן?\" (never only \"הכל טוב\" when they asked for something).",
       "When the system did not accept a detail, ask for it again with the short question (\"כמה נוסעים?\"); do not explain the system's limits.",
-      "Speech recognition splits and garbles words. Use your knowledge of real Israeli places and of Hebrew to fix obvious errors: in ירושלים, \"בני ינאי אומה\" or \"בניין ה-Human\" is \"בנייני האומה\"; \"ת\\\"מ איתן\", \"תמיטן\" or \"בתא מתן\" is \"תא מטען\" (the trunk); right after \"כמה נוסעים?\", the word \"שלום\" is \"שלוש\" (only that word; any other answer that is not a number, ask again). If you are not sure, ask.",
+      "Speech recognition splits and garbles words. Use your knowledge of real Israeli places and of Hebrew to fix obvious errors: in ירושלים, \"בני ינאי אומה\" or \"בניין ה-Human\" is \"בנייני האומה\"; \"ת\\\"מ איתן\", \"תמיטן\" or \"בתא מתן\" is \"תא מטען\" (the trunk); right after \"כמה נוסעים?\", the word \"שלום\" is \"שלוש\" (only that word; any other answer that is not a number, ask again). If you are not sure, ask. Recognition sometimes writes Hebrew speech in English letters (\"David.\", \"Bye.\", \"Yalla\"): read it as the Hebrew it is, and pass names in Hebrew letters (\"דוד\", never \"David\").",
       "Pass a place's city as soon as it is said (\"אלעד\"), and its street with the city (\"בן זכאי 45, אלעד\").",
       "A place that is not a street (a building, a mall, a hospital, a school, a neighbourhood) is a fine answer to the street question: pass it with the city (\"בנייני האומה, ירושלים\"); the system knows the places of each city. If it says it does not know the place, ask \"יש כתובת של המקום?\"; if the caller does not know, pass the place again and go on.",
       "Many callers (especially in בני ברק, אלעד, ביתר עילית, מודיעין עילית, ירושלים, בית שמש) speak with an Ashkenazi pronunciation that recognition garbles: ת sounds like ס (\"שבעס\" is \"שבת\"), o like oy (\"אהרוינוביטש\" is \"אהרונוביץ\"), and names are said the Yiddish way (\"יאנקל\" is \"יעקב\"). Write the real street or name it obviously is; if unsure, ask.",
@@ -479,7 +479,7 @@
     "ask_destination_city": { "variants": ["לאיזו עיר נוסעים?", "ולאיזו עיר נוסעים?"] },
     "ask_destination_street": { "variants": ["לאן ב{city}?"] },
     "ask_pickup_number": { "variants": ["באיזה מספר בית לאסוף?"] },
-    "ask_destination_number": { "variants": ["לאיזה מספר בית נוסעים?"] },
+    "ask_destination_number": { "variants": ["לאיזה מספר בית?"] },
     "ask_pickup_unknown": { "variants": ["לא הכרתי את {heard}. מאיזו עיר לאסוף?"] },
     "ask_destination_unknown": { "variants": ["לא הכרתי את {heard}. לאיזו עיר נוסעים?"] },
     "street_not_found_suggest": { "variants": ["לא מצאתי את {heard} ב{city}. התכוונת ל{suggestion}?"] },

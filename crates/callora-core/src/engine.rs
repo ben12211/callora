@@ -458,11 +458,16 @@ impl Engine {
         // The model took the answer and asked the same question again (a live call: "בן זכאי,
         // 32" stored as the destination, then "לאיזה רחוב?"). The question was answered: ask
         // the next one instead.
+        // Or took part of it: "מאלעד לבני ברק" noted the city, and the model's "מאיזו עיר לאסוף?"
+        // asked for it again (a live call of 2026-09-30).
         let answered = spoken.is_empty() && action == AgentAction::None && {
             let asked = turn.phrase.as_deref().and_then(|p| self.slot_asked_by(p));
             asked.is_some_and(|slot| {
                 turn.fields.iter().any(|(s, _)| *s == slot)
-                    && self.state.run.as_ref().is_some_and(|r| r.slots.contains_key(&slot))
+                    && (self.state.run.as_ref().is_some_and(|r| r.slots.contains_key(&slot))
+                        || self.state.place_cities.contains_key(&slot)
+                        || self.state.place_numbers.contains_key(&slot)
+                        || self.state.place_streets.contains_key(&slot))
             })
         };
         if answered {
@@ -603,7 +608,7 @@ impl Engine {
             });
             return;
         }
-        if let Some(plan) = phrase.and_then(|p| self.render_response(p)) {
+        if let Some(plan) = phrase.and_then(|p| self.render_phrase(p)) {
             out.speak(plan, true);
         }
         if phrase.is_some_and(|p| !crate::agent::say_after_phrase(&self.business, p, say)) {
@@ -788,10 +793,33 @@ impl Engine {
             Some(second) => format!("{heard}. {second}"),
             None => heard,
         };
+        // The optional questions asked before the read-back ("יש משהו שהנהג צריך לדעת?"): a "no"
+        // to one is its answer, not its value (a live ride went out with the note "לא").
+        let optional: Vec<String> = self
+            .state
+            .run
+            .as_ref()
+            .map(|r| {
+                self.pipeline_of(r)
+                    .slots
+                    .iter()
+                    .filter(|ps| ps.ask_before_confirm && !ps.required)
+                    .map(|ps| ps.slot.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let fills: Vec<SlotFill> = fields
             .iter()
             .filter_map(|(slot, raw)| {
                 let cfg = self.business.config.slots.get(slot)?;
+                if optional.contains(slot) {
+                    let norm = crate::text::normalize(raw);
+                    let rest = self.business.fillers.strip(&self.business.deny.strip(&norm));
+                    if !norm.trim().is_empty() && rest.trim().is_empty() {
+                        self.state.asked_before_confirm.insert(slot.clone());
+                        return None;
+                    }
+                }
                 if cfg.kind == crate::config::SlotKind::Place {
                     let invented = crate::gazetteer::unheard_words(raw, &heard);
                     let rejections = self.state.unheard_rejections.get(slot).copied().unwrap_or(0);
@@ -956,6 +984,20 @@ impl Engine {
                     lookup = joined;
                 }
             }
+        }
+        // "הנביאים 2" not in בני ברק, then "בירושלים": the street there, with the number said before.
+        if let (Lookup::Found(a), Some(number)) = (&lookup, self.state.doubted_numbers.get(slot).cloned()) {
+            if a.street.is_some() && a.number.is_none() && a.place.is_none() {
+                let street = a.street_said.clone().or_else(|| a.street.clone()).unwrap_or_default();
+                if let Some(joined) = g.resolve_within(&format!("{street} {number}"), &a.city_said) {
+                    if matches!(&joined, Lookup::Found(j) if j.number.is_some()) {
+                        lookup = joined;
+                    }
+                }
+            }
+        }
+        if matches!(&lookup, Lookup::Found(a) if a.number.is_some()) {
+            self.state.doubted_numbers.remove(slot);
         }
         Some(match lookup {
             // "בן זכאי 45" with no city: a house number is a street's, and the locality its words
@@ -1135,11 +1177,16 @@ impl Engine {
                 let meant = suggestion
                     .map(|s| format!("if they agree to {s}, pass \"{}, {city}\"; ", format!("{s} {number}").trim()))
                     .unwrap_or_default();
+                let with_number =
+                    if number.is_empty() { String::new() } else { format!(" and its house number {number}") };
                 notes.push(format!(
                     "{slot}: {city} has no street \"{heard}\"; it was not taken. The system said so and asked what they \
-                     meant: {meant}if they name another city, pass the street with that city; if they insist on what \
-                     they said, pass it again as it is: it will be taken{hint}"
+                     meant: {meant}if they name another city, pass the street{with_number} with that city; if they insist \
+                     on what they said, pass it again as it is: it will be taken{hint}"
                 ));
+                if !number.is_empty() {
+                    self.state.doubted_numbers.insert(slot.to_string(), number.clone());
+                }
                 *self.state.place_rejections.entry(slot.to_string()).or_default() += 1;
                 if !prompts.is_empty() {
                     self.state.doubt_confirm.insert(slot.to_string(), prompts);
@@ -2146,22 +2193,50 @@ impl Engine {
         }
     }
 
-    fn ask(&mut self, out: &mut Out, slot: &str, acknowledge: bool) {
-        let Some(run) = &self.state.run else { return };
-        let pipeline = self.pipeline_of(run);
-        let Some(mut ask) = pipeline.slots.iter().find(|p| p.slot == slot).and_then(|p| p.ask.clone()) else { return };
-        // The city is known: only the street is missing ("לאיזה רחוב?", not "לאן?").
+    /// The question for what is still missing of a place: its house number when the street is
+    /// known, its street when the city is, its city when the street is.
+    fn specific_ask(&self, slot: &str) -> Option<String> {
+        let ask = self.pipeline_ask(slot)?;
         let street = format!("{ask}_street");
         let city = format!("{ask}_city");
         let number = format!("{ask}_number");
         if self.state.place_numbers.contains_key(slot) && self.business.response(&number).is_some() {
-            // The street is known: only its house number is missing.
-            ask = number;
+            Some(number)
         } else if self.state.place_cities.contains_key(slot) && self.business.response(&street).is_some() {
-            ask = street;
+            Some(street)
         } else if self.state.place_streets.contains_key(slot) && self.business.response(&city).is_some() {
-            // The street is known: only its city is missing ("מאיזו עיר לאסוף?").
-            ask = city;
+            Some(city)
+        } else {
+            None
+        }
+    }
+
+    /// A recorded phrase the agent chose. One that asks for a place in general ("לאן צריך
+    /// להגיע?") after part of it was given (the city בני ברק) asks for what is missing
+    /// instead ("לאן בבני ברק?"): a live caller was asked for a destination already given.
+    pub fn render_phrase(&mut self, id: &str) -> Option<SpeechPlan> {
+        let specific = self.slot_asked_by(id).and_then(|slot| self.specific_ask(&slot).map(|r| (slot, r)));
+        match specific {
+            Some((slot, response)) if response != id => {
+                tracing::info!(phrase = id, instead = %response, "the phrase asks for what is already known; asking for the rest");
+                let mut ctx = self.render_ctx(None);
+                if let Some(city) = self.state.place_cities.get(&slot) {
+                    ctx.extra.insert("city".into(), city.clone());
+                }
+                self.render_plan(&response, &ctx)
+            }
+            _ => self.render_response(id),
+        }
+    }
+
+    fn ask(&mut self, out: &mut Out, slot: &str, acknowledge: bool) {
+        let Some(run) = &self.state.run else { return };
+        let pipeline = self.pipeline_of(run);
+        let Some(mut ask) = pipeline.slots.iter().find(|p| p.slot == slot).and_then(|p| p.ask.clone()) else { return };
+        // The city is known: only the street is missing ("לאיזה רחוב?", not "לאן?"); the street
+        // is known: only its house number, or its city ("מאיזו עיר לאסוף?").
+        if let Some(specific) = self.specific_ask(slot) {
+            ask = specific;
         }
         let has_prefix = self.business.response(&ask).is_some_and(|r| r.prefix.is_some());
         if acknowledge && !has_prefix {

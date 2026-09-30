@@ -2030,3 +2030,107 @@ fn a_silent_caller_with_details_given_is_waited_for() {
     call.engine.on_silence();
     assert!(call.engine.on_silence().iter().any(|d| matches!(d, Directive::Hangup)));
 }
+
+// The live call of 2026-09-30 00:45: "מאלעד לבני ברק" was asked "מאיזו עיר לאסוף?", then
+// "לאן צריך להגיע?"; "הנביאים 2" moved to ירושלים lost its number; "לא" became the driver's
+// note; "Bye." did not end the call.
+
+fn elad_bnei_brak_jerusalem() -> Arc<callora_core::gazetteer::Gazetteer> {
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         6100\tבני ברק\t301\tרבי עקיבא\tofficial\n3000\tירושלים\t140\tהנביאים\tofficial\n",
+    ))
+}
+
+fn with_phrase(phrase: &str, turn: AgentTurn) -> AgentTurn {
+    AgentTurn { phrase: Some(phrase.into()), ..turn }
+}
+
+#[test]
+fn two_cities_given_are_not_asked_for_again() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_bnei_brak_jerusalem()));
+    call.engine.on_agent_turn(
+        "אני רוצה להזמין מונית",
+        decide(AgentAction::None, "מאיפה לאן?", Some("book_ride"), &[]),
+        "",
+    );
+    // The runtime held the phrase back: it asks for the pickup the reply passes.
+    let d = call.engine.on_agent_turn(
+        "מאלעד לבני ברק",
+        with_phrase(
+            "ask_pickup_city",
+            decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "אלעד"), ("destination", "בני ברק")]),
+        ),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("באלעד") && !said.contains("מאיזו עיר"), "{said}");
+
+    // The pickup street, and the model's general "לאן צריך להגיע?": the city is known.
+    call.engine.on_agent_turn(
+        "בן זכאי ארבעים וחמש",
+        decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "בן זכאי 45, אלעד")]),
+        "",
+    );
+    let asked = call.engine.render_phrase("ask_destination").expect("a question").text();
+    assert_eq!(asked, "לאן בבני ברק?");
+}
+
+#[test]
+fn a_house_number_said_with_a_street_of_another_city_is_kept() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_bnei_brak_jerusalem()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 45 באלעד לבני ברק",
+        decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "בן זכאי 45, אלעד"), ("destination", "בני ברק")]),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "הנביאים שתיים",
+        decide(AgentAction::None, "", Some("book_ride"), &[("destination", "הנביאים 2, בני ברק")]),
+        "",
+    );
+    assert!(spoken(&d).contains("הנביאים"), "not found there, said so: {}", spoken(&d));
+    // The model passes the street in the other city without the number said before.
+    let d = call.engine.on_agent_turn(
+        "אני גר בירושלים",
+        decide(AgentAction::None, "", Some("book_ride"), &[("destination", "הנביאים, ירושלים")]),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), "הנביאים 2, ירושלים");
+    assert!(!spoken(&d).contains("מספר בית"), "the number is not asked again: {}", spoken(&d));
+}
+
+#[test]
+fn no_to_the_driver_question_is_no_note() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    let d = call.engine.on_agent_turn(
+        "בן זכאי 40 אלעד לסוכות ירושלים, שלושה",
+        decide(
+            AgentAction::None,
+            "יש משהו שהנהג צריך לדעת?",
+            Some("book_ride"),
+            &[
+                ("pickup", "בן זכאי 40, אלעד"),
+                ("destination", "סוכות 12, ירושלים"),
+                ("passengers", "שלושה"),
+                ("customer_name", "דוד"),
+            ],
+        ),
+        "",
+    );
+    assert!(spoken(&d).contains("הנהג"), "{}", spoken(&d));
+    let d = call.engine.on_agent_turn("לא.", decide(AgentAction::ReadBack, "", None, &[("notes", "לא")]), "");
+    assert_eq!(call.slot("notes"), None, "\"לא\" is not a note");
+    assert_eq!(call.step(), Some(Step::AwaitingConfirmation), "read back: {}", spoken(&d));
+    assert!(!spoken(&d).contains("הנהג"), "not asked again: {}", spoken(&d));
+}
+
+#[test]
+fn bye_in_english_letters_ends_the_call() {
+    let mut call = booked_ride();
+    let d = call.engine.on_agent_turn("Bye.", with_phrase("goodbye", decide(AgentAction::EndCall, "", None, &[])), "");
+    assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{}", spoken(&d));
+}

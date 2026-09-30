@@ -330,7 +330,7 @@ impl Session {
                 return;
             }
         }
-        let Some(plan) = self.engine.render_response(&id) else { return };
+        let Some(plan) = self.engine.render_phrase(&id) else { return };
         if let Some(p) = self.pending_agent.as_mut() {
             p.phrase = Some(id.clone());
             p.spoken.push(plan.text());

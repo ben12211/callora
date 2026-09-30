@@ -230,6 +230,10 @@ pub struct CallState {
     /// The caller asked to wait ("רגע"): the silence reprompt waits longer.
     #[serde(default)]
     pub waiting: bool,
+    /// The house number said with a street that was not found in its city: kept for the same
+    /// street in the city the caller names next.
+    #[serde(default)]
+    pub doubted_numbers: BTreeMap<String, String>,
     /// The caller turn at which the agent last said the line is noisy: said once per turn,
     /// not every time noise cuts in.
     #[serde(default)]
@@ -275,6 +279,7 @@ impl CallState {
             caller_phone: None,
             next_action_run: 1,
             waiting: false,
+            doubted_numbers: BTreeMap::new(),
             noise_apology_turn: None,
         }
     }

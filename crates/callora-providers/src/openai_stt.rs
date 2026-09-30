@@ -24,7 +24,8 @@ use callora_runtime::ports::{SpeechToText, SttEvent, SttInput, SttSession};
 pub const DEFAULT_URL: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
 pub const DEFAULT_MODEL: &str = "gpt-transcribe";
 pub const DEFAULT_PROMPT: &str = "A phone call in Hebrew to a business in Israel. Callers give cities, streets and \
-                                  house numbers, numbers of people, and names.";
+                                  house numbers, numbers of people, and names. Write everything in Hebrew letters, \
+                                  names and English words too: דוד, ביי, אוקיי.";
 
 pub struct OpenAiStt {
     api_key: String,
