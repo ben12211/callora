@@ -143,9 +143,15 @@ impl Session {
         let reading_back = self.engine.context().awaiting_confirmation;
         let words = partial.is_some_and(|text| {
             let (u, _) = fast_path(&self.business, &self.engine.context(), text);
-            !u.noise && !self.engine.is_backchannel(text)
+            !u.noise && !self.engine.is_backchannel(text) && !self.engine.is_hello(text)
         });
-        let enough = if reading_back { BARGE_CONFIRM_READ_BACK } else { BARGE_CONFIRM };
+        let enough = if reading_back {
+            BARGE_CONFIRM_READ_BACK
+        } else if self.engine.state.turns == 0 {
+            BARGE_CONFIRM_GREETING
+        } else {
+            BARGE_CONFIRM
+        };
         if words || Duration::from_millis(self.voiced_ms) >= enough {
             self.barge_pending = false;
             self.barge_in();
@@ -229,6 +235,12 @@ impl Session {
         // "תודה" to "משהו נוסף?": the goodbye, without asking anyone.
         if !self.agent_busy() && self.pending_agent.is_none() && self.pending_llm.is_none() {
             if let Some(d) = self.engine.on_closing(&text) {
+                tracing::info!(call = %self.info.call_sid, caller = %text, "caller");
+                self.interrupted = false;
+                self.silence_generation += 1;
+                return self.execute(d);
+            }
+            if let Some(d) = self.engine.on_no_to_optional(&text) {
                 tracing::info!(call = %self.info.call_sid, caller = %text, "caller");
                 self.interrupted = false;
                 self.silence_generation += 1;

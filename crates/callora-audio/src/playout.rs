@@ -7,14 +7,14 @@
 //! transfers may happen.
 //!
 //! Items play in order. A cached clip starts on the very next frame; a streaming TTS item
-//! starts once all of it has arrived, and the items queued after it wait for it.
+//! starts once a little of it is buffered, and the items queued after it wait for it.
 //!
-//! Whole, because TTS streams come in bursts: eleven_v3 sends a third of a second of
-//! speech, stops for half a second (once for five), then sends the rest. Played as it
-//! came, a sentence broke up and stopped mid-word; a 600 ms buffer still ran dry on a
-//! live call. Live sentences are short pieces synthesized side by side (see the runtime's
-//! `split_for_tts`), so waiting for a piece costs little, and a pause can only fall
-//! between pieces, at a comma.
+//! The buffer is there because TTS streams come in bursts: eleven_v3 sends a third of a
+//! second of speech, stops for half a second, then sends the rest faster than real time.
+//! Played as it came, a sentence broke up mid-word ("קטוע"). Measured on Hebrew replies, a
+//! 600 ms start covers most; a stream that still runs dry pauses once, for 400 ms, rather
+//! than stuttering frame by frame. (eleven_v4_turbo streams steadily, several times faster
+//! than real time: its 600 ms are there a tenth of a second after its first byte.)
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -25,6 +25,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::mulaw::{apply_gain, FRAME_BYTES, FRAME_MS, SILENCE};
+
+/// Speech a stream buffers before it starts (μ-law 8 kHz: 8 bytes a millisecond).
+const START_BUFFER_BYTES: usize = 600 * 8;
+/// Speech a stream that ran dry mid-item buffers before it goes on.
+const REBUFFER_BYTES: usize = 400 * 8;
 
 pub enum Source {
     Clip(Bytes),
@@ -100,10 +105,13 @@ struct Active {
     gain_db: f32,
     started: bool,
     stream_done: bool,
+    /// Bytes to have before playing (again); 0 while playing.
+    buffer_to: usize,
 }
 
 impl Active {
     fn new(item: PlayItem) -> Self {
+        let buffer_to = if matches!(item.source, Source::Stream(_)) { START_BUFFER_BYTES } else { 0 };
         Self {
             id: item.id,
             source: item.source,
@@ -112,6 +120,7 @@ impl Active {
             gain_db: item.gain_db,
             started: false,
             stream_done: false,
+            buffer_to,
         }
     }
 
@@ -130,7 +139,7 @@ impl Active {
                 f
             }
             Source::Stream(rx) => {
-                while !self.stream_done {
+                while self.pending.len() < self.buffer_to.max(FRAME_BYTES) && !self.stream_done {
                     match rx.try_recv() {
                         Ok(Ok(chunk)) => self.pending.extend_from_slice(&chunk),
                         Ok(Err(e)) => {
@@ -141,8 +150,11 @@ impl Active {
                         Err(mpsc::error::TryRecvError::Disconnected) => self.stream_done = true,
                     }
                 }
-                if !self.stream_done {
-                    return None;
+                if self.buffer_to > 0 {
+                    if self.pending.len() < self.buffer_to && !self.stream_done {
+                        return None;
+                    }
+                    self.buffer_to = 0;
                 }
                 if self.pending.len() >= FRAME_BYTES {
                     self.pending.split_to(FRAME_BYTES)
@@ -151,6 +163,10 @@ impl Active {
                     f.resize(FRAME_BYTES, SILENCE);
                     f
                 } else {
+                    if self.started {
+                        tracing::info!(item = self.id, "live speech ran dry mid-item; buffering");
+                        self.buffer_to = REBUFFER_BYTES;
+                    }
                     return None;
                 }
             }
@@ -185,7 +201,9 @@ impl Active {
     }
 
     fn waiting_on_stream(&self) -> bool {
-        matches!(self.source, Source::Stream(_)) && !self.stream_done
+        matches!(self.source, Source::Stream(_))
+            && !self.stream_done
+            && self.pending.len() < self.buffer_to.max(FRAME_BYTES)
     }
 }
 
@@ -376,26 +394,34 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_stream_plays_once_all_of_it_has_arrived() {
+    async fn a_stream_buffers_before_it_plays_and_pauses_once_when_it_runs_dry() {
         let (out_tx, mut out) = mpsc::unbounded_channel();
         let (ev_tx, _ev) = mpsc::unbounded_channel();
         let (p, _task) = Playout::spawn(out_tx, ev_tx, 3);
         let (tts_tx, tts_rx) = mpsc::channel(64);
         p.enqueue(PlayItem { id: 1, source: Source::Stream(tts_rx), gain_db: 0.0 });
-        // eleven_v3's bursts: a third of a second, a pause, more.
+        // A third of a second, then nothing: eleven_v3's first burst.
         tts_tx.send(Ok(frames(17))).await.unwrap();
+        tokio::time::advance(Duration::from_millis(300)).await;
+        assert!(drain(&mut out).await.is_empty(), "not enough to start");
+        tts_tx.send(Ok(frames(13))).await.unwrap();
+        tokio::time::advance(Duration::from_millis(20)).await;
+        assert!(!drain(&mut out).await.is_empty(), "600 ms buffered: it plays");
+        // It all plays, then the stream runs dry: it waits for 400 ms before going on.
+        tokio::time::advance(Duration::from_millis(700)).await;
+        drain(&mut out).await;
+        tts_tx.send(Ok(frames(5))).await.unwrap();
+        tokio::time::advance(Duration::from_millis(100)).await;
+        assert!(drain(&mut out).await.is_empty(), "100 ms is not enough to go on");
+        tts_tx.send(Ok(frames(15))).await.unwrap();
+        tokio::time::advance(Duration::from_millis(20)).await;
+        assert!(!drain(&mut out).await.is_empty(), "400 ms buffered: it goes on");
+        // The end of a stream plays whatever is left, however short.
         tokio::time::advance(Duration::from_millis(500)).await;
-        tts_tx.send(Ok(frames(40))).await.unwrap();
-        tokio::time::advance(Duration::from_millis(500)).await;
-        assert!(drain(&mut out).await.is_empty(), "nothing plays before the sentence is whole");
-        tts_tx.send(Ok(frames(3))).await.unwrap();
+        drain(&mut out).await;
+        tts_tx.send(Ok(frames(2))).await.unwrap();
         drop(tts_tx);
         tokio::time::advance(Duration::from_millis(20)).await;
-        let mut played = drain(&mut out).await.len();
-        for _ in 0..80 {
-            tokio::time::advance(Duration::from_millis(20)).await;
-            played += drain(&mut out).await.len();
-        }
-        assert_eq!(played, 60, "then all of it, without a break");
+        assert!(!drain(&mut out).await.is_empty(), "the tail is not held back");
     }
 }

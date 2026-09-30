@@ -25,7 +25,7 @@ use crate::tts::{Synthesizer, TtsRequest};
 pub const FORMAT: &str = "mulaw_8000";
 
 /// The text for TTS with the response's tone before it ("[warmly] אהלן, איך אפשר לעזור?"): an
-/// audio tag eleven_v3 follows and does not say.
+/// audio tag eleven_v3 and eleven_v4 follow and do not say.
 pub fn with_tone(b: &Business, response_id: &str, spoken: String) -> String {
     match b.response(response_id).and_then(|r| r.tone.as_deref()).filter(|t| !t.trim().is_empty()) {
         Some(tone) => format!("[{}] {spoken}", tone.trim()),
@@ -276,8 +276,13 @@ mod tone_tests {
 
     #[test]
     fn a_tone_goes_to_the_voice_before_the_words() {
-        let text = include_str!("../../../businesses/taxi.json");
-        let b = Business::from_json(text, "taxi.json", &|_| None).expect("taxi");
+        let text = include_str!("../../../businesses/taxi.json").replacen(
+            "\"greeting\": {\"variants\": [",
+            "\"greeting\": {\"tone\": \"warmly\", \"variants\": [",
+            1,
+        );
+        assert!(text.contains("\"tone\": \"warmly\""));
+        let b = Business::from_json(&text, "taxi.json", &|_| None).expect("taxi");
         assert_eq!(with_tone(&b, "greeting", "אהלן".into()), "[warmly] אהלן");
         assert_eq!(with_tone(&b, "ask_route", "מאיפה לאן?".into()), "מאיפה לאן?", "no tone, no tag");
     }

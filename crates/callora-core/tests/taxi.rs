@@ -2722,3 +2722,98 @@ fn a_returning_caller_is_greeted_like_anyone_and_the_same_ride_is_taken() {
     let said = spoken(&engine.start());
     assert!(!said.is_empty() && !said.contains('{'), "{said}");
 }
+
+// A live call, 2026-10-01 00:33: each of these was said to the caller.
+
+/// The driver question asked, every required detail known.
+fn at_the_driver_question() -> Call {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    let mut turn = decide(
+        AgentAction::None,
+        "יש משהו שהנהג צריך לדעת?",
+        Some("book_ride"),
+        &[
+            ("pickup", "בן זכאי 40, אלעד"),
+            ("destination", "סוכות 12, ירושלים"),
+            ("passengers", "שלושה"),
+            ("customer_name", "דוד"),
+        ],
+    );
+    turn.asks = vec!["notes".into()];
+    call.engine.on_agent_turn("בן זכאי 40 אלעד לסוכות ירושלים, שלושה, דוד", turn, "");
+    call
+}
+
+#[test]
+fn no_to_the_driver_question_reads_back_without_the_agent() {
+    // "לא." got "אפשר להמשיך?".
+    let mut call = at_the_driver_question();
+    let d = call.engine.on_no_to_optional("לא.").expect("taken without the agent");
+    assert_eq!(call.step(), Some(Step::AwaitingConfirmation), "{}", spoken(&d));
+    assert!(spoken(&d).contains("לשלוח?"), "{}", spoken(&d));
+    assert_eq!(call.slot("notes"), None);
+    let mut call = at_the_driver_question();
+    assert!(call.engine.on_no_to_optional("אין, תודה").is_some());
+    let mut call = at_the_driver_question();
+    assert!(call.engine.on_no_to_optional("יש מזוודה").is_none(), "a note goes to the agent");
+    assert!(call.engine.on_no_to_optional("לא, רגע, יש מזוודה").is_none());
+}
+
+#[test]
+fn a_number_given_instead_of_the_street_asked_for_is_no_passengers() {
+    // "הנביאים שלוש" to "לאן בירושלים?" came back "אני מביאים שלוש": three passengers, never asked.
+    let (mut call, _) = Call::new(business(&[]));
+    let mut turn = decide(AgentAction::None, "לאן בירושלים?", Some("book_ride"), &[("pickup", "הרצל 10, רעננה")]);
+    turn.asks = vec!["destination".into()];
+    call.engine.on_agent_turn("מהרצל 10 ברעננה לירושלים", turn, "");
+    call.engine.on_agent_turn(
+        "אני מביאים שלוש.",
+        decide(AgentAction::None, "", Some("book_ride"), &[("passengers", "שלוש")]),
+        "",
+    );
+    assert_eq!(call.slot("passengers"), None);
+    // With its words, it is the passengers.
+    let (mut call, _) = Call::new(business(&[]));
+    let mut turn = decide(AgentAction::None, "לאן?", Some("book_ride"), &[("pickup", "הרצל 10, רעננה")]);
+    turn.asks = vec!["destination".into()];
+    call.engine.on_agent_turn("מהרצל 10 ברעננה", turn, "");
+    call.engine.on_agent_turn(
+        "רגע, אנחנו שלושה",
+        decide(AgentAction::None, "", Some("book_ride"), &[("passengers", "שלושה")]),
+        "",
+    );
+    assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 3 }));
+}
+
+#[test]
+fn a_transfer_is_never_announced_without_one() {
+    // "רגע, מעביר למוקדן שיתקן את ההזמנה." and then the read-back, no one transferred.
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn(
+        "שבע",
+        decide(AgentAction::None, "רגע, מעביר למוקדן שיתקן את ההזמנה.", Some("book_ride"), &[("passengers", "שבע")]),
+        "",
+    );
+    assert!(!spoken(&d).contains("מעביר"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("שבעה נוסעים"), "read back again: {}", spoken(&d));
+    assert!(call.engine.business().announces_transfer("רגע, אני מעביר אותך לנציג"));
+    assert!(!call.engine.business().announces_transfer("מאיפה לאסוף?"));
+}
+
+#[test]
+fn a_silence_asks_the_last_question_alone() {
+    // The reprompt said everything again: "הלו, שומעים אותי? רגע, מעביר ... אחלה. אז שבעה ... לשלוח?".
+    let mut call = read_back_ride();
+    call.engine.on_agent_turn(
+        "רגע, שבעה",
+        decide(AgentAction::None, "מעולה.", Some("book_ride"), &[("passengers", "שבעה")]),
+        "",
+    );
+    // Said: the acknowledgement ("אוקיי."), then the read-back.
+    let plan = call.engine.state.last_plan.clone().expect("said");
+    assert!(plan.segments.len() >= 2 && plan.text().contains("לשלוח?"), "{}", plan.text());
+    let ack = plan.segments[0].text.clone();
+    let again = spoken(&call.engine.on_silence());
+    assert!(again.contains("לשלוח?") && !again.contains(&ack), "{again}");
+}

@@ -207,6 +207,7 @@ impl Engine {
         let fields = probe.by_preposition(transcript, fields);
         let fields = probe.with_patterns(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
+        let fields = probe.with_cues(transcript, &fields);
         !probe.apply_agent_fields(&fields).1.is_empty()
     }
 
@@ -253,6 +254,7 @@ impl Engine {
         let fields = probe.by_preposition(transcript, fields);
         let fields = probe.with_patterns(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
+        let fields = probe.with_cues(transcript, &fields);
         probe.apply_agent_fields(&fields);
         probe.expected_slot().filter(|next| !asks.contains(next))
     }
@@ -491,6 +493,7 @@ impl Engine {
         let fields = self.by_preposition(transcript, &turn.fields);
         let fields = self.with_patterns(transcript, &fields);
         let fields = self.answer_in_place(transcript, &fields);
+        let fields = self.with_cues(transcript, &fields);
         let (changed, rejected) = self.apply_agent_fields(&fields);
         // A detail changed after the read-back ("לא 40, 45"): read it back again, so the next
         // "יאללה" sends the corrected task instead of meeting another read-back.
@@ -499,6 +502,12 @@ impl Engine {
         } else {
             turn.action
         };
+        // "רגע, מעביר למוקדן" with no transfer: words that promise what does not happen.
+        let mut turn = turn;
+        if action != AgentAction::Transfer && self.business.announces_transfer(&turn.say) {
+            tracing::info!(say = %turn.say, "a transfer announced without one; not said");
+            turn.say.clear();
+        }
         // Before the first read-back, the optional question the business always wants asked
         // ("יש משהו שהנהג צריך לדעת?"), when the agent skipped it.
         if matches!(action, AgentAction::ReadBack | AgentAction::Submit) && !was_confirming && rejected.is_empty() {
@@ -999,6 +1008,34 @@ impl Engine {
             }
         }
         out
+    }
+
+    /// Details with cue words (`cues`) given instead of the answer to a question about
+    /// something else, without those words: a mishearing of that answer, not the detail.
+    /// Only while details are collected; a caller's first sentence ("לירושלים, שלושה") and a
+    /// detail added to the answer ("לעזריאלי, שניים") are taken as they are.
+    fn with_cues(&self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {
+        let Some(run) = &self.state.run else { return fields.to_vec() };
+        let answered = fields.iter().any(|(s, v)| self.state.last_asks.contains(s) && !v.trim().is_empty());
+        if !matches!(run.step, Step::Collecting { .. }) || self.state.last_asks.is_empty() || answered {
+            return fields.to_vec();
+        }
+        let heard = crate::text::normalize(transcript);
+        fields
+            .iter()
+            .filter(|(slot, value)| {
+                let Some(cfg) = self.business.config.slots.get(slot) else { return true };
+                if cfg.cues.is_empty() || self.state.last_asks.contains(slot) || value.trim().is_empty() {
+                    return true;
+                }
+                let said = cfg.cues.iter().any(|c| heard.contains(&crate::text::normalize(c)));
+                if !said {
+                    tracing::info!(%slot, %value, transcript, "a detail not asked for, said without its words; not taken");
+                }
+                said
+            })
+            .cloned()
+            .collect()
     }
 
     /// A value passed under the name of the detail another task takes it from ("destination"
@@ -2258,6 +2295,40 @@ impl Engine {
             && crate::text::tokens(&norm).iter().any(|t| !crate::understanding::is_hesitation(t))
     }
 
+    /// "לא", "אין, תודה" to the optional question asked before the read-back ("הערה לנהג?"):
+    /// nothing for the driver, and the details are read back. Without the agent: a live call
+    /// answered this "לא" with "אפשר להמשיך?".
+    pub fn on_no_to_optional(&mut self, text: &str) -> Option<Vec<Directive>> {
+        let run = self.state.run.as_ref()?;
+        if self.state.phase != Phase::Active || !matches!(run.step, Step::Collecting { .. }) {
+            return None;
+        }
+        let pipeline = self.pipeline_of(run);
+        let slot = pipeline
+            .slots
+            .iter()
+            .find(|ps| {
+                ps.ask_before_confirm && self.state.last_asks.contains(&ps.slot) && !run.slots.contains_key(&ps.slot)
+            })?
+            .slot
+            .clone();
+        let norm = crate::text::normalize(text);
+        let said_no = self.business.deny.find(&norm).is_some() || self.business.nothing.find(&norm).is_some();
+        let rest = self.business.fillers.strip(&self.business.nothing.strip(&self.business.deny.strip(&norm)));
+        if !said_no || !rest.trim().is_empty() {
+            return None;
+        }
+        tracing::info!(text, %slot, "nothing for the optional question; reading back");
+        self.state.turns += 1;
+        self.state.silence_reprompts = 0;
+        self.state.remember(Speaker::Caller, text);
+        self.state.asked_before_confirm.insert(slot);
+        self.state.last_asks.clear();
+        let mut out = Out::default();
+        self.read_back(&mut out, true);
+        Some(self.finish(out))
+    }
+
     /// "תודה", "טוב תודה" to "משהו נוסף?": the call ends with the goodbye.
     pub fn on_closing(&mut self, text: &str) -> Option<Vec<Directive>> {
         let norm = crate::text::normalize(text);
@@ -2353,7 +2424,14 @@ impl Engine {
         }
         // What was said last, without its "סליחה, יש קצת רעש בקו.": a live call heard "הלו,
         // שומעים אותי? סליחה, יש קצת רעש בקו. צריך מונית?".
-        let last = self.state.last_plan.clone().map(|p| self.without_noise_apology(p));
+        // Only its question: a live call's reprompt said "רגע, מעביר למוקדן שיתקן את ההזמנה.
+        // אחלה. אז שבעה נוסעים ... לשלוח?" again, twice.
+        let last = self.state.last_plan.clone().map(|p| self.without_noise_apology(p)).map(|mut p| {
+            if let Some(i) = p.segments.iter().rposition(|s| s.text.trim_end().ends_with('?')) {
+                p.segments = vec![p.segments[i].clone()];
+            }
+            p
+        });
         if let Some(r) = &silence.response {
             let ctx = self.render_ctx(None);
             self.say(&mut out, r, ctx, false);

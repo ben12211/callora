@@ -159,6 +159,7 @@ impl Session {
         self.engine.state.continues_answer = false;
         let timeout = Duration::from_millis(cfg.timeout_ms);
         let tx = self.events.clone();
+        let business = self.business.clone();
         let task = tokio::spawn(async move {
             let says = tx.clone();
             let decide = async move {
@@ -200,6 +201,11 @@ impl Session {
                         }
                     }
                     for sentence in sentences {
+                        // "רגע, מעביר למוקדן" with no transfer (see `announces_transfer`).
+                        if say.action() != Some(AgentAction::Transfer) && business.announces_transfer(&sentence) {
+                            tracing::info!(%sentence, "a transfer announced without one; not said");
+                            continue;
+                        }
                         let _ = says.send(Ev::AgentSay { turn, sentence });
                     }
                 }
@@ -207,7 +213,10 @@ impl Session {
                     .map_err(|e| anyhow::anyhow!("the agent's reply is not JSON ({e}): {reply}"))?;
                 let held =
                     matches!(say.action(), Some(AgentAction::ReadBack | AgentAction::Submit | AgentAction::EndCall));
-                let rest = say.rest().filter(|_| !held);
+                let rest = say
+                    .rest()
+                    .filter(|_| !held)
+                    .filter(|r| say.action() == Some(AgentAction::Transfer) || !business.announces_transfer(r));
                 // The token counts come with the stream's last event.
                 let usage = tokio::time::timeout(Duration::from_millis(200), usage).await.ok().and_then(Result::ok);
                 anyhow::Ok((value, rest, usage))

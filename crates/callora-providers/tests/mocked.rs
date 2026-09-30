@@ -218,7 +218,7 @@ async fn voice_library_builds_incrementally_and_loads() {
 
     // New voice settings make every clip again, not only the changed sentences.
     let restyled = Arc::new(
-        Business::from_json(&TAXI.replace("\"style\": 0.35", "\"style\": 0.2"), "taxi.json", &|_| None).unwrap(),
+        Business::from_json(&TAXI.replace("\"style\": 0.0", "\"style\": 0.2"), "taxi.json", &|_| None).unwrap(),
     );
     let third = LibraryBuilder {
         business: &restyled,

@@ -87,6 +87,7 @@ pub struct Business {
     pub harmless: PhraseSet,
     pub hello: PhraseSet,
     pub nothing: PhraseSet,
+    pub transfer: PhraseSet,
     pub meta: Vec<CompiledMeta>,
     pub intent_keywords: Vec<(String, PhraseSet)>,
     pub slots: BTreeMap<SlotId, CompiledSlot>,
@@ -99,6 +100,11 @@ pub struct Business {
 }
 
 impl Business {
+    /// Words that announce a transfer to a person ("רגע, מעביר למוקדן"), said only with one.
+    pub fn announces_transfer(&self, text: &str) -> bool {
+        self.transfer.find(&crate::text::normalize(text)).is_some()
+    }
+
     /// How to say words for a caller addressed in this form. Neutral speech avoids the
     /// gendered words; when one slips in, masculine is the default.
     pub fn pronouncer_for(&self, form: crate::address_form::AddressForm) -> &crate::speech::Pronouncer {
@@ -169,6 +175,7 @@ impl Business {
         let harmless = phrase("lexicon.harmless".into(), &config.lexicon.harmless, false);
         let hello = phrase("lexicon.hello".into(), &config.lexicon.hello, false);
         let nothing = phrase("lexicon.nothing".into(), &config.lexicon.nothing, false);
+        let transfer = phrase("lexicon.transfer".into(), &config.lexicon.transfer, false);
 
         let mut meta = Vec::new();
         for (key, m) in &config.meta_intents {
@@ -290,6 +297,7 @@ impl Business {
             harmless,
             hello,
             nothing,
+            transfer,
             meta,
             intent_keywords,
             slots,

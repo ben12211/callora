@@ -53,8 +53,11 @@ const UNFINISHED_WAIT: Duration = Duration::from_millis(1200);
 const UNHEARD_WAIT: Duration = Duration::from_millis(2000);
 
 /// How long the caller's voice must go on over the agent before it stops, unless words come
-/// first: a cough, a car horn or the TV cut the agent off mid-question in live calls.
-const BARGE_CONFIRM: Duration = Duration::from_millis(450);
+/// first: a cough, a car horn or the TV cut the agent off mid-question in live calls. 450 ms
+/// was a "הלו" over the greeting, which then stopped mid-sentence.
+const BARGE_CONFIRM: Duration = Duration::from_millis(900);
+/// The same over the greeting, when callers say "הלו", "כן?" as the line opens.
+const BARGE_CONFIRM_GREETING: Duration = Duration::from_millis(1500);
 /// The same during a read-back, where "כן", "אהה" are the caller listening.
 const BARGE_CONFIRM_READ_BACK: Duration = Duration::from_millis(1200);
 /// After speech with no words at all (noise the recognizer returned nothing for), how long

@@ -94,8 +94,9 @@ impl Session {
             self.cover_live_tts(plan.gain_db);
         }
         for whole in &plan.segments {
-            // A long sentence for live TTS goes out as short pieces synthesized side by side:
-            // eleven_v3 took 6 to 31 s on a whole read-back, ~1 s on each short piece.
+            // A very long sentence for live TTS goes out as pieces synthesized side by side:
+            // eleven_v3 took 6 to 31 s on a whole read-back. eleven_v4_turbo takes ~1 s and
+            // reads it better whole, so a read-back is one piece.
             let pieces: Vec<SpeechSegment> = if self.library.get_loose(&whole.delivery, &whole.text).is_some() {
                 vec![whole.clone()]
             } else {
@@ -282,7 +283,7 @@ impl Session {
 /// Pieces of a sentence short enough for fast live TTS: split after commas and sentence
 /// marks, then merged back so no piece is a lone word ("סגור.") next to a short neighbour.
 pub(super) fn split_for_tts(text: &str) -> Vec<String> {
-    const SHORT: usize = 45;
+    const SHORT: usize = 160;
     if text.chars().count() <= SHORT {
         return vec![text.to_string()];
     }
@@ -362,10 +363,11 @@ mod tests {
     #[test]
     fn long_live_sentences_are_split_into_short_pieces() {
         let read_back = "שלושה נוסעים מרבן יוחנן בן זכאי 45, אלעד לאהרונוביץ ראובן 42, בני ברק, עכשיו. לשלוח?";
-        let pieces = super::split_for_tts(read_back);
-        assert_eq!(pieces.join(" "), read_back, "nothing is lost");
+        assert_eq!(super::split_for_tts(read_back), vec![read_back], "a read-back is read whole");
+        let long = [read_back; 3].join(" ");
+        let pieces = super::split_for_tts(&long);
+        assert_eq!(pieces.join(" "), long, "nothing is lost");
         assert!(pieces.len() >= 3, "{pieces:?}");
-        assert!(pieces.iter().all(|p| p.chars().count() <= 40), "{pieces:?}");
         assert_eq!(super::split_for_tts("לאיזה רחוב בבני ברק?"), vec!["לאיזה רחוב בבני ברק?"]);
     }
 }

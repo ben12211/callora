@@ -197,6 +197,11 @@ pub struct Lexicon {
     /// "Nothing" ("אין", "כלום"): with a "no", the answer to an optional question, not its value.
     #[serde(default)]
     pub nothing: Vec<String>,
+    /// Words that announce a transfer to a person ("מעביר", "נציג"): the agent's words say them
+    /// only with a transfer. A live call heard "רגע, מעביר למוקדן שיתקן את ההזמנה" and then
+    /// the read-back, with no one transferred.
+    #[serde(default)]
+    pub transfer: Vec<String>,
 }
 
 /// The meta intents the runtime understands. Their *behaviour* is built in; their
@@ -311,6 +316,11 @@ pub struct SlotConfig {
     /// named group `value`. Matched anywhere in the utterance, in any state.
     #[serde(default)]
     pub patterns: Vec<String>,
+    /// Words a caller says with this detail when giving it unasked ("נוסעים", "אנחנו"). Set,
+    /// a value the caller was not asked for and gave without one of them is not taken: a live
+    /// call's "הנביאים שלוש" (the street) came back "אני מביאים שלוש", three passengers.
+    #[serde(default)]
+    pub cues: Vec<String>,
     /// Slots are extracted in ascending priority; each match hides its words from later
     /// slots, so specific patterns (a passenger count) run before greedy ones (a place).
     #[serde(default = "default_priority")]
