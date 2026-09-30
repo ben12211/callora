@@ -230,6 +230,8 @@ mod tests {
             s.session_update("he-IL", &[])["session"]["audio"]["input"]["transcription"]["prompt"],
             DEFAULT_PROMPT
         );
+        assert!(!s.wants_business_words(), "only a city's streets, while its street is asked");
+        assert!(OpenAiStt::new("k".into(), None, None, None).wants_business_words());
     }
 
     #[test]
