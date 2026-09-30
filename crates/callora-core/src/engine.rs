@@ -1094,7 +1094,7 @@ impl Engine {
         // And the cities it understood from them: "מביתר" is ביתר עילית, and the agent writing it
         // in full ("הרמב״ן 16, ביתר עילית") made up no word ("עילית" was refused).
         let mut understood: Vec<String> = self.state.place_cities.values().cloned().collect();
-        // And the places of the customer's record (their last ride): "כן, כמו פעם שעברה".
+        // And the places of the customer's record ("הבית").
         if let Some(c) = &self.state.customer {
             understood.extend(c.places.values().flat_map(|p| [Some(p.spoken.clone()), p.address.clone()]).flatten());
         }

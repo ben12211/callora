@@ -2691,7 +2691,7 @@ fn returning(name: Option<&str>) -> Customer {
 }
 
 #[test]
-fn a_returning_caller_is_greeted_like_anyone_and_the_same_ride_is_taken() {
+fn a_returning_caller_is_greeted_like_anyone_and_the_agent_is_not_told_the_last_ride() {
     let b = business(&[]);
     let mut engine = Engine::new(b.clone(), 7);
     engine.set_gazetteer(Some(elad()));
@@ -2699,28 +2699,10 @@ fn a_returning_caller_is_greeted_like_anyone_and_the_same_ride_is_taken() {
     // The owner: never the caller's name ("אהלן מחמוד בן עלי!" was bad), nor the last ride.
     let said = spoken(&engine.start());
     assert!(!said.contains("דוד") && !said.contains("שוב"), "{said}");
-    let request = callora_core::agent::build_request(&b, &engine.state, "כמו פעם שעברה");
+    // Its addresses filled in a garbled answer: "עזרא 11" was booked as the last "רבי אליעזר 11".
+    let request = callora_core::agent::build_request(&b, &engine.state, "עשרה, אחד עשרה");
     assert!(!request.user.contains("דוד"), "the agent is not told the name: {}", request.user);
-    assert!(request.user.contains("Their last ride: from בן זכאי 40, אלעד to סוכות 12, ירושלים"), "{}", request.user);
-    // "כמו פעם שעברה": the agent passes the same places, never said in this call, and they are taken.
-    engine.on_agent_turn(
-        "כמו פעם שעברה",
-        decide(
-            AgentAction::None,
-            "",
-            Some("book_ride"),
-            &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות 12, ירושלים")],
-        ),
-        "",
-    );
-    let run = engine.state.run.as_ref().expect("a booking");
-    assert!(run.slots.contains_key("pickup") && run.slots.contains_key("destination"), "{:?}", run.slots.keys());
-
-    // No name to greet with: the greeting that can be said.
-    let mut engine = Engine::new(b, 7);
-    engine.set_customer(Some(returning(None)));
-    let said = spoken(&engine.start());
-    assert!(!said.is_empty() && !said.contains('{'), "{said}");
+    assert!(!request.user.contains("סוכות"), "nor the last ride: {}", request.user);
 }
 
 // A live call, 2026-10-01 00:33: each of these was said to the caller.

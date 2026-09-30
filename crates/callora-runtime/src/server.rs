@@ -101,47 +101,29 @@ impl AppState {
     }
 }
 
-/// The customer record with the caller's last ride from our own orders: their name when the
-/// record has none, the places ("last_pickup", "last_destination") and, for the greeting and
-/// the agent, `last_from`, `last_to`, their cities and the passengers.
+/// The customer record with the name of the caller's last ride from our own orders, when
+/// the record has none: a known caller is not asked for it again (it is never said). Nothing
+/// else of that ride: told the agent, its addresses filled in a garbled answer ("עזרא 11",
+/// heard "עשרה, אחד עשרה", was booked as the last ride's "רבי אליעזר 11").
 fn with_last_ride(
     customer: Option<Customer>,
     last: Option<(serde_json::Value, chrono::DateTime<chrono::Utc>)>,
 ) -> Option<Customer> {
-    let Some((card, at)) = last else { return customer };
-    let detail = |field: &str| {
-        card["details"].as_array()?.iter().find(|d| d["field"] == field).and_then(|d| {
-            let value = d["value"].as_str().filter(|v| !v.trim().is_empty())?.to_string();
-            Some((value, d["address"].as_str().map(str::to_string)))
-        })
-    };
-    let (Some((from, from_address)), Some((to, to_address))) = (detail("pickup"), detail("destination")) else {
-        return customer;
-    };
+    let Some((card, _)) = last else { return customer };
+    let name = card["details"].as_array().and_then(|details| {
+        details
+            .iter()
+            .find(|d| d["field"] == "customer_name")
+            .and_then(|d| d["value"].as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    });
+    let Some(name) = name else { return customer };
     let mut c = customer.unwrap_or_default();
     if c.name.is_none() {
-        c.name = detail("customer_name").map(|(n, _)| n);
+        c.name = Some(name);
     }
-    let city =
-        |value: &str, address: &Option<String>| callora_core::price_list::city_of(address.as_deref().unwrap_or(value));
-    let (from_city, to_city) = (city(&from, &from_address), city(&to, &to_address));
-    // Within one city "שוב מאלעד לאלעד?" says nothing: the greeting by name instead.
-    if from_city != to_city {
-        c.data.insert("last_from_city".into(), json!(from_city));
-        c.data.insert("last_to_city".into(), json!(to_city));
-    }
-    c.data.insert("last_from".into(), json!(from));
-    c.data.insert("last_to".into(), json!(to));
-    c.data.insert("last_ride_at".into(), json!(at));
-    if let Some((p, _)) = detail("passengers") {
-        c.data.insert("last_passengers".into(), json!(p));
-    }
-    c.places
-        .entry("last_pickup".into())
-        .or_insert(callora_core::customer::CustomerPlace { spoken: from, address: from_address });
-    c.places
-        .entry("last_destination".into())
-        .or_insert(callora_core::customer::CustomerPlace { spoken: to, address: to_address });
     Some(c)
 }
 
@@ -914,7 +896,7 @@ mod last_ride_tests {
     use super::*;
 
     #[test]
-    fn a_last_ride_makes_a_returning_customer() {
+    fn a_last_ride_gives_only_its_name() {
         let card = json!({
             "details": [
                 { "field": "pickup", "value": "בן זכאי 40, אלעד", "address": "רבן יוחנן בן זכאי 40, אלעד" },
@@ -926,17 +908,7 @@ mod last_ride_tests {
         });
         let c = with_last_ride(None, Some((card, chrono::Utc::now()))).expect("a customer");
         assert_eq!(c.name.as_deref(), Some("דוד"));
-        assert_eq!(c.data["last_from_city"], "אלעד");
-        assert_eq!(c.data["last_to_city"], "ירושלים");
-        assert_eq!(c.data["last_passengers"], "3");
-        assert!(c.places.contains_key("last_pickup"));
+        assert!(c.data.is_empty() && c.places.is_empty(), "no addresses of the last ride");
         assert!(with_last_ride(None, None).is_none(), "no ride, no customer");
-        let within = json!({ "details": [
-            { "field": "pickup", "value": "בן זכאי 45, אלעד" },
-            { "field": "destination", "value": "רבי עקיבא 3, אלעד" }
-        ], "result": {} });
-        let c = with_last_ride(None, Some((within, chrono::Utc::now()))).expect("a customer");
-        assert!(!c.data.contains_key("last_to_city"), "no \"שוב מאלעד לאלעד?\"");
-        assert!(c.places.contains_key("last_pickup"), "the places are still known");
     }
 }

@@ -320,17 +320,6 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
         let who = if t.speaker == Speaker::Agent { "Agent" } else { "Caller" };
         u.push_str(&format!("{who}: {}\n", t.text));
     }
-    if let Some(c) = &state.customer {
-        let data = |k: &str| {
-            c.data.get(k).and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string())))
-        };
-        if let (Some(from), Some(to)) = (data("last_from"), data("last_to")) {
-            let people = data("last_passengers").map(|p| format!(", {p} passengers")).unwrap_or_default();
-            u.push_str(&format!(
-                "Their last ride: from {from} to {to}{people}. When they want the same ride (\"כן\", \"כמו פעם שעברה\", \"אותו דבר\"), pass pickup and destination as they were; ask again how many are coming.\n"
-            ));
-        }
-    }
     if let Some(forms) = words.and_then(|w| w.address_forms.as_ref()) {
         let (form, how) = match state.address_form {
             AddressForm::Unknown => ("unknown", &forms.neutral),
