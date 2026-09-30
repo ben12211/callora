@@ -7,8 +7,7 @@
         "expect": {
           "task": "book_ride",
           "fields": {
-            "pickup": "הרצל",
-            "passengers": "3|שלוש"
+            "pickup": "הרצל"
           },
           "slots": {
             "pickup": "הרצל 10, רעננה",

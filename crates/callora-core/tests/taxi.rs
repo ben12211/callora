@@ -2611,3 +2611,23 @@ fn a_price_questions_place_said_is_kept_when_the_agent_leaves_it_out() {
     );
     assert!(place(call.slot("price_to")).contains("נתב"), "{:?}", call.slot("price_to"));
 }
+
+#[test]
+fn a_town_said_is_kept_when_the_agent_leaves_it_out() {
+    // Eval: "מביתר" came back with no fields; "בלד לירושלים" without ירושלים.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(beitar()));
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "", Some("book_ride"), &[]), "");
+    call.engine.on_agent_turn("מביתר", asking(&["pickup"], decide(AgentAction::None, "", None, &[])), "");
+    assert!(
+        call.engine.state.place_cities.get("pickup").is_some_and(|c| c.contains("ביתר")),
+        "{:?}",
+        call.engine.state.place_cities
+    );
+    // A street is not taken from a pattern: the agent reads streets.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(beitar()));
+    call.engine.on_agent_turn("צריך מונית מהרמב\"ן", decide(AgentAction::None, "", Some("book_ride"), &[]), "");
+    assert_eq!(call.slot("pickup"), None);
+    assert!(!call.engine.state.place_cities.contains_key("pickup"));
+}

@@ -204,8 +204,8 @@ impl Engine {
             desk: self.desk,
         };
         probe.state.remember(Speaker::Caller, transcript);
-        let fields = probe.with_patterns(transcript, fields);
-        let fields = probe.by_preposition(transcript, &fields);
+        let fields = probe.by_preposition(transcript, fields);
+        let fields = probe.with_patterns(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
         !probe.apply_agent_fields(&fields).1.is_empty()
     }
@@ -250,8 +250,8 @@ impl Engine {
             desk: self.desk,
         };
         probe.state.remember(Speaker::Caller, transcript);
-        let fields = probe.with_patterns(transcript, fields);
-        let fields = probe.by_preposition(transcript, &fields);
+        let fields = probe.by_preposition(transcript, fields);
+        let fields = probe.with_patterns(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
         probe.apply_agent_fields(&fields);
         probe.expected_slot().filter(|next| !asks.contains(next))
@@ -482,8 +482,8 @@ impl Engine {
             }
         }
         let was_confirming = self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
-        let fields = self.with_patterns(transcript, &turn.fields);
-        let fields = self.by_preposition(transcript, &fields);
+        let fields = self.by_preposition(transcript, &turn.fields);
+        let fields = self.with_patterns(transcript, &fields);
         let fields = self.answer_in_place(transcript, &fields);
         let (changed, rejected) = self.apply_agent_fields(&fields);
         // A detail changed after the read-back ("לא 40, 45"): read it back again, so the next
@@ -974,8 +974,15 @@ impl Engine {
                 }
             }
             let Some(cfg) = self.business.config.slots.get(&fill.slot) else { continue };
+            // A place that needs its street: only a town the list knows exactly ("מביתר", "לירושלים"),
+            // its first step; the street is asked next.
             let street_needed = cfg.kind == crate::config::SlotKind::Place && (cfg.precise || cfg.street_once);
-            let wanted = !street_needed
+            let a_town = || {
+                self.gazetteer.as_ref().is_some_and(|g| {
+                    matches!(g.resolve(&fill.value.spoken()), crate::gazetteer::Lookup::Found(a) if a.street.is_none() && a.number.is_none() && a.place.is_none())
+                })
+            };
+            let wanted = (!street_needed || a_town())
                 && !cfg.patterns.is_empty()
                 && pipeline.slots.iter().any(|ps| ps.slot == fill.slot)
                 && !run.slots.contains_key(&fill.slot)
