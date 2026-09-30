@@ -59,7 +59,7 @@ impl OpenAiStt {
 
     /// The prompt, with the words the call expects when hints are on: "בן זכאי" in אלעד was
     /// written "בן זה קיץ" and "באיזה קו" without them.
-    fn prompt_for(&self, keyterms: &[String]) -> String {
+    pub fn prompt_for(&self, keyterms: &[String]) -> String {
         let terms: Vec<&str> = keyterms.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).take(MAX_HINTS).collect();
         if !self.hints || terms.is_empty() {
             return self.prompt.clone();
@@ -142,6 +142,14 @@ fn event(v: &Value, partial: &mut String) -> Option<SttEvent> {
 
 #[async_trait]
 impl SpeechToText for OpenAiStt {
+    /// Measured on 76 stored utterances: the city's streets while its street is asked wrote
+    /// "בן זכאי" where it had heard "בן זה קיץ" and "באיזה קו" (4 of 4); the business's
+    /// thirty cities helped nothing and turned "שלוש" into "שלום", and street lists on other
+    /// sentences made streets up ("נויפלד", "מילשטיין"). Only the streets, only then.
+    fn wants_business_words(&self) -> bool {
+        !self.hints
+    }
+
     async fn open(&self, language: &str, keyterms: &[String]) -> anyhow::Result<SttSession> {
         let mut request = self.url.as_str().into_client_request()?;
         request.headers_mut().insert("Authorization", format!("Bearer {}", self.api_key).parse()?);

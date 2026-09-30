@@ -405,7 +405,9 @@ impl Session {
             terms.push(city.to_string());
             terms.extend(g.street_keyterms(city, 38));
         }
-        terms.extend(self.business.stt_keyterms());
+        if self.services.stt.wants_business_words() {
+            terms.extend(self.business.stt_keyterms());
+        }
         let mut seen = std::collections::HashSet::new();
         terms.retain(|t| seen.insert(t.clone()));
         terms

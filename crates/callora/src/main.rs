@@ -79,8 +79,7 @@ enum Command {
         file: PathBuf,
         #[arg(long, default_value_t = 20)]
         limit: usize,
-        /// The hints a call gives while this city's street is asked: the city, its streets and
-        /// the business's words.
+        /// The hints a call gives while this city's street is asked: the city and its streets.
         #[arg(long)]
         city: Option<String>,
         /// The business's words as hints (what a call gives between street questions).
@@ -425,7 +424,7 @@ async fn main() -> anyhow::Result<()> {
                 terms.push(city.clone());
                 terms.extend(g.street_keyterms(city, 38));
             }
-            if city.is_some() || business_words {
+            if business_words {
                 let reg = load_registry(&cli.businesses)?;
                 terms.extend(reg.by_id("taxi").context("no taxi business")?.stt_keyterms());
             }
@@ -530,6 +529,10 @@ impl SpeechToText for SttWithBackup {
             }
         }
     }
+    fn wants_business_words(&self) -> bool {
+        self.primary.wants_business_words()
+    }
+
     fn name(&self) -> &'static str {
         self.primary.name()
     }

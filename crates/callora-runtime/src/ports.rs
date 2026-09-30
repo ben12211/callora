@@ -52,6 +52,11 @@ pub trait SpeechToText: Send + Sync {
     /// is likely to say (place and street names); recognizers that support biasing use them.
     async fn open(&self, language: &str, keyterms: &[String]) -> anyhow::Result<SttSession>;
     fn name(&self) -> &'static str;
+    /// Whether the business's words (its cities and main streets) go with the keyterms, or only
+    /// a city's streets while its street is asked.
+    fn wants_business_words(&self) -> bool {
+        true
+    }
 }
 
 /// One utterance transcribed on its own, slower and more accurate than the stream: a second
