@@ -1040,7 +1040,11 @@ impl Engine {
         };
         // And the cities it understood from them: "מביתר" is ביתר עילית, and the agent writing it
         // in full ("הרמב״ן 16, ביתר עילית") made up no word ("עילית" was refused).
-        let understood: Vec<&str> = self.state.place_cities.values().map(String::as_str).collect();
+        let mut understood: Vec<String> = self.state.place_cities.values().cloned().collect();
+        // And the full names of the towns the caller named now: "מביתר" is ביתר עילית.
+        if let Some(g) = &self.gazetteer {
+            understood.extend(g.towns_named(&heard));
+        }
         let heard = if understood.is_empty() { heard } else { format!("{heard}. {}", understood.join(". ")) };
         // The optional questions asked before the read-back ("יש משהו שהנהג צריך לדעת?"): a "no"
         // to one is its answer, not its value (a live ride went out with the note "לא").

@@ -2631,3 +2631,24 @@ fn a_town_said_is_kept_when_the_agent_leaves_it_out() {
     assert_eq!(call.slot("pickup"), None);
     assert!(!call.engine.state.place_cities.contains_key("pickup"));
 }
+
+#[test]
+fn a_towns_full_name_is_heard_in_its_short_name_said_in_the_same_breath() {
+    // Eval: "מביתר" passed as "ביתר עילית" was refused ("עילית" never said) in the same turn.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(beitar()));
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "", Some("book_ride"), &[]), "");
+    let d = call.engine.on_agent_turn(
+        "מביתר",
+        asking(&["pickup"], decide(AgentAction::None, "איפה בביתר עילית לאסוף?", None, &[("pickup", "ביתר עילית")])),
+        "",
+    );
+    assert!(
+        call.engine.state.place_cities.get("pickup").is_some_and(|c| c.contains("ביתר")),
+        "{:?}",
+        call.engine.state.place_cities
+    );
+    assert!(spoken(&d).contains("בביתר עילית"), "{}", spoken(&d));
+    let g = beitar();
+    assert_eq!(g.towns_named("צריך מונית מביתר"), vec!["ביתר עילית".to_string()]);
+}

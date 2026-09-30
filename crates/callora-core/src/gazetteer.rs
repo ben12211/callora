@@ -334,6 +334,31 @@ impl Gazetteer {
         added
     }
 
+    /// The full names of the towns `text` names, with or without a prefix and by their short
+    /// names too ("מביתר" → ביתר עילית, "לבני ברק" → בני ברק).
+    pub fn towns_named(&self, text: &str) -> Vec<String> {
+        let normalized = norm(text);
+        let words: Vec<&str> = normalized.split(' ').filter(|w| !w.is_empty()).collect();
+        let mut out: Vec<String> = Vec::new();
+        for n in 1..=3 {
+            for window in words.windows(n) {
+                let phrase = window.join(" ");
+                let forms = std::iter::once(phrase.as_str()).chain(
+                    strip_prefix(window[0]).map(|_| &phrase[phrase.char_indices().nth(1).map_or(0, |(i, _)| i)..]),
+                );
+                for form in forms {
+                    if let Some((ci, _)) = self.city_keys.get(form) {
+                        let name = self.cities[*ci].name.clone();
+                        if !out.contains(&name) {
+                            out.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Words of `text` that are no locality's name but sound like exactly one town's ("מפרט":
     /// מ + אפרת, the same consonants): each word as heard, with the town. Towns only (enough
     /// streets), and three consonants at least, so a common word does not become a village.
