@@ -158,7 +158,14 @@ impl Session {
         self.cut_read_back = self.engine.context().awaiting_confirmation;
         self.playout.cancel();
         self.services.metrics.barge_ins_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::debug!(call = %self.info.call_sid, rms = self.vad.last_rms, "barge-in: caller talked over the agent");
+        // Info: "it stops mid-sentence" is either this or the audio; the log tells which.
+        tracing::info!(
+            call = %self.info.call_sid,
+            voiced_ms = self.voiced_ms,
+            partial = %self.last_partial,
+            rms = self.vad.last_rms,
+            "barge-in: caller talked over the agent"
+        );
     }
 
     // -----------------------------------------------------------------------------------

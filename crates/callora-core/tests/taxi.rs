@@ -861,8 +861,9 @@ fn known_customer_home_alias_and_default_pickup() {
         .places
         .insert("home".into(), CustomerPlace { spoken: "הבית".into(), address: Some("הרצל 10, בני ברק".into()) });
     engine.set_customer(Some(customer));
-    let greeting = engine.start();
-    assert_eq!(spoken(&greeting), "אהלן בניהו, איך אפשר לעזור?");
+    // The owner: the greeting never says the caller's name.
+    let greeting = spoken(&engine.start());
+    assert!(!greeting.contains("בניהו") && !greeting.is_empty(), "{greeting}");
 
     let mut call = Call { engine };
     let d = call.say("צריך מונית לנתב\"ג, אני לבד");
@@ -2690,18 +2691,20 @@ fn returning(name: Option<&str>) -> Customer {
 }
 
 #[test]
-fn a_returning_caller_hears_their_last_ride_and_a_yes_takes_it() {
+fn a_returning_caller_is_greeted_like_anyone_and_the_same_ride_is_taken() {
     let b = business(&[]);
     let mut engine = Engine::new(b.clone(), 7);
     engine.set_gazetteer(Some(elad()));
     engine.set_customer(Some(returning(Some("דוד"))));
+    // The owner: never the caller's name ("אהלן מחמוד בן עלי!" was bad), nor the last ride.
     let said = spoken(&engine.start());
-    assert!(said.contains("דוד") && said.contains("שוב מאלעד לירושלים"), "{said}");
-    let request = callora_core::agent::build_request(&b, &engine.state, "כן");
+    assert!(!said.contains("דוד") && !said.contains("שוב"), "{said}");
+    let request = callora_core::agent::build_request(&b, &engine.state, "כמו פעם שעברה");
+    assert!(!request.user.contains("דוד"), "the agent is not told the name: {}", request.user);
     assert!(request.user.contains("Their last ride: from בן זכאי 40, אלעד to סוכות 12, ירושלים"), "{}", request.user);
-    // "כן": the agent passes the same places, never said in this call, and they are taken.
+    // "כמו פעם שעברה": the agent passes the same places, never said in this call, and they are taken.
     engine.on_agent_turn(
-        "כן",
+        "כמו פעם שעברה",
         decide(
             AgentAction::None,
             "",

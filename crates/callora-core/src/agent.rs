@@ -320,9 +320,6 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
         let who = if t.speaker == Speaker::Agent { "Agent" } else { "Caller" };
         u.push_str(&format!("{who}: {}\n", t.text));
     }
-    if let Some(name) = state.customer.as_ref().and_then(|c| c.name.as_deref()) {
-        u.push_str(&format!("\nThe caller is a known customer: {name}.\n"));
-    }
     if let Some(c) = &state.customer {
         let data = |k: &str| {
             c.data.get(k).and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string())))

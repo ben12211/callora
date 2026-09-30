@@ -154,7 +154,7 @@ impl Session {
     /// The business's short opener, from the library only (it must never need TTS itself).
     pub(super) fn cover_live_tts(&mut self, gain_db: f32) {
         let turn = self.engine.state.turns;
-        // Not before the greeting: "אממ, כן. אהלן דוד!" opened calls of known customers.
+        // Not before the greeting: "אממ, כן." opened calls.
         if turn == 0 {
             return;
         }
