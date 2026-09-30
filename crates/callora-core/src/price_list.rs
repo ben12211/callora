@@ -154,15 +154,33 @@ impl PriceList {
         section.vehicles.iter().filter(|v| v.seats >= people).min_by_key(|v| (v.seats, v.roomy, v.one_way))
     }
 
-    /// The quote for a ride: `passengers` when known (a group too big for any car: `None`),
-    /// there and back when asked. The result names the response that says it (`response`):
-    /// one price, the price by car size when the passengers are not known, or one way and
-    /// there and back.
+    /// The largest car, the ordinary one before the roomy one.
+    fn largest(section: &Section) -> Option<&Vehicle> {
+        section.vehicles.iter().max_by_key(|v| (v.seats, std::cmp::Reverse((v.roomy, v.one_way))))
+    }
+
+    /// The quote for a ride: `passengers` when known, there and back when asked. The result
+    /// names the response that says it (`response`): one price, the price by car size when the
+    /// passengers are not known, one way and there and back, or, for a group no car seats, the
+    /// largest car's price and that it takes more than one. `None` only for a list with no cars.
     pub fn quote(&self, passengers: Option<u32>, round_trip: bool, places: &[&str]) -> Option<Value> {
         let section = self.section_for(places);
         let neighborhood = !section.neighborhoods.is_empty();
         let people = passengers.unwrap_or(1).max(1);
-        let car = Self::vehicle_for(section, people)?;
+        let Some(car) = Self::vehicle_for(section, people) else {
+            // Twelve people: no car in the list seats them all.
+            let big = Self::largest(section)?;
+            return Some(json!({
+                "price": big.one_way,
+                "vehicle": big.label,
+                "seats": big.seats,
+                "neighborhood": neighborhood,
+                "distance_km": self.distance_km,
+                "tier": self.tier,
+                "more_than_one_car": true,
+                "response": "price_answer_big_group",
+            }));
+        };
         let mut quote = json!({
             "price": car.one_way,
             "vehicle": car.label,
@@ -245,7 +263,12 @@ mod tests {
         assert_eq!(q["price"].as_u64(), Some(300), "the smaller six-seater, not the roomy one");
         let q = list.quote(Some(7), false, &[]).expect("a quote");
         assert_eq!(q["price"].as_u64(), Some(370));
-        assert!(list.quote(Some(9), false, &[]).is_none(), "no car for nine");
+        let q = list.quote(Some(12), false, &[]).expect("a quote");
+        assert_eq!(
+            (q["response"].as_str(), q["price"].as_u64(), q["seats"].as_u64()),
+            (Some("price_answer_big_group"), Some(370), Some(7)),
+            "twelve: the largest car, and that it takes more than one"
+        );
         let q = list.quote(Some(2), true, &[]).expect("a quote");
         assert_eq!((q["response"].as_str(), q["round_trip"].as_u64()), (Some("price_answer_round_trip"), Some(400)));
         let q = list.quote(Some(2), false, &["בני ברק", "גילה, ירושלים"]).expect("a quote");

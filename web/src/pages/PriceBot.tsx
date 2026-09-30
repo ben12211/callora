@@ -21,7 +21,19 @@ type Quote = {
   answer?: string;
   cached?: boolean;
 };
-type TestResult = { ok: boolean; ms: number; quote?: Quote; error?: string };
+type TestResult = { ok: boolean; ms: number; quote?: Quote & { more_than_one_car?: boolean }; error?: string };
+
+/** What went wrong, in words the owner can act on. */
+function problem(error?: string): string {
+  const e = error ?? "";
+  if (e.includes("no answer in time")) return "הבוט לא ענה בזמן (15 שניות). בדקו שהוא עונה למספר הזה מהטלפון.";
+  if (e.includes("not connected")) return "חשבון הוואטסאפ לא מחובר. חברו אותו מחדש בדף וואטסאפ.";
+  if (e.includes("refused")) return "הבוט לא שמור כאיש קשר בחשבון הזה. שמרו אותו בטלפון ונסו שוב.";
+  if (e.includes("no prices")) return "הבוט ענה, אבל בלי מחירים. אולי הניסוח של השאלה לא מתאים לו.";
+  if (e.includes("no backend")) return "לא נבחר בוט מחירים.";
+  if (e.includes("route is not known")) return "חסר מאיפה או לאן.";
+  return e || "הבוט לא ענה";
+}
 
 export function PriceBotCard({ id, bot, whatsapp, canSave }: { id: string; bot: PriceBotSettings | null; whatsapp: boolean; canSave: boolean }) {
   const toast = useToast();
@@ -208,13 +220,14 @@ function PriceTest({ id }: { id: string }) {
         </Button>
       </div>
 
-      {result && !result.ok && <Problem>{result.error ?? "הבוט לא ענה"}</Problem>}
+      {result && !result.ok && <Problem>{problem(result.error)}</Problem>}
       {q && (
         <div className="grid gap-3 text-sm">
           <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
             <span>
-              {people ? "המחיר" : "עד 4 נוסעים"}: <b className="num text-lg">₪{q.price}</b>
+              {q.more_than_one_car ? "הרכב הכי גדול" : people ? "המחיר" : "עד 4 נוסעים"}: <b className="num text-lg">₪{q.price}</b>
             </span>
+            {q.more_than_one_car && <Badge tone="warn">צריך יותר מרכב אחד</Badge>}
             {q.price_6 != null && (
               <span>
                 עד 6: <b className="num text-lg">₪{q.price_6}</b>

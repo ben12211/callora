@@ -536,6 +536,10 @@
       "variants": ["{price}₪ בכיוון אחד, והלוך חזור {round_trip}₪."],
       "delivery": "important"
     },
+    "price_answer_big_group": {
+      "variants": ["לקבוצה כזאת צריך יותר מרכב אחד. הרכב הכי גדול עולה {price}₪."],
+      "delivery": "important"
+    },
     "ask_price_from": { "variants": ["מאיפה הנסיעה?"] },
     "price_failed": { "variants": ["אין לי כרגע מחיר מדויק לנסיעה הזאת. אפשר להזמין, והנהג יגיד את המחיר."], "delivery": "calm" },
     "ask_item": { "variants": ["מה נשכח?"] },
