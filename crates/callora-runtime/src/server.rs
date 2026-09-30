@@ -124,8 +124,12 @@ fn with_last_ride(
     }
     let city =
         |value: &str, address: &Option<String>| callora_core::price_list::city_of(address.as_deref().unwrap_or(value));
-    c.data.insert("last_from_city".into(), json!(city(&from, &from_address)));
-    c.data.insert("last_to_city".into(), json!(city(&to, &to_address)));
+    let (from_city, to_city) = (city(&from, &from_address), city(&to, &to_address));
+    // Within one city "שוב מאלעד לאלעד?" says nothing: the greeting by name instead.
+    if from_city != to_city {
+        c.data.insert("last_from_city".into(), json!(from_city));
+        c.data.insert("last_to_city".into(), json!(to_city));
+    }
     c.data.insert("last_from".into(), json!(from));
     c.data.insert("last_to".into(), json!(to));
     c.data.insert("last_ride_at".into(), json!(at));
@@ -929,5 +933,12 @@ mod last_ride_tests {
         assert_eq!(c.data["last_passengers"], "3");
         assert!(c.places.contains_key("last_pickup"));
         assert!(with_last_ride(None, None).is_none(), "no ride, no customer");
+        let within = json!({ "details": [
+            { "field": "pickup", "value": "בן זכאי 45, אלעד" },
+            { "field": "destination", "value": "רבי עקיבא 3, אלעד" }
+        ], "result": {} });
+        let c = with_last_ride(None, Some((within, chrono::Utc::now()))).expect("a customer");
+        assert!(!c.data.contains_key("last_to_city"), "no \"שוב מאלעד לאלעד?\"");
+        assert!(c.places.contains_key("last_pickup"), "the places are still known");
     }
 }
