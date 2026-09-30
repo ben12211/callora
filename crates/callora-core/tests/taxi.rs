@@ -2134,3 +2134,110 @@ fn bye_in_english_letters_ends_the_call() {
     let d = call.engine.on_agent_turn("Bye.", with_phrase("goodbye", decide(AgentAction::EndCall, "", None, &[])), "");
     assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{}", spoken(&d));
 }
+
+// The live call of 2026-09-30 15:28: "כמה נוסעים?" before the pickup street; "ירושלים" to
+// "לאן בירושלים?" became the street "ירושלים 4"; the driver's note "אין".
+
+/// בני ברק, and a ירושלים with streets of its own besides its own row (code 9000).
+fn bnei_brak_and_a_big_jerusalem() -> Arc<callora_core::gazetteer::Gazetteer> {
+    let mut tsv = String::from("6100\tבני ברק\t301\tאהרונוביץ\tofficial\n3000\tירושלים\t9000\tירושלים\tofficial\n");
+    tsv.push_str("3000\tירושלים\t348\tהנביאים\tofficial\n");
+    for i in 0..40 {
+        tsv.push_str(&format!("3000\tירושלים\t{}\tרחוב מספר {}\tofficial\n", 1000 + i, i));
+    }
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(&tsv))
+}
+
+#[test]
+fn the_head_count_waits_for_the_pickup_street() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(bnei_brak_and_a_big_jerusalem()));
+    call.engine.on_agent_turn("רוצה להזמין מונית", decide(AgentAction::None, "מאיפה לאן?", Some("book_ride"), &[]), "");
+    let fields = [("pickup".to_string(), "בני ברק".to_string()), ("destination".to_string(), "ירושלים".to_string())];
+    assert!(call.engine.phrase_skips_a_place("מבני ברק לירושלים", &fields, "ask_passengers"), "held by the runtime");
+    let d = call.engine.on_agent_turn(
+        "מבני ברק לירושלים",
+        with_phrase(
+            "ask_passengers",
+            decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "בני ברק"), ("destination", "ירושלים")]),
+        ),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("בבני ברק") && !said.contains("נוסעים"), "{said}");
+}
+
+#[test]
+fn a_city_said_again_to_its_street_question_is_not_a_street() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(bnei_brak_and_a_big_jerusalem()));
+    call.engine.on_agent_turn(
+        "מאהרונוביץ 32 בבני ברק לירושלים",
+        decide(
+            AgentAction::None,
+            "",
+            Some("book_ride"),
+            &[("pickup", "אהרונוביץ 32, בני ברק"), ("destination", "ירושלים")],
+        ),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "אני מביאים ארבע ירושלים",
+        with_phrase("ask_destination", decide(AgentAction::None, "", Some("book_ride"), &[("destination", "ירושלים")])),
+        "",
+    );
+    // The city again after its street was asked: the city is the destination (the street is
+    // asked once), never a street named ירושלים waiting for its house number.
+    assert_eq!(place(call.slot("destination")), "ירושלים");
+    assert!(!spoken(&d).contains("מספר בית"), "{}", spoken(&d));
+
+    // The street itself still is one.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(bnei_brak_and_a_big_jerusalem()));
+    call.engine.on_agent_turn(
+        "מאהרונוביץ 32 בבני ברק להנביאים ארבע בירושלים",
+        decide(
+            AgentAction::None,
+            "",
+            Some("book_ride"),
+            &[("pickup", "אהרונוביץ 32, בני ברק"), ("destination", "הנביאים 4, ירושלים")],
+        ),
+        "",
+    );
+    assert_eq!(place(call.slot("destination")), "הנביאים 4, ירושלים");
+}
+
+#[test]
+fn nothing_for_the_driver_is_no_note() {
+    for nothing in ["אין", "לא, כלום", "שום דבר"] {
+        let (mut call, _) = Call::new(business(&[]));
+        call.engine.set_gazetteer(Some(elad()));
+        call.engine.on_agent_turn(
+            "בן זכאי 40 אלעד לסוכות ירושלים, שלושה, דוד",
+            decide(
+                AgentAction::None,
+                "יש משהו שהנהג צריך לדעת?",
+                Some("book_ride"),
+                &[
+                    ("pickup", "בן זכאי 40, אלעד"),
+                    ("destination", "סוכות 12, ירושלים"),
+                    ("passengers", "שלושה"),
+                    ("customer_name", "דוד"),
+                ],
+            ),
+            "",
+        );
+        call.engine.on_agent_turn(nothing, decide(AgentAction::ReadBack, "", None, &[("notes", nothing)]), "");
+        assert_eq!(call.slot("notes"), None, "{nothing}");
+        assert_eq!(call.step(), Some(Step::AwaitingConfirmation), "{nothing}");
+    }
+}
+
+#[test]
+fn hesitation_in_english_letters_is_noise() {
+    let (call, _) = Call::new(business(&[]));
+    let b = call.engine.business().clone();
+    for um in ["Um.", "Uh", "Hmm..."] {
+        assert!(fast_path(&b, &call.engine.context(), um).0.noise, "{um}");
+    }
+}

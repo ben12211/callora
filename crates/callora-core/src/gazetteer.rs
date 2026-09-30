@@ -340,6 +340,9 @@ impl Gazetteer {
         let mut g = Gazetteer::default();
         let mut by_code: HashMap<&str, usize> = HashMap::new();
         let mut street_ids: Vec<HashMap<&str, usize>> = Vec::new();
+        // The row that stands for the locality itself (code 9000), for addresses of places
+        // with no streets.
+        let mut own_rows: Vec<Option<usize>> = Vec::new();
         for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
             let cols: Vec<&str> = line.split('\t').collect();
             let [city_code, city_name, street_code, street_name, kind] = cols[..] else { continue };
@@ -354,6 +357,7 @@ impl Gazetteer {
                     place_keys: HashMap::new(),
                 });
                 street_ids.push(HashMap::new());
+                own_rows.push(None);
                 g.cities.len() - 1
             });
             let city = &mut g.cities[ci];
@@ -372,6 +376,18 @@ impl Gazetteer {
             }
             city.street_keys.entry(norm(street_name)).or_insert(si);
             city.street_written.entry(norm(street_name)).or_insert_with(|| street_name.to_string());
+            if street_code == "9000" {
+                own_rows[ci] = Some(si);
+            }
+        }
+        // A city with streets of its own: its name is its name, not one of its streets. (A
+        // moshav's houses are numbered by its name, "בן זכאי 12": those few streets keep it.)
+        for (city, own) in g.cities.iter_mut().zip(&own_rows) {
+            if let Some(si) = *own {
+                if city.streets.len() > 30 {
+                    city.street_keys.retain(|_, v| *v != si);
+                }
+            }
         }
         for (ci, city) in g.cities.iter().enumerate() {
             // "תל אביב - יפו" is also "תל אביב" and "יפו"; "אבו גוש" is itself.

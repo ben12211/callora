@@ -208,6 +208,42 @@ impl Engine {
         !probe.apply_agent_fields(&fields).1.is_empty()
     }
 
+    /// A place, before `slot` in the task's order, of which only part is known (its city, or a
+    /// street waiting for its number): its question comes first.
+    fn partial_place_before(&self, slot: &str) -> Option<String> {
+        let run = self.state.run.as_ref()?;
+        self.pipeline_of(run)
+            .slots
+            .iter()
+            .take_while(|ps| ps.slot != slot)
+            .filter(|ps| ps.required && !run.slots.contains_key(&ps.slot))
+            .find(|ps| {
+                self.state.place_cities.contains_key(&ps.slot)
+                    || self.state.place_numbers.contains_key(&ps.slot)
+                    || self.state.place_streets.contains_key(&ps.slot)
+            })
+            .map(|ps| ps.slot.clone())
+    }
+
+    /// Whether the agent's recorded question, with these values taken, would ask past a place
+    /// given only in part ("מבני ברק לירושלים" answered by "כמה נוסעים?"; a live call asked for
+    /// the street after the head count). The runtime then holds it back.
+    pub fn phrase_skips_a_place(&self, transcript: &str, fields: &[(String, String)], phrase: &str) -> bool {
+        let Some(asked) = self.slot_asked_by(phrase) else { return false };
+        let mut probe = Engine {
+            business: self.business.clone(),
+            state: self.state.clone(),
+            chooser: self.chooser.clone(),
+            offered_more: self.offered_more,
+            gazetteer: self.gazetteer.clone(),
+            desk: self.desk,
+        };
+        probe.state.remember(Speaker::Caller, transcript);
+        let fields = probe.answer_in_place(transcript, fields);
+        probe.apply_agent_fields(&fields);
+        probe.partial_place_before(&asked).is_some()
+    }
+
     /// The required detail a reply would move on past: asked for earlier, not in this reply's
     /// values, while its question asks only for other details. Live calls asked for the
     /// passengers with the street still unknown, then went back to the street.
@@ -474,6 +510,16 @@ impl Engine {
             tracing::info!(transcript, phrase = ?turn.phrase, "the agent asked again for what the caller just gave; asking the next question");
             self.next_question(&mut out);
             return self.finish(out);
+        }
+
+        // Its recorded question asks past a place given only in part: that place's question.
+        if spoken.is_empty() && action == AgentAction::None {
+            let asked = turn.phrase.as_deref().and_then(|p| self.slot_asked_by(p));
+            if let Some(place) = asked.and_then(|slot| self.partial_place_before(&slot)) {
+                tracing::info!(transcript, phrase = ?turn.phrase, %place, "the question skips a place given in part; asking for it first");
+                self.next_question(&mut out);
+                return self.finish(out);
+            }
         }
 
         // What this turn's question asks for, with its recorded phrase's detail.
@@ -814,7 +860,8 @@ impl Engine {
                 let cfg = self.business.config.slots.get(slot)?;
                 if optional.contains(slot) {
                     let norm = crate::text::normalize(raw);
-                    let rest = self.business.fillers.strip(&self.business.deny.strip(&norm));
+                    let rest =
+                        self.business.fillers.strip(&self.business.nothing.strip(&self.business.deny.strip(&norm)));
                     if !norm.trim().is_empty() && rest.trim().is_empty() {
                         self.state.asked_before_confirm.insert(slot.clone());
                         return None;

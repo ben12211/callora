@@ -318,6 +318,14 @@ impl Session {
             p.hold_say = true;
             return;
         }
+        // One that asks past a place given only in part: the engine asks for the place first.
+        if self.engine.phrase_skips_a_place(&p.transcript, &p.fields, &id) {
+            tracing::info!(call = %self.info.call_sid, phrase = %id, "the phrase skips a place given in part; held");
+            if let Some(p) = self.pending_agent.as_mut() {
+                p.hold_say = true;
+            }
+            return;
+        }
         // A phrase that asks for another detail while one asked earlier is still missing (a
         // reply whose `asks` did not say so).
         if p.asks.is_empty() {

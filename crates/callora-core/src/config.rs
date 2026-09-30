@@ -194,6 +194,9 @@ pub struct Lexicon {
     /// A caller checking the line is still there ("הלו"): answered, never taken for noise.
     #[serde(default)]
     pub hello: Vec<String>,
+    /// "Nothing" ("אין", "כלום"): with a "no", the answer to an optional question, not its value.
+    #[serde(default)]
+    pub nothing: Vec<String>,
 }
 
 /// The meta intents the runtime understands. Their *behaviour* is built in; their

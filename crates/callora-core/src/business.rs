@@ -86,6 +86,7 @@ pub struct Business {
     pub correct: PhraseSet,
     pub harmless: PhraseSet,
     pub hello: PhraseSet,
+    pub nothing: PhraseSet,
     pub meta: Vec<CompiledMeta>,
     pub intent_keywords: Vec<(String, PhraseSet)>,
     pub slots: BTreeMap<SlotId, CompiledSlot>,
@@ -167,6 +168,7 @@ impl Business {
         let correct = phrase("lexicon.correct".into(), &config.lexicon.correct, false);
         let harmless = phrase("lexicon.harmless".into(), &config.lexicon.harmless, false);
         let hello = phrase("lexicon.hello".into(), &config.lexicon.hello, false);
+        let nothing = phrase("lexicon.nothing".into(), &config.lexicon.nothing, false);
 
         let mut meta = Vec::new();
         for (key, m) in &config.meta_intents {
@@ -287,6 +289,7 @@ impl Business {
             correct,
             harmless,
             hello,
+            nothing,
             meta,
             intent_keywords,
             slots,
