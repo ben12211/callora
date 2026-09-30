@@ -2529,3 +2529,53 @@ fn a_question_off_the_business_is_refused_and_its_answer_never_said() {
     assert!(said.contains("רק בשביל מוניות") || said.contains("רק במוניות"), "{said}");
     assert!(!said.contains("ארבעים ושמונה"), "{said}");
 }
+
+#[test]
+fn the_full_name_of_a_city_the_system_understood_is_no_made_up_word() {
+    // Eval: "מביתר", then "הרמב\"ן 16" passed as "הרמב״ן 16, ביתר עילית": "עילית" was refused.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(beitar()));
+    call.engine.on_agent_turn("מביתר", decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "ביתר")]), "");
+    call.engine.on_agent_turn(
+        "הרמב\"ן 16",
+        asking(&["destination"], decide(AgentAction::None, "", None, &[("pickup", "הרמב״ן 16, ביתר עילית")])),
+        "",
+    );
+    assert!(place(call.slot("pickup")).contains("16"), "{:?}", call.slot("pickup"));
+}
+
+#[test]
+fn a_known_customer_is_not_asked_their_name_in_the_fixed_order() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.set_customer(Some(Customer { name: Some("יוסי לוי".into()), ..Customer::default() }));
+    call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד לסוכות 12 בירושלים",
+        decide(
+            AgentAction::None,
+            "",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות 12, ירושלים")],
+        ),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "שניים",
+        asking(&["customer_name"], decide(AgentAction::None, "", None, &[("passengers", "2")])),
+        "",
+    );
+    assert!(!spoken(&d).contains("על שם מי"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("נהג"), "the note is next: {}", spoken(&d));
+}
+
+#[test]
+fn a_price_question_takes_the_bookings_names_for_its_places() {
+    // Eval: "כמה עולה מונית לנתב\"ג?" passed as destination, and the system asked "מאיפה?" and lost it.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.on_agent_turn(
+        "כמה עולה מונית לנתב\"ג?",
+        decide(AgentAction::None, "", Some("price_question"), &[("destination", "נתב\"ג")]),
+        "",
+    );
+    assert_eq!(place(call.slot("price_to")), "נתב״ג");
+}

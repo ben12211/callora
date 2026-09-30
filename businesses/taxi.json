@@ -329,7 +329,7 @@
         { "slot": "destination", "required": true, "ask": "ask_destination" },
         { "slot": "pickup_time", "required": true, "default": "now" },
         { "slot": "passengers", "required": true, "ask": "ask_passengers" },
-        { "slot": "customer_name", "ask": "ask_name" },
+        { "slot": "customer_name", "ask": "ask_name", "from_customer": "name" },
         { "slot": "luggage" },
         { "slot": "wheelchair" },
         { "slot": "child_seat" },

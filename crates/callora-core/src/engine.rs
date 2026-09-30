@@ -222,6 +222,7 @@ impl Engine {
             .iter()
             .find(|ps| {
                 !run.slots.contains_key(&ps.slot)
+                    && !(ps.from_customer.as_deref() == Some("name") && self.from_customer(ps).is_some())
                     && ps.default.is_none()
                     && (ps.required
                         || (ps.ask.is_some()
@@ -946,7 +947,26 @@ impl Engine {
             .collect()
     }
 
+    /// A value passed under the name of the detail another task takes it from ("destination"
+    /// in a price question, whose "price_to" takes it from there): it is that detail.
+    fn as_this_tasks(&self, fields: &[(String, String)]) -> Vec<(String, String)> {
+        let Some(run) = &self.state.run else { return fields.to_vec() };
+        let pipeline = self.pipeline_of(run);
+        fields
+            .iter()
+            .map(|(slot, value)| {
+                let own = pipeline.slots.iter().any(|ps| ps.slot == *slot);
+                let target = pipeline.slots.iter().find(|ps| ps.from_slot.as_deref() == Some(slot.as_str()));
+                match target {
+                    Some(t) if !own && !fields.iter().any(|(s, _)| *s == t.slot) => (t.slot.clone(), value.clone()),
+                    _ => (slot.clone(), value.clone()),
+                }
+            })
+            .collect()
+    }
+
     fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> (bool, Vec<String>) {
+        let fields = &self.as_this_tasks(fields);
         let customer = self.state.customer.clone();
         let mut notes = Vec::new();
         let mut rejected = Vec::new();
@@ -970,6 +990,10 @@ impl Engine {
         } else {
             format!("{heard}. {}", self.state.offered_streets.join(". "))
         };
+        // And the cities it understood from them: "מביתר" is ביתר עילית, and the agent writing it
+        // in full ("הרמב״ן 16, ביתר עילית") made up no word ("עילית" was refused).
+        let understood: Vec<&str> = self.state.place_cities.values().map(String::as_str).collect();
+        let heard = if understood.is_empty() { heard } else { format!("{heard}. {}", understood.join(". ")) };
         // The optional questions asked before the read-back ("יש משהו שהנהג צריך לדעת?"): a "no"
         // to one is its answer, not its value (a live ride went out with the note "לא").
         let optional: Vec<String> = self
@@ -1093,8 +1117,39 @@ impl Engine {
         }
     }
 
+    /// What the customer record gives a detail (`from_customer`): a saved place ("home"), or the
+    /// customer's name ("name").
+    fn from_customer(&self, ps: &crate::config::PipelineSlot) -> Option<SlotValue> {
+        let (key, c) = (ps.from_customer.as_ref()?, self.state.customer.as_ref()?);
+        if key == "name" {
+            return c.name.clone().filter(|n| !n.trim().is_empty()).map(|text| SlotValue::Text { text });
+        }
+        let place = c.places.get(key)?;
+        Some(SlotValue::Place {
+            spoken: place.spoken.clone(),
+            address: place.address.clone(),
+            customer_place: Some(key.clone()),
+        })
+    }
+
     fn fill_defaults(&mut self, pipeline: &PipelineConfig) {
         self.fill_from_other_tasks();
+        let known: Vec<(String, SlotValue)> = pipeline
+            .slots
+            .iter()
+            .filter(|ps| ps.from_customer.as_deref() == Some("name"))
+            .filter_map(|ps| self.from_customer(ps).map(|v| (ps.slot.clone(), v)))
+            .collect();
+        if let Some(run) = &mut self.state.run {
+            for (slot, value) in known {
+                run.slots.entry(slot).or_insert(SlotState {
+                    value,
+                    confidence: 0.9,
+                    provenance: Provenance::Customer,
+                    confirmed: false,
+                });
+            }
+        }
         let customer = self.state.customer.clone();
         let Some(run) = &mut self.state.run else { return };
         for ps in &pipeline.slots {
