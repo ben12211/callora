@@ -364,7 +364,7 @@ export class Sessions {
     });
     const timer = setTimeout(finish, Math.min(a.timeoutMs, MAX_ASK_MS));
     try {
-      await this.send(id, a.chatId, a.text, 0);
+      await this.send(id, a.chatId, a.text, a.typingMs ?? 0);
       await finished;
     } finally {
       stop();
@@ -379,7 +379,7 @@ export class Sessions {
 /** How long a question may wait for its answer, at most. */
 const MAX_ASK_MS = 30_000;
 
-export type Ask = { chatId: string; text: string; timeoutMs: number; quietMs: number; until: string };
+export type Ask = { chatId: string; text: string; timeoutMs: number; quietMs: number; until: string; typingMs?: number };
 
 function page(client: ClientType): import("puppeteer-core").Page {
   return (client as unknown as { pupPage: import("puppeteer-core").Page }).pupPage;

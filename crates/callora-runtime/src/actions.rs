@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -30,19 +30,36 @@ pub struct ConfiguredActions {
     http: reqwest::Client,
     env: HashMap<String, String>,
     chat_bot: Option<Arc<dyn ChatBot>>,
-    /// A price bot's answers by business and question, with when they came.
-    answers: parking_lot::Mutex<HashMap<String, (Instant, String)>>,
 }
 
 impl ConfiguredActions {
     /// `env` is a snapshot of the process environment (injectable for tests).
     pub fn new(http: reqwest::Client, env: HashMap<String, String>) -> Self {
-        Self { http, env, chat_bot: None, answers: parking_lot::Mutex::new(HashMap::new()) }
+        Self { http, env, chat_bot: None }
     }
 
     pub fn with_chat_bot(mut self, bot: Arc<dyn ChatBot>) -> Self {
         self.chat_bot = Some(bot);
         self
+    }
+
+    /// The price bot's question for the ride in `input` ("מ בני ברק לירושלים"), and the places
+    /// as the caller and the system wrote them (a neighbourhood among them has its own prices).
+    fn price_question(query: &str, input: &Value) -> Option<(String, Vec<String>)> {
+        let slots = &input["slots"];
+        let place = |names: [&str; 2]| {
+            names.iter().find_map(|n| {
+                let v = &slots[*n];
+                let spoken = v["spoken"].as_str().or(v.as_str()).map(str::to_string);
+                let address = v["address"].as_str().map(str::to_string);
+                spoken.clone().or(address.clone()).map(|s| (s, address))
+            })
+        };
+        let ((from, from_address), (to, to_address)) =
+            (place(["price_from", "pickup"])?, place(["price_to", "destination"])?);
+        let question = query.replace("{from}", &price_list::city_of(&from)).replace("{to}", &price_list::city_of(&to));
+        let places = [Some(from), from_address, Some(to), to_address].into_iter().flatten().collect();
+        Some((question, places))
     }
 
     /// The price of the ride in `input`, from the business's price bot. `None`: no bot set up.
@@ -56,52 +73,30 @@ impl ConfiguredActions {
         timeout: Duration,
     ) -> Option<Result<Value, ActionFailure>> {
         let bot = self.chat_bot.as_ref()?;
-        let slots = &input["slots"];
-        let place = |names: [&str; 2]| {
-            names.iter().find_map(|n| {
-                let v = &slots[*n];
-                let spoken = v["spoken"].as_str().or(v.as_str()).map(str::to_string);
-                let address = v["address"].as_str().map(str::to_string);
-                spoken.clone().or(address.clone()).map(|s| (s, address))
-            })
-        };
-        let (Some((from, from_address)), Some((to, to_address))) =
-            (place(["price_from", "pickup"]), place(["price_to", "destination"]))
-        else {
+        let Some((question, places)) = Self::price_question(query, input) else {
             return Some(Err(ActionFailure::failed(format!("{action}: the route is not known"))));
         };
-        let (from_city, to_city) = (price_list::city_of(&from), price_list::city_of(&to));
-        let question = query.replace("{from}", &from_city).replace("{to}", &to_city);
-        let key = format!("{}|{question}", business.config.id);
         let fresh = Duration::from_secs(cache_minutes * 60);
-        let cached = self.answers.lock().get(&key).filter(|(at, _)| at.elapsed() < fresh).map(|(_, a)| a.clone());
-        let (answer, from_cache) = match cached {
-            Some(a) => (a, true),
-            None => match bot.ask(&business.config.id, &question, "₪", timeout).await {
-                Ok(Some(a)) => (a, false),
-                Ok(None) => return None,
-                Err(e) => return Some(Err(ActionFailure::failed(format!("{action}: the price bot: {e:#}")))),
-            },
+        let answer = match bot.ask(&business.config.id, &question, "₪", timeout, fresh, false).await {
+            Ok(Some(a)) => a,
+            Ok(None) => return None,
+            Err(e) => return Some(Err(ActionFailure::failed(format!("{action}: the price bot: {e:#}")))),
         };
-        let Some(list) = price_list::parse(&answer) else {
+        let Some(list) = price_list::parse(&answer.text) else {
             return Some(Err(ActionFailure::failed(format!("{action}: no prices in the bot's answer"))));
         };
-        if !from_cache {
-            self.answers.lock().insert(key, (Instant::now(), answer.clone()));
-        }
+        // Who is coming is known now, whenever the list was asked for.
+        let slots = &input["slots"];
         let passengers = slots["passengers"].as_u64().and_then(|p| u32::try_from(p).ok());
         let round_trip = slots["round_trip"].as_bool().unwrap_or(false);
-        let places: Vec<&str> =
-            [Some(from.as_str()), from_address.as_deref(), Some(to.as_str()), to_address.as_deref()]
-                .into_iter()
-                .flatten()
-                .collect();
+        let places: Vec<&str> = places.iter().map(String::as_str).collect();
         let Some(mut quote) = list.quote(passengers, round_trip, &places) else {
-            return Some(Err(ActionFailure::failed(format!("{action}: no car in the list for this group"))));
+            return Some(Err(ActionFailure::failed(format!("{action}: no cars in the bot's answer"))));
         };
         quote["question"] = json!(question);
-        quote["answer"] = json!(answer);
-        quote["cached"] = json!(from_cache);
+        quote["answer"] = json!(answer.text);
+        quote["cached"] = json!(answer.remembered);
+        quote["asked_at"] = json!(answer.asked_at);
         Some(Ok(quote))
     }
 
@@ -199,5 +194,22 @@ impl ActionRunner for ConfiguredActions {
             }
         }
         Err(ActionFailure::failed(format!("{action}: no backend is configured")))
+    }
+
+    async fn warm(&self, business: &Business, action: &str, input: Value) {
+        let (Some(bot), Some(config)) = (&self.chat_bot, business.config.actions.get(action)) else { return };
+        for backend in &config.backends {
+            if let ActionBackend::PriceBot { query, cache_minutes } = backend {
+                let Some((question, _)) = Self::price_question(query, &input) else { return };
+                let fresh = Duration::from_secs(cache_minutes * 60);
+                let timeout = Duration::from_millis(config.timeout_ms);
+                match bot.ask(&business.config.id, &question, "₪", timeout, fresh, true).await {
+                    Ok(Some(a)) if !a.remembered => tracing::info!(question, "price list asked ahead of the caller"),
+                    Ok(_) => {}
+                    Err(e) => tracing::info!(question, error = %format!("{e:#}"), "price list not asked ahead"),
+                }
+                return;
+            }
+        }
     }
 }

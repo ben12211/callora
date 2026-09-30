@@ -707,6 +707,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         actions = actions.with_chat_bot(Arc::new(callora_runtime::whatsapp::WhatsAppChatBot::new(
             callora_runtime::whatsapp::Service::new(url, token),
             settings_store.clone(),
+            db.clone(),
         )));
     }
     let services = Services {

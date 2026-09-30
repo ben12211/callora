@@ -412,7 +412,7 @@
     "estimate_price": {
       "description": "מחיר נסיעה מבוט המחירון בוואטסאפ (הבוט והחשבון נבחרים בהגדרות)",
       "backends": [
-        { "kind": "price_bot", "query": "מ {from} ל{to}", "cache_minutes": 30 },
+        { "kind": "price_bot", "query": "מ {from} ל{to}", "cache_minutes": 180 },
         { "kind": "http", "url_env": "TAXI_DISPATCH_URL", "token_env": "TAXI_DISPATCH_TOKEN" }
       ],
       "timeout_ms": 15000,

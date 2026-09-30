@@ -76,6 +76,7 @@ const server = http.createServer(async (req, res) => {
           timeoutMs: Number(b.timeout_ms ?? 12_000),
           quietMs: Number(b.quiet_ms ?? 1_500),
           until: String(b.until ?? ""),
+          typingMs: Number(b.typing_ms ?? 0),
         }),
       );
     }

@@ -6,6 +6,7 @@ use super::*;
 impl Session {
     pub(super) fn execute(&mut self, directives: Vec<Directive>) {
         self.focus_stt();
+        self.price_ahead();
         for d in directives {
             match d {
                 Directive::Speak { plan, filler } => {
@@ -47,6 +48,42 @@ impl Session {
         if !self.agent_busy() && self.after_speech.is_some() {
             let _ = self.events.send(Ev::TerminateNow);
         }
+    }
+
+    /// Once the ride's pickup and destination cities are known, the price list is asked in the
+    /// background: a caller who asks what it costs hears it at once, for whoever is coming.
+    fn price_ahead(&mut self) {
+        let Some(action) = self.business.config.actions.iter().find_map(|(id, a)| {
+            a.backends
+                .iter()
+                .any(|b| matches!(b, callora_core::config::ActionBackend::PriceBot { .. }))
+                .then_some(id.clone())
+        }) else {
+            return;
+        };
+        let state = &self.engine.state;
+        let place = |slot: &str| {
+            let run = state.run.as_ref().into_iter().chain(state.suspended.iter());
+            run.filter_map(|r| r.slots.get(slot))
+                .find_map(|s| match &s.value {
+                    callora_core::values::SlotValue::Place { spoken, address, .. } => {
+                        Some(address.clone().unwrap_or_else(|| spoken.clone()))
+                    }
+                    _ => None,
+                })
+                .or_else(|| state.place_cities.get(slot).cloned())
+        };
+        let (Some(from), Some(to)) = (place("pickup"), place("destination")) else { return };
+        let route = (callora_core::price_list::city_of(&from), callora_core::price_list::city_of(&to));
+        if self.priced.as_ref() == Some(&route) || route.0.is_empty() || route.1.is_empty() {
+            return;
+        }
+        self.priced = Some(route.clone());
+        let actions = self.services.actions.clone();
+        let business = self.business.clone();
+        let input =
+            json!({ "run_id": 0, "slots": { "price_from": { "spoken": route.0 }, "price_to": { "spoken": route.1 } } });
+        tokio::spawn(async move { actions.warm(&business, &action, input).await });
     }
 
     /// Queue a plan: each segment from the voice library when it is there, otherwise from

@@ -127,18 +127,30 @@ pub trait LanguageModel: Send + Sync {
 // ---------------------------------------------------------------------------------------
 // Business actions
 
+/// A bot's answer: new, or remembered from an earlier question.
+#[derive(Debug, Clone)]
+pub struct BotAnswer {
+    pub text: String,
+    pub asked_at: chrono::DateTime<chrono::Utc>,
+    pub remembered: bool,
+}
+
 /// A bot asked in a chat on a business's behalf (a price-list bot on WhatsApp).
 #[async_trait]
 pub trait ChatBot: Send + Sync {
-    /// The bot's answer, once a message with `until` in it came; `Ok(None)` when no bot is set
-    /// up for the business.
+    /// The bot's answer, once a message with `until` in it came: one no older than `fresh` if
+    /// the question was asked before. `ahead`: asked before anyone needs it (a price while the
+    /// ride is still being booked), so it gives way to the pacing that keeps the account from
+    /// being blocked. `Ok(None)` when no bot is set up for the business.
     async fn ask(
         &self,
         business_id: &str,
         text: &str,
         until: &str,
         timeout: std::time::Duration,
-    ) -> anyhow::Result<Option<String>>;
+        fresh: std::time::Duration,
+        ahead: bool,
+    ) -> anyhow::Result<Option<BotAnswer>>;
 }
 
 #[async_trait]
@@ -150,6 +162,10 @@ pub trait ActionRunner: Send + Sync {
         input: serde_json::Value,
         call: &CallInfo,
     ) -> Result<serde_json::Value, ActionFailure>;
+
+    /// Gets ready for the action before anyone asks for it (the price list for a route, while
+    /// the ride is still being booked). Nothing by default.
+    async fn warm(&self, _business: &Business, _action: &str, _input: serde_json::Value) {}
 }
 
 // ---------------------------------------------------------------------------------------

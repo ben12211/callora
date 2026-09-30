@@ -117,6 +117,7 @@ impl Service {
         text: &str,
         timeout: Duration,
         until: &str,
+        typing_ms: u64,
     ) -> Result<Vec<String>, ServiceError> {
         let body = json!({
             "chat_id": chat_id,
@@ -124,6 +125,7 @@ impl Service {
             "timeout_ms": timeout.as_millis() as u64,
             "quiet_ms": 1500,
             "until": until,
+            "typing_ms": typing_ms,
         });
         let v = self.call(reqwest::Method::POST, &format!("/sessions/{}/ask", enc(id)), Some(body)).await?;
         Ok(v["replies"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(str::to_string)).collect())
@@ -135,15 +137,128 @@ impl Service {
     }
 }
 
+/// How a price bot is asked, so the account asking is not blocked for acting like a bot: never
+/// the same question twice while its answer is fresh, a pause between questions, and a cap an
+/// hour and a day. A question asked ahead of the caller gets half the caps, a longer pause and
+/// "typing…" first; the caller's own question waits out the pause instead.
+#[derive(Debug, Clone, Copy)]
+pub struct BotPace {
+    pub gap: Duration,
+    pub gap_ahead: Duration,
+    pub per_hour: usize,
+    pub per_day: usize,
+}
+
+impl Default for BotPace {
+    fn default() -> Self {
+        Self { gap: Duration::from_secs(4), gap_ahead: Duration::from_secs(20), per_hour: 40, per_day: 300 }
+    }
+}
+
+/// An answer older than its freshness is still said when the bot cannot be asked (no answer, or
+/// the caps reached), up to a day old.
+const STALE_ANSWER: chrono::Duration = chrono::Duration::hours(24);
+
 /// A business's price bot, asked from the WhatsApp account chosen on the settings page.
 pub struct WhatsAppChatBot {
     service: Service,
     settings: Arc<crate::settings::SettingsStore>,
+    db: Option<PgPool>,
+    pace: BotPace,
+    /// Answers by business and question, with when they were asked.
+    answers: parking_lot::Mutex<HashMap<String, (DateTime<Utc>, String)>>,
+    /// When each account asked, over the last day.
+    asked: parking_lot::Mutex<HashMap<String, Vec<Instant>>>,
 }
 
 impl WhatsAppChatBot {
-    pub fn new(service: Service, settings: Arc<crate::settings::SettingsStore>) -> Self {
-        Self { service, settings }
+    pub fn new(service: Service, settings: Arc<crate::settings::SettingsStore>, db: Option<PgPool>) -> Self {
+        Self {
+            service,
+            settings,
+            db,
+            pace: BotPace::default(),
+            answers: parking_lot::Mutex::new(HashMap::new()),
+            asked: parking_lot::Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn with_pace(mut self, pace: BotPace) -> Self {
+        self.pace = pace;
+        self
+    }
+
+    /// The last answer to this question: remembered here, else saved in the database.
+    async fn remembered(&self, business_id: &str, question: &str) -> Option<(DateTime<Utc>, String)> {
+        let key = format!("{business_id}|{question}");
+        if let Some(a) = self.answers.lock().get(&key).cloned() {
+            return Some(a);
+        }
+        let pool = self.db.as_ref()?;
+        let row = sqlx::query(
+            "SELECT answer, asked_at FROM callora_v2.price_answers WHERE business_id = $1 AND question = $2",
+        )
+        .bind(business_id)
+        .bind(question)
+        .fetch_optional(pool)
+        .await
+        .ok()??;
+        let found: (DateTime<Utc>, String) = (row.get("asked_at"), row.get("answer"));
+        self.answers.lock().insert(key, found.clone());
+        Some(found)
+    }
+
+    async fn remember(&self, business_id: &str, question: &str, answer: &str, at: DateTime<Utc>) {
+        self.answers.lock().insert(format!("{business_id}|{question}"), (at, answer.to_string()));
+        if let Some(pool) = &self.db {
+            let saved = sqlx::query(
+                "INSERT INTO callora_v2.price_answers (business_id, question, answer, asked_at) VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (business_id, question) DO UPDATE SET answer = EXCLUDED.answer, asked_at = EXCLUDED.asked_at",
+            )
+            .bind(business_id)
+            .bind(question)
+            .bind(answer)
+            .bind(at)
+            .execute(pool)
+            .await;
+            if let Err(e) = saved {
+                tracing::warn!(error = %e, "a price bot's answer was not saved");
+            }
+        }
+    }
+
+    /// Whether the account may ask now; the caller's own question waits out the pause, one asked
+    /// ahead is not asked at all. On yes, the question is counted.
+    async fn may_ask(&self, account: &str, ahead: bool) -> Result<(), &'static str> {
+        let wait = {
+            let mut asked = self.asked.lock();
+            let times = asked.entry(account.to_string()).or_default();
+            times.retain(|t| t.elapsed() < Duration::from_secs(24 * 3600));
+            let hour = times.iter().filter(|t| t.elapsed() < Duration::from_secs(3600)).count();
+            let (per_hour, per_day) = if ahead {
+                (self.pace.per_hour / 2, self.pace.per_day / 2)
+            } else {
+                (self.pace.per_hour, self.pace.per_day)
+            };
+            if hour >= per_hour {
+                return Err("the questions an hour are used up");
+            }
+            if times.len() >= per_day {
+                return Err("the questions a day are used up");
+            }
+            let gap = if ahead { self.pace.gap_ahead } else { self.pace.gap };
+            let since = times.iter().map(Instant::elapsed).min();
+            let wait = since.filter(|s| *s < gap).map(|s| gap - s);
+            if wait.is_some() && ahead {
+                return Err("another question was asked a moment ago");
+            }
+            times.push(Instant::now() + wait.unwrap_or_default());
+            wait
+        };
+        if let Some(w) = wait {
+            tokio::time::sleep(w).await;
+        }
+        Ok(())
     }
 }
 
@@ -155,24 +270,64 @@ impl crate::ports::ChatBot for WhatsAppChatBot {
         text: &str,
         until: &str,
         timeout: Duration,
-    ) -> anyhow::Result<Option<String>> {
+        fresh: Duration,
+        ahead: bool,
+    ) -> anyhow::Result<Option<crate::ports::BotAnswer>> {
         let Some(bot) = self.settings.price_bot(business_id) else { return Ok(None) };
+        let now = Utc::now();
+        let known = self.remembered(business_id, text).await;
+        let fresh = chrono::Duration::from_std(fresh).unwrap_or(chrono::Duration::zero());
+        let answer =
+            |(at, text): (DateTime<Utc>, String)| crate::ports::BotAnswer { text, asked_at: at, remembered: true };
+        if let Some(k) = known.clone().filter(|(at, _)| now - *at < fresh) {
+            return Ok(Some(answer(k)));
+        }
+        let stale = known.filter(|(at, _)| now - *at < STALE_ANSWER);
+        if let Err(why) = self.may_ask(&bot.account, ahead).await {
+            return match (stale, ahead) {
+                (Some(k), false) => {
+                    tracing::info!(
+                        business_id,
+                        question = text,
+                        why,
+                        "the price bot is not asked; its last answer is used"
+                    );
+                    Ok(Some(answer(k)))
+                }
+                _ => Err(anyhow::anyhow!("not asked: {why}")),
+            };
+        }
         let started = Instant::now();
-        let replies =
-            self.service.ask(&bot.account, &bot.chat_id, text, timeout, until).await.map_err(|e| match e {
+        let typing = if ahead { 1200 } else { 0 };
+        let asked =
+            self.service.ask(&bot.account, &bot.chat_id, text, timeout, until, typing).await.map_err(|e| match e {
                 ServiceError::Unavailable(m) if m.contains("no_reply") => anyhow::anyhow!("no answer in time"),
                 ServiceError::NotReady => anyhow::anyhow!("the WhatsApp account is not connected"),
                 ServiceError::Refused(m) => anyhow::anyhow!("refused: {m} (is the bot a saved contact?)"),
                 other => anyhow::anyhow!("{other:?}"),
-            })?;
-        tracing::info!(
-            business_id,
-            question = text,
-            ms = started.elapsed().as_millis() as u64,
-            messages = replies.len(),
-            "the price bot answered"
-        );
-        Ok(Some(replies.join("\n\n")))
+            });
+        match asked {
+            Ok(replies) => {
+                let text_back = replies.join("\n\n");
+                tracing::info!(
+                    business_id,
+                    question = text,
+                    ahead,
+                    ms = started.elapsed().as_millis() as u64,
+                    messages = replies.len(),
+                    "the price bot answered"
+                );
+                self.remember(business_id, text, &text_back, now).await;
+                Ok(Some(crate::ports::BotAnswer { text: text_back, asked_at: now, remembered: false }))
+            }
+            Err(e) => match (stale, ahead) {
+                (Some(k), false) => {
+                    tracing::info!(business_id, question = text, error = %e, "the price bot failed; its last answer is used");
+                    Ok(Some(answer(k)))
+                }
+                _ => Err(e),
+            },
+        }
     }
 }
 
@@ -843,6 +998,32 @@ async fn retry(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bot(pace: BotPace) -> WhatsAppChatBot {
+        WhatsAppChatBot::new(Service::new("http://unused".into(), "x".repeat(16)), Arc::default(), None).with_pace(pace)
+    }
+
+    #[tokio::test]
+    async fn the_price_bot_is_asked_at_a_human_pace() {
+        let pace =
+            BotPace { gap: Duration::from_millis(200), gap_ahead: Duration::from_secs(60), per_hour: 4, per_day: 100 };
+        let b = bot(pace);
+        assert!(b.may_ask("a1", false).await.is_ok());
+        // Right after a question: one asked ahead is not asked, the caller's waits its turn.
+        assert!(b.may_ask("a1", true).await.is_err(), "not ahead of the caller, a moment after another");
+        let started = Instant::now();
+        assert!(b.may_ask("a1", false).await.is_ok());
+        assert!(started.elapsed() >= Duration::from_millis(150), "the caller's question waited the pause");
+        // Questions asked ahead have half of the hour's questions; the caller's have them all.
+        let b = bot(BotPace { gap: Duration::ZERO, gap_ahead: Duration::ZERO, ..pace });
+        assert!(b.may_ask("a1", true).await.is_ok());
+        assert!(b.may_ask("a1", true).await.is_ok());
+        assert!(b.may_ask("a1", true).await.is_err(), "two of four, ahead");
+        assert!(b.may_ask("a1", false).await.is_ok());
+        assert!(b.may_ask("a1", false).await.is_ok());
+        assert!(b.may_ask("a1", false).await.is_err(), "four an hour in all");
+        assert!(b.may_ask("a2", false).await.is_ok(), "each account its own");
+    }
 
     #[test]
     fn an_order_card_reads_as_a_message() {

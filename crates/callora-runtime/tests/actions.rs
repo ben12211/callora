@@ -95,9 +95,11 @@ async fn a_backend_that_cannot_be_reached_has_not_booked_anything() {
     assert!(!failure.outcome_unknown, "{failure}");
 }
 
-/// A price bot that answers with the price list of the fixture, and counts the questions.
+/// A price bot that answers with the price list of the fixture, remembers like the real one,
+/// and counts the questions.
 struct PriceBot {
-    asked: Mutex<Vec<String>>,
+    asked: Mutex<Vec<(String, bool)>>,
+    known: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 #[async_trait::async_trait]
@@ -108,16 +110,30 @@ impl callora_runtime::ports::ChatBot for PriceBot {
         text: &str,
         until: &str,
         _timeout: Duration,
-    ) -> anyhow::Result<Option<String>> {
+        fresh: Duration,
+        ahead: bool,
+    ) -> anyhow::Result<Option<callora_runtime::ports::BotAnswer>> {
         assert_eq!(until, "₪");
-        self.asked.lock().push(text.to_string());
-        Ok(Some(include_str!("../../callora-core/tests/fixtures/price_list_bnei_brak_jerusalem.txt").to_string()))
+        let remembered = self.known.lock().get(text).is_some_and(|at| at.elapsed() < fresh);
+        if !remembered {
+            self.asked.lock().push((text.to_string(), ahead));
+            self.known.lock().insert(text.to_string(), std::time::Instant::now());
+        }
+        Ok(Some(callora_runtime::ports::BotAnswer {
+            text: include_str!("../../callora-core/tests/fixtures/price_list_bnei_brak_jerusalem.txt").to_string(),
+            asked_at: chrono::Utc::now(),
+            remembered,
+        }))
     }
+}
+
+fn price_bot() -> Arc<PriceBot> {
+    Arc::new(PriceBot { asked: Mutex::new(Vec::new()), known: Mutex::new(HashMap::new()) })
 }
 
 #[tokio::test]
 async fn a_price_comes_from_the_price_bot_and_is_used_again_for_a_while() {
-    let bot = Arc::new(PriceBot { asked: Mutex::new(Vec::new()) });
+    let bot = price_bot();
     let actions = ConfiguredActions::new(reqwest::Client::new(), HashMap::new()).with_chat_bot(bot.clone());
     let b = taxi();
     let input = json!({
@@ -129,13 +145,34 @@ async fn a_price_comes_from_the_price_bot_and_is_used_again_for_a_while() {
         }
     });
     let quote = actions.run(&b, "estimate_price", input.clone(), &call()).await.unwrap();
-    assert_eq!(bot.asked.lock().as_slice(), ["מ בני ברק לירושלים"], "the cities, as the bot is asked");
+    assert_eq!(
+        bot.asked.lock().as_slice(),
+        [("מ בני ברק לירושלים".to_string(), false)],
+        "the cities, as the bot is asked"
+    );
     assert_eq!(quote["price"], 240, "a four-seater at the price of the neighbourhood (גילה)");
     assert_eq!(quote["response"], "price_answer");
     assert_eq!(quote["cached"], false);
     let again = actions.run(&b, "estimate_price", input, &call()).await.unwrap();
     assert_eq!(again["cached"], true);
-    assert_eq!(bot.asked.lock().len(), 1, "the same question is not asked again within the half hour");
+    assert_eq!(bot.asked.lock().len(), 1, "the same question is not asked again while its answer is fresh");
+}
+
+#[tokio::test]
+async fn the_price_asked_ahead_is_quoted_for_whoever_comes() {
+    let bot = price_bot();
+    let actions = ConfiguredActions::new(reqwest::Client::new(), HashMap::new()).with_chat_bot(bot.clone());
+    let b = taxi();
+    // The ride's cities are known: the list is asked before anyone asks what it costs.
+    let route =
+        json!({ "run_id": 0, "slots": { "price_from": { "spoken": "בני ברק" }, "price_to": { "spoken": "ירושלים" } } });
+    actions.warm(&b, "estimate_price", route).await;
+    assert_eq!(bot.asked.lock().as_slice(), [("מ בני ברק לירושלים".to_string(), true)], "asked ahead");
+    // Then six people ask: no new question, the price of a six-seater.
+    let input = json!({ "run_id": 1, "slots": { "price_from": { "spoken": "בני ברק" }, "price_to": { "spoken": "ירושלים" }, "passengers": 6 } });
+    let quote = actions.run(&b, "estimate_price", input, &call()).await.unwrap();
+    assert_eq!((quote["price"].as_u64(), quote["cached"].as_bool()), (Some(300), Some(true)));
+    assert_eq!(bot.asked.lock().len(), 1);
 }
 
 #[tokio::test]

@@ -304,6 +304,8 @@ pub struct Session {
     reply_started_at: Option<Instant>,
     /// The next agent request is told the caller's words overlap its last reply.
     overlap: bool,
+    /// The route whose price list was asked ahead of the caller.
+    priced: Option<(String, String)>,
     barge_in_started: Option<Instant>,
     /// The agent was cut off and no real utterance has followed yet.
     interrupted: bool,
@@ -405,6 +407,7 @@ impl Session {
             speech_started_at: None,
             reply_started_at: None,
             overlap: false,
+            priced: None,
             barge_in_started: None,
             interrupted: false,
             barge_pending: false,
