@@ -2817,3 +2817,76 @@ fn a_silence_asks_the_last_question_alone() {
     let again = spoken(&call.engine.on_silence());
     assert!(again.contains("לשלוח?") && !again.contains(&ack), "{again}");
 }
+
+#[test]
+fn a_group_too_big_for_a_taxi_goes_to_a_person_when_the_agent_decides() {
+    // A live call booked "שבע עשרה" passengers in one taxi: more than 8 go to a person.
+    let (mut call, _) = Call::new(with_desk());
+    let mut turn = decide(
+        AgentAction::None,
+        "",
+        Some("book_ride"),
+        &[("pickup", "הרצל 10, רעננה"), ("destination", "דיזנגוף 50, תל אביב")],
+    );
+    turn.asks = vec!["passengers".into()];
+    call.engine.on_agent_turn("מהרצל 10 ברעננה לדיזנגוף 50 בתל אביב", turn, "");
+    assert!(
+        call.engine.rejects_any("שבע עשרה", &[("passengers".into(), "שבע עשרה".into())]),
+        "the runtime holds the agent's next question"
+    );
+    let d = call.engine.on_agent_turn(
+        "שבע עשרה.",
+        decide(AgentAction::None, "", Some("book_ride"), &[("passengers", "שבע עשרה")]),
+        "",
+    );
+    assert!(d.iter().any(|d| matches!(d, Directive::Handoff { .. })), "{d:?}");
+    assert!(spoken(&d).contains("מוקדן"), "{}", spoken(&d));
+    assert!(action(&d).is_none(), "nothing booked");
+    // Five: a van, and the call goes on.
+    let (mut call, _) = Call::new(with_desk());
+    let mut turn = decide(
+        AgentAction::None,
+        "",
+        Some("book_ride"),
+        &[("pickup", "הרצל 10, רעננה"), ("destination", "דיזנגוף 50, תל אביב")],
+    );
+    turn.asks = vec!["passengers".into()];
+    call.engine.on_agent_turn("מהרצל 10 ברעננה לדיזנגוף 50 בתל אביב", turn, "");
+    assert!(!call.engine.rejects_any("חמישה", &[("passengers".into(), "חמישה".into())]));
+    let d = call.engine.on_agent_turn(
+        "חמישה",
+        decide(AgentAction::None, "על שם מי?", Some("book_ride"), &[("passengers", "חמישה")]),
+        "",
+    );
+    assert!(!d.iter().any(|d| matches!(d, Directive::Handoff { .. })), "{d:?}");
+    assert!(call.slot("vehicle").is_some(), "a van");
+}
+
+#[test]
+fn the_street_the_caller_said_wins_over_the_agents_reading() {
+    // "מאלעד לבני ברק, בן זכאי 45 לעזרא 11": the agent wrote "אלעזר 11", read back as רבי אליעזר.
+    let g = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         6100\tבני ברק\t825\tעזרא\tofficial\n6100\tבני ברק\t416\tרבי אליעזר\tofficial\n\
+         6100\tבני ברק\t416\tאליעזר\tsynonym\n",
+    ));
+    let said = "כן. מאלעד לבני ברק, בן זכאי 45 לעזרא 11.";
+    assert_eq!(g.street_said_instead("אלעזר 11, בני ברק", said).as_deref(), Some("עזרא 11, בני ברק"));
+    assert_eq!(g.street_said_instead("עזרא 11, בני ברק", said), None, "the agent's street was said");
+    assert_eq!(g.street_said_instead("רבי אליעזר 11, בני ברק", "לרבי אליעזר 11 בבני ברק"), None);
+
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(g));
+    call.engine.on_agent_turn(
+        said,
+        decide(
+            AgentAction::None,
+            "",
+            Some("book_ride"),
+            &[("pickup", "בן זכאי 45, אלעד"), ("destination", "אלעזר 11, בני ברק")],
+        ),
+        "",
+    );
+    let to = call.slot("destination").map(|v| v.spoken()).unwrap_or_default();
+    assert!(to.contains("עזרא 11") && !to.contains("אליעזר"), "{to}");
+}

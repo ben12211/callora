@@ -334,6 +334,53 @@ impl Gazetteer {
         added
     }
 
+    /// The street the caller said right before the house number, when the agent wrote another
+    /// one they never said: "לעזרא 11" became "אלעזר 11, בני ברק" (the ל read into the
+    /// name), which found רבי אליעזר; עזרא is a street of בני ברק too. The place again, with the
+    /// caller's street; `None` when the agent's street was said or the caller's is no street
+    /// of that city.
+    pub fn street_said_instead(&self, value: &str, said: &str) -> Option<String> {
+        let Lookup::Found(a) = self.resolve(value) else { return None };
+        let (street, number) = (a.street.as_ref()?, a.number.as_ref()?);
+        let (ci, _) = self.city_keys.get(&norm(&a.city_said)).cloned()?;
+        let city = &self.cities[ci];
+        let theirs = *city.street_keys.get(&norm(street))?;
+        let heard: Vec<String> =
+            norm(&crate::hebrew::with_digits(said)).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect();
+        let heard_as_is = |w: &str| {
+            heard.iter().any(|h| h == w || strip_prefix(h).is_some_and(|h| h == w) || strip_prefix(w) == Some(h))
+        };
+        // The agent's own street words, said: nothing to correct.
+        let city_words: Vec<String> = norm(&a.city_said).split(' ').map(str::to_string).collect();
+        let written: Vec<String> = norm(value)
+            .split(' ')
+            .filter(|w| !w.is_empty() && !w.chars().all(|c| c.is_ascii_digit()) && !city_words.contains(&w.to_string()))
+            .map(str::to_string)
+            .collect();
+        if written.is_empty() || written.iter().all(|w| heard_as_is(w)) {
+            return None;
+        }
+        // The one or two words before the number, with the prefix off the first.
+        let at = heard.iter().position(|w| w == number)?;
+        let mut found = None;
+        for len in [2, 1] {
+            let Some(start) = at.checked_sub(len) else { continue };
+            let words = &heard[start..at];
+            let mut tries = vec![words.join(" ")];
+            if let Some(bare) = strip_prefix(&words[0]) {
+                tries.push(
+                    std::iter::once(bare.to_string()).chain(words[1..].iter().cloned()).collect::<Vec<_>>().join(" "),
+                );
+            }
+            if let Some(si) = tries.iter().find_map(|t| city.street_keys.get(t).copied()) {
+                found = Some(si);
+                break;
+            }
+        }
+        let si = found.filter(|si| *si != theirs)?;
+        Some(format!("{} {number}, {}", city.streets[si], a.city_said))
+    }
+
     /// The full names of the towns `text` names, with or without a prefix and by their short
     /// names too ("מביתר" → ביתר עילית, "לבני ברק" → בני ברק).
     pub fn towns_named(&self, text: &str) -> Vec<String> {

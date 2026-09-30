@@ -191,7 +191,8 @@ impl Engine {
     }
 
     /// Whether any of these values would be rejected (47 passengers when the most is 20, a
-    /// street its city does not have): the runtime then holds the agent's words back, since
+    /// street its city does not have) or would make a business rule take the turn over (17
+    /// passengers go to a person): the runtime then holds the agent's words back, since
     /// they move on without it. The same checks as the turn itself, on a copy of the call: a
     /// live call's "מהשערה 18, אפרת" was refused only after "לאיזה רחוב נוסעים?" had played.
     pub fn rejects_any(&self, transcript: &str, fields: &[(String, String)]) -> bool {
@@ -208,7 +209,9 @@ impl Engine {
         let fields = probe.with_patterns(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
         let fields = probe.with_cues(transcript, &fields);
-        !probe.apply_agent_fields(&fields).1.is_empty()
+        let rejected = !probe.apply_agent_fields(&fields).1.is_empty();
+        // Or a business rule takes the turn over (17 passengers: a person arranges it).
+        rejected || probe.rule_takes_over()
     }
 
     /// The detail a task with a fixed order (`strict_order`) asks for next: the first one
@@ -495,6 +498,13 @@ impl Engine {
         let fields = self.answer_in_place(transcript, &fields);
         let fields = self.with_cues(transcript, &fields);
         let (changed, rejected) = self.apply_agent_fields(&fields);
+        // The business's rules, as in a turn without the agent: a live call booked 17
+        // passengers in one taxi, though more than 8 go to a person.
+        if self.apply_rules(&mut out) {
+            tracing::info!(transcript, "a business rule took the turn over");
+            self.agent_say(&mut out, None, "", spoken);
+            return self.finish(out);
+        }
         // A detail changed after the read-back ("לא 40, 45"): read it back again, so the next
         // "יאללה" sends the corrected task instead of meeting another read-back.
         let action = if turn.action == AgentAction::None && changed && was_confirming {
@@ -1108,10 +1118,25 @@ impl Engine {
                     .collect()
             })
             .unwrap_or_default();
+        let said_now = self
+            .state
+            .history
+            .iter()
+            .rev()
+            .find(|t| t.speaker == Speaker::Caller)
+            .map(|t| t.text.clone())
+            .unwrap_or_default();
         let fills: Vec<SlotFill> = fields
             .iter()
             .filter_map(|(slot, raw)| {
                 let cfg = self.business.config.slots.get(slot)?;
+                let corrected = (cfg.kind == crate::config::SlotKind::Place)
+                    .then(|| self.gazetteer.as_ref().and_then(|g| g.street_said_instead(raw, &said_now)))
+                    .flatten();
+                if let Some(c) = &corrected {
+                    tracing::info!(%slot, agent = %raw, caller = %c, "the street the caller said, not the agent's");
+                }
+                let raw = corrected.as_deref().unwrap_or(raw);
                 if optional.contains(slot) {
                     let norm = crate::text::normalize(raw);
                     let rest =
@@ -1901,25 +1926,37 @@ impl Engine {
         accepted
     }
 
+    /// Whether a rule applies now: its task, not fired yet, its condition met.
+    fn rule_hit(&self, rule: &crate::config::RuleConfig) -> bool {
+        let Some(run) = &self.state.run else { return false };
+        if rule.pipeline.as_ref().is_some_and(|p| *p != run.pipeline) || run.fired_rules.contains(&rule.id) {
+            return false;
+        }
+        let value = run.slots.get(&rule.when.slot).map(|s| &s.value);
+        match &rule.when.test {
+            crate::config::ConditionTest::Gt(x) => value.and_then(SlotValue::as_f64).is_some_and(|v| v > *x),
+            crate::config::ConditionTest::Lt(x) => value.and_then(SlotValue::as_f64).is_some_and(|v| v < *x),
+            crate::config::ConditionTest::Eq(x) => value.is_some_and(|v| v.matches_json(x)),
+            crate::config::ConditionTest::Present(p) => value.is_some() == *p,
+        }
+    }
+
+    /// Whether a rule would take the turn over now (a handoff, a rejected value).
+    fn rule_takes_over(&self) -> bool {
+        self.business.config.rules.iter().any(|r| !matches!(r.then, RuleEffect::Set { .. }) && self.rule_hit(r))
+    }
+
     /// Business rules. Returns true when a rule took over the turn.
     fn apply_rules(&mut self, out: &mut Out) -> bool {
         let rules = self.business.config.rules.clone();
         for rule in rules {
-            let Some(run) = &self.state.run else { return false };
-            if rule.pipeline.as_ref().is_some_and(|p| *p != run.pipeline) || run.fired_rules.contains(&rule.id) {
+            if self.state.run.is_none() {
+                return false;
+            }
+            if !self.rule_hit(&rule) {
                 continue;
             }
-            let value = run.slots.get(&rule.when.slot).map(|s| &s.value);
-            let hit = match &rule.when.test {
-                crate::config::ConditionTest::Gt(x) => value.and_then(SlotValue::as_f64).is_some_and(|v| v > *x),
-                crate::config::ConditionTest::Lt(x) => value.and_then(SlotValue::as_f64).is_some_and(|v| v < *x),
-                crate::config::ConditionTest::Eq(x) => value.is_some_and(|v| v.matches_json(x)),
-                crate::config::ConditionTest::Present(p) => value.is_some() == *p,
-            };
-            if !hit {
-                continue;
-            }
-            tracing::debug!(rule = %rule.id, "business rule fired");
+            tracing::info!(rule = %rule.id, "business rule fired");
             if let Some(run) = &mut self.state.run {
                 run.fired_rules.push(rule.id.clone());
             }
