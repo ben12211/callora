@@ -183,3 +183,12 @@ async fn no_price_bot_means_no_price() {
     let err = actions.run(&taxi(), "estimate_price", input, &call()).await.unwrap_err();
     assert!(err.error.contains("no backend"), "never a made-up price: {}", err.error);
 }
+
+#[tokio::test]
+async fn how_long_a_ride_takes_comes_from_the_same_list() {
+    let actions = ConfiguredActions::new(reqwest::Client::new(), HashMap::new()).with_chat_bot(price_bot());
+    let input = json!({ "run_id": 1, "slots": { "price_from": { "spoken": "בני ברק" }, "price_to": { "spoken": "ירושלים" }, "asks_about": "time" } });
+    let quote = actions.run(&taxi(), "estimate_price", input, &call()).await.unwrap();
+    assert_eq!(quote["response"], "ride_time_answer");
+    assert_eq!((quote["duration"].as_str(), quote["distance_km"].as_u64()), (Some("שעה ו6 דקות"), Some(67)));
+}

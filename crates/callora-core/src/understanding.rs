@@ -413,10 +413,11 @@ pub fn parse_slot_value(
             }
         }
         SlotKind::Time => parse_time(&norm, &b.now).map(|(time, c)| (SlotValue::Time { time }, c)),
+        // The value's own name ("van", as the agent is told to pass it) or one of its words.
         SlotKind::Enum => compiled?
             .enum_values
             .iter()
-            .find(|(_, set)| set.find(&norm).is_some())
+            .find(|(canonical, set)| crate::text::normalize(canonical) == norm || set.find(&norm).is_some())
             .map(|(canonical, _)| (SlotValue::Enum { value: canonical.clone() }, 0.85)),
         SlotKind::Text => Some((SlotValue::Text { text: norm.clone() }, if bare { 0.8 } else { 0.75 })),
         SlotKind::Place => Some(parse_place(b, compiled, &norm, bare)),

@@ -187,6 +187,7 @@ impl PriceList {
             "seats": car.seats,
             "neighborhood": neighborhood,
             "distance_km": self.distance_km,
+            "duration": self.duration,
             "tier": self.tier,
         });
         if round_trip {

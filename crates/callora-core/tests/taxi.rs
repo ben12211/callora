@@ -685,7 +685,7 @@ fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
     // Nothing of the taxi business is written in the generic prompt: its words come from its file.
     assert!(system.contains("experienced human dispatcher"), "the role comes from agent.prompt");
     assert!(
-        system.contains("(luggage, wheelchair, child_seat, vehicle, round_trip)"),
+        system.contains("(luggage, wheelchair, child_seat, vehicle, round_trip, asks_about)"),
         "optional details come from the pipelines: {system}"
     );
     assert!(request.user.ends_with("CALLER NOW: \"היי\""), "{}", request.user);
@@ -880,6 +880,10 @@ fn a_price_is_asked_of_the_price_list_with_the_cities_alone() {
     let quote = serde_json::json!({ "price": 220, "price_6": 300, "response": "price_answer_sizes" });
     let said = spoken(&call.engine.on_action_result(run_id, Ok(quote)));
     assert!(said.contains("עד ארבעה נוסעים 220₪, ועד שישה 300₪."), "{said}");
+    assert!(
+        said.contains("להזמין מונית?") || said.contains("לשלוח מונית?"),
+        "a booking is offered, not \"anything else?\": {said}"
+    );
 }
 
 #[test]
@@ -2425,4 +2429,26 @@ fn a_word_that_sounds_like_a_town_is_told_to_the_agent() {
     let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "אני צריך מפרט לביתר");
     assert_eq!(request.user.matches("sounds like אפרת").count(), 1, "{}", request.user);
     assert!(!request.user.contains("מענית"), "the business's own word \"מונית\" is no town: {}", request.user);
+}
+
+#[test]
+fn how_long_a_ride_takes_is_said_from_the_price_list() {
+    // The call of 20:22: "כמה זמן נסיעה מביתר לירושלים?" was answered with the prices.
+    let (mut call, _) = Call::new(business(&[]));
+    let d = call.engine.on_agent_turn(
+        "כמה זמן נסיעה מביתר לירושלים?",
+        decide(
+            AgentAction::Submit,
+            "",
+            Some("price_question"),
+            &[("price_from", "ביתר"), ("price_to", "ירושלים"), ("asks_about", "time")],
+        ),
+        "",
+    );
+    let (run_id, _, input) = action(&d).expect("the list is asked");
+    assert_eq!(input["slots"]["asks_about"], "time");
+    let quote =
+        serde_json::json!({ "price": 120, "duration": "34 דקות", "distance_km": 22, "response": "ride_time_answer" });
+    let said = spoken(&call.engine.on_action_result(run_id, Ok(quote)));
+    assert!(said.contains("הנסיעה בערך 34 דקות, 22 קילומטר."), "{said}");
 }

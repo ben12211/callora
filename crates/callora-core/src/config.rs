@@ -410,6 +410,10 @@ pub struct PipelineConfig {
     /// What to do once the pipeline finishes.
     #[serde(default)]
     pub after: AfterPipeline,
+    /// Said after the task instead of "anything else?", when no task under way is resumed
+    /// ("להזמין מונית?" after a price).
+    #[serde(default)]
+    pub offer: Option<ResponseId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

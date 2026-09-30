@@ -94,8 +94,8 @@
     },
     {
       "id": "price_question",
-      "description": "שאלת מחיר לנסיעה",
-      "keywords": ["כמה עולה", "כמה זה עולה", "מחיר", "המחיר", "כמה יעלה", "כמה זה יוצא", "כמה יוצא"],
+      "description": "שאלת מחיר, זמן או מרחק של נסיעה",
+      "keywords": ["כמה עולה", "כמה זה עולה", "מחיר", "המחיר", "כמה יעלה", "כמה זה יוצא", "כמה יוצא", "כמה זמן נסיעה", "כמה זמן לוקח", "כמה רחוק"],
       "examples": ["כמה עולה נסיעה לנתב\"ג?"],
       "pipeline": "price_question"
     },
@@ -216,6 +216,12 @@
     "price_from": { "type": "place", "description": "מאיפה (לשאלת מחיר: עיר מספיקה)", "priority": 42 },
     "price_to": { "type": "place", "description": "לאן (לשאלת מחיר: עיר מספיקה)", "priority": 43 },
     "round_trip": { "type": "boolean", "description": "הלוך חזור (צדדים)", "priority": 14 },
+    "asks_about": {
+      "type": "enum",
+      "description": "מה שואלים על הנסיעה: מחיר, זמן או מרחק",
+      "priority": 15,
+      "values": { "price": ["כמה עולה", "מחיר"], "time": ["כמה זמן", "זמן נסיעה", "כמה לוקח"], "distance": ["כמה רחוק", "מרחק", "כמה קילומטר"] }
+    },
     "customer_name": {
       "type": "text",
       "description": "שם הנוסע",
@@ -266,7 +272,7 @@
       "Pass every detail the caller gave in the turn, even when another detail of the same sentence was not made out: \"בלד לירושלים\" still passes destination \"ירושלים\".",
       "Every detail goes into fields in the turn it is said, never later. A landmark, building or business answers the street question: caller \"זה ליד התחנה המרכזית, לא זוכר את הרחוב\" → fields destination \"התחנה המרכזית, ירושלים\", then the next question. Only places the caller said.",
       "Anything the driver should know (a big trunk, a lot of luggage, a child seat, a wheelchair, \"call when you arrive\") is the note: pass it in notes (and luggage when a number of suitcases is said). One answer to the note question is enough: when nothing else is missing, read_back right away (never \"עוד משהו?\"). Never ask again for a detail that already has a value under CURRENT TASK.",
-      "A price question (\"כמה עולה מבני ברק לירושלים?\"): task price_question with price_from and price_to (the cities are enough: never ask for a street to give a price; during a booking, its pickup and destination), passengers when known, round_trip when they ask for there and back (\"הלוך חזור\", \"צדדים\"). The system asks the price list and says the price: never say a number or a price yourself, and say nothing before it but the filler. After it, go on with the booking if one was under way.",
+      "A price question (\"כמה עולה מבני ברק לירושלים?\"): task price_question with price_from and price_to (the cities are enough: never ask for a street to give a price; during a booking, its pickup and destination), passengers when known, round_trip when they ask for there and back (\"הלוך חזור\", \"צדדים\"). How long or how far (\"כמה זמן נסיעה מביתר לירושלים?\", \"כמה רחוק?\") is the same task, with asks_about time or distance: the system says the time and the distance. The system asks the price list and says the price: never say a number or a price yourself, and say nothing before it but the filler. After it, go on with the booking if one was under way.",
       "The answer to \"על שם מי לרשום את ההזמנה?\" is the name: pass it in customer_name and go on (never ask for it twice). Speech recognition splits Hebrew names; write the real name it obviously is (\"בן-האיי או מנשה\" is \"בניהו מנשה\", \"יה או נתן כהן\" is \"יהונתן כהן\"), otherwise the name as heard.",
       "Only when the caller complains that they already told you (\"אמרתי לך כבר\"), say \"סליחה, צודק.\" and take the detail from the conversation. \"כן אבל…\", \"כן רגע…\" to a read-back is not a yes: do what they ask (read the details again, fix one), never submit.",
       "A correction after the read-back (\"לא 40, 45\") → pass the corrected detail with its city (\"בן זכאי 45, אלעד\") and action read_back; the system reads the whole ride again.",
@@ -360,12 +366,14 @@
         { "slot": "price_from", "required": true, "ask": "ask_price_from", "from_slot": "pickup" },
         { "slot": "price_to", "required": true, "ask": "ask_destination_price", "from_slot": "destination" },
         { "slot": "passengers", "from_slot": "passengers" },
-        { "slot": "round_trip" }
+        { "slot": "round_trip" },
+        { "slot": "asks_about" }
       ],
       "action": "estimate_price",
       "filler": "filler_checking",
       "on_success": "price_answer",
-      "on_failure": "price_failed"
+      "on_failure": "price_failed",
+      "offer": "offer_booking"
     },
     "lost_item": {
       "description": "דיווח על אבדה",
@@ -538,6 +546,8 @@
       "variants": ["לקבוצה כזאת צריך יותר מרכב אחד. הרכב הכי גדול עולה {price}₪."],
       "delivery": "important"
     },
+    "ride_time_answer": { "variants": ["הנסיעה בערך {duration}, {distance_km} קילומטר."], "delivery": "important" },
+    "offer_booking": { "variants": ["להזמין מונית?", "לשלוח מונית?"] },
     "ask_price_from": { "variants": ["מאיפה הנסיעה?"] },
     "price_failed": { "variants": ["אין לי כרגע מחיר מדויק לנסיעה הזאת. אפשר להזמין, והנהג יגיד את המחיר."], "delivery": "calm" },
     "ask_item": { "variants": ["מה נשכח?"] },

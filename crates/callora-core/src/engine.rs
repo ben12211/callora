@@ -2356,6 +2356,7 @@ impl Engine {
     fn finish_run(&mut self, out: &mut Out, outcome: &str, result: Option<serde_json::Value>) {
         let Some(run) = self.state.run.take() else { return };
         let after = self.pipeline_of(&run).after;
+        let offer = self.pipeline_of(&run).offer.clone();
         self.state.completed.push(CompletedRun {
             pipeline: run.pipeline.clone(),
             outcome: outcome.to_string(),
@@ -2367,9 +2368,14 @@ impl Engine {
             self.advance(out, false);
             return;
         }
-        match after {
-            AfterPipeline::Continue => self.offer_more(out),
-            AfterPipeline::End => self.goodbye(out),
+        match (after, offer) {
+            (AfterPipeline::Continue, Some(offer)) if self.business.response(&offer).is_some() => {
+                let ctx = self.render_ctx(None);
+                self.say(out, &offer, ctx, true);
+                self.offered_more = true;
+            }
+            (AfterPipeline::Continue, _) => self.offer_more(out),
+            (AfterPipeline::End, _) => self.goodbye(out),
         }
     }
 

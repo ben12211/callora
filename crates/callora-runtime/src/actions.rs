@@ -93,6 +93,11 @@ impl ConfiguredActions {
         let Some(mut quote) = list.quote(passengers, round_trip, &places) else {
             return Some(Err(ActionFailure::failed(format!("{action}: no cars in the bot's answer"))));
         };
+        // "כמה זמן נסיעה מביתר לירושלים?": the time and distance the list gives, not the price.
+        let about = slots["asks_about"].as_str().unwrap_or("price");
+        if matches!(about, "time" | "distance") && list.duration.is_some() && list.distance_km.is_some() {
+            quote["response"] = json!("ride_time_answer");
+        }
         quote["question"] = json!(question);
         quote["answer"] = json!(answer.text);
         quote["cached"] = json!(answer.remembered);
