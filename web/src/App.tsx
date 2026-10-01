@@ -63,7 +63,7 @@ const NAV: { to: string; label: string; icon: typeof Phone; end: boolean; badge?
   { to: "/", label: "סקירה", icon: LayoutDashboard, end: true },
   { to: "/calls", label: "שיחות", icon: Phone, end: false },
   { to: "/orders", label: "הזמנות", icon: ClipboardList, end: false, badge: "verify" },
-  { to: "/whatsapp", label: "וואטסאפ", icon: MessageCircle, end: false, badge: "whatsapp" },
+  { to: "/whatsapp", label: "חשבונות", icon: MessageCircle, end: false, badge: "whatsapp" },
   { to: "/rules", label: "כללי שיחה", icon: ScrollText, end: false },
   { to: "/settings", label: "הגדרות", icon: Settings, end: false },
 ];

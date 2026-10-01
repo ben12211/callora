@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Plus, RefreshCw, Search, Send, ShieldAlert, Trash2, User, Users, X } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { api, useApi } from "../api";
 import { phone } from "../format";
 import { Badge, Button, Card, cx, Empty, Loading, PageHeader, Problem, Segmented, When } from "../ui";
+import { Telegram } from "./Telegram";
 
 type Target = { chat_id: string; chat_name: string; kind: "group" | "contact"; events: string[] };
 type Pace = {
@@ -79,7 +81,30 @@ export function whatsappTrouble(o: WaOverview | null): string | null {
   return null;
 }
 
+/** The accounts the business sends and asks from: WhatsApp (orders, and the price bot if it is
+ * there) and Telegram (the price bot), each signed in by QR. */
 export function WhatsApp() {
+  const [params, setParams] = useSearchParams();
+  const app = params.get("app") === "telegram" ? "telegram" : "whatsapp";
+  return (
+    <>
+      <div className="mb-6">
+        <Segmented
+          label="אפליקציה"
+          value={app}
+          options={[
+            { value: "whatsapp", label: "וואטסאפ" },
+            { value: "telegram", label: "טלגרם" },
+          ]}
+          onChange={(v) => setParams(v === "telegram" ? { app: "telegram" } : {})}
+        />
+      </div>
+      {app === "telegram" ? <Telegram /> : <WhatsAppAccounts />}
+    </>
+  );
+}
+
+function WhatsAppAccounts() {
   // Often while an account is connecting (the QR changes), calmly once all are connected.
   const [fast, setFast] = useState(true);
   const overview = useApi<WaOverview>("/api/whatsapp", fast ? 4000 : 15000);

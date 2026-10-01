@@ -105,7 +105,7 @@ impl Service {
     }
 
     pub async fn chats(&self, id: &str) -> Result<Value, ServiceError> {
-        self.call(reqwest::Method::GET, &format!("/sessions/{}/chats", enc(id)), None).await
+        self.call(reqwest::Method::GET, &format!("{}/{}/chats", root(id), enc(id)), None).await
     }
 
     /// Asks a chat (a price bot) and returns what it wrote back: the messages after the
@@ -127,13 +127,23 @@ impl Service {
             "until": until,
             "typing_ms": typing_ms,
         });
-        let v = self.call(reqwest::Method::POST, &format!("/sessions/{}/ask", enc(id)), Some(body)).await?;
+        let v = self.call(reqwest::Method::POST, &format!("{}/{}/ask", root(id), enc(id)), Some(body)).await?;
         Ok(v["replies"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(str::to_string)).collect())
     }
 
     pub async fn send(&self, id: &str, chat_id: &str, text: &str, typing_ms: u64) -> Result<(), ServiceError> {
         let body = json!({ "chat_id": chat_id, "text": text, "typing_ms": typing_ms });
-        self.call(reqwest::Method::POST, &format!("/sessions/{}/send", enc(id)), Some(body)).await.map(|_| ())
+        self.call(reqwest::Method::POST, &format!("{}/{}/send", root(id), enc(id)), Some(body)).await.map(|_| ())
+    }
+}
+
+/// Where an account's calls go in the service: a Telegram account's id starts with "tg-"
+/// (the price-list bot answers on Telegram only), any other is WhatsApp's.
+fn root(id: &str) -> &'static str {
+    if id.starts_with("tg-") {
+        "/telegram/sessions"
+    } else {
+        "/sessions"
     }
 }
 
@@ -314,7 +324,7 @@ impl crate::ports::ChatBot for WhatsAppChatBot {
         let asked =
             self.service.ask(&bot.account, &bot.chat_id, text, timeout, until, typing).await.map_err(|e| match e {
                 ServiceError::Unavailable(m) if m.contains("no_reply") => anyhow::anyhow!("no answer in time"),
-                ServiceError::NotReady => anyhow::anyhow!("the WhatsApp account is not connected"),
+                ServiceError::NotReady => anyhow::anyhow!("the account is not connected"),
                 ServiceError::Refused(m) => anyhow::anyhow!("refused: {m} (is the bot a saved contact?)"),
                 other => anyhow::anyhow!("{other:?}"),
             });
@@ -640,6 +650,12 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/whatsapp/accounts/{id}/targets", put(save_targets))
         .route("/api/whatsapp/accounts/{id}/test", post(test_message))
         .route("/api/whatsapp/outbox", get(outbox))
+        .route("/api/telegram", get(telegram_overview))
+        .route("/api/telegram/accounts", post(telegram_add))
+        .route("/api/telegram/accounts/{id}", delete(telegram_remove))
+        .route("/api/telegram/accounts/{id}/restart", post(telegram_restart))
+        .route("/api/telegram/accounts/{id}/qr", get(telegram_qr))
+        .route("/api/telegram/accounts/{id}/password", post(telegram_password))
         .route("/api/whatsapp/outbox/{id}/retry", post(retry))
 }
 
@@ -755,6 +771,95 @@ async fn overview(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Respons
 #[derive(Deserialize)]
 struct NewAccount {
     name: String,
+}
+
+// Telegram accounts: signed in by QR (and the two-step password, if the account has one), used
+// to ask the price-list bot. The same service; ids "tg-…".
+
+async fn telegram_overview(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(service) = s.whatsapp.as_deref() else { return Json(json!({ "service": false })).into_response() };
+    match service.call(reqwest::Method::GET, "/telegram/sessions", None).await {
+        Ok(v) => Json(json!({
+            "service": true,
+            "reachable": true,
+            "configured": v["configured"],
+            "max": v["max"],
+            "accounts": v["sessions"],
+        }))
+        .into_response(),
+        Err(_) => Json(json!({ "service": true, "reachable": false, "accounts": [] })).into_response(),
+    }
+}
+
+async fn telegram_add(State(s): State<Arc<AppState>>, headers: HeaderMap, Json(b): Json<NewAccount>) -> Response {
+    let (service, _) = match check(&s, &headers) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    let name: String = b.name.trim().chars().take(60).collect();
+    match service.call(reqwest::Method::POST, "/telegram/sessions", Some(json!({ "name": name }))).await {
+        Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
+        Err(e) => service_error(e),
+    }
+}
+
+async fn telegram_remove(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    let (service, _) = match check(&s, &headers) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    match service.call(reqwest::Method::DELETE, &format!("/telegram/sessions/{}", enc(&id)), None).await {
+        Ok(_) | Err(ServiceError::NotFound) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => service_error(e),
+    }
+}
+
+async fn telegram_restart(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    let (service, _) = match check(&s, &headers) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    match service.call(reqwest::Method::POST, &format!("/telegram/sessions/{}/restart", enc(&id)), None).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => service_error(e),
+    }
+}
+
+async fn telegram_qr(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    let (service, _) = match check(&s, &headers) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    match service.call(reqwest::Method::GET, &format!("/telegram/sessions/{}/qr", enc(&id)), None).await {
+        Ok(v) => ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
+        Err(e) => service_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TelegramPassword {
+    password: String,
+}
+
+/// The two-step password goes straight to Telegram through the service; it is not kept or logged.
+async fn telegram_password(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(b): Json<TelegramPassword>,
+) -> Response {
+    let (service, _) = match check(&s, &headers) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    let body = json!({ "password": b.password });
+    match service.call(reqwest::Method::POST, &format!("/telegram/sessions/{}/password", enc(&id)), Some(body)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => service_error(e),
+    }
 }
 
 async fn add_account(State(s): State<Arc<AppState>>, headers: HeaderMap, Json(b): Json<NewAccount>) -> Response {
@@ -1045,6 +1150,12 @@ mod tests {
         assert!(b.may_ask("a1", false).await.is_ok());
         assert!(b.may_ask("a1", false).await.is_err(), "four an hour in all");
         assert!(b.may_ask("a2", false).await.is_ok(), "each account its own");
+    }
+
+    #[test]
+    fn a_telegram_account_is_asked_through_telegram() {
+        assert_eq!(root("tg-1a2b3c4d"), "/telegram/sessions");
+        assert_eq!(root("2bc61787"), "/sessions");
     }
 
     #[test]

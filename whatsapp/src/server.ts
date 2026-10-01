@@ -5,10 +5,12 @@
 import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { MAX_SESSIONS, NoReply, NotAllowed, NotFound, NotReady, OutcomeUnknown, Sessions } from "./sessions.js";
+import { TelegramAccounts } from "./telegram.js";
 
 const TOKEN = process.env.WHATSAPP_TOKEN ?? "";
 const PORT = Number(process.env.PORT ?? 3100);
 const sessions = new Sessions();
+const telegram = new TelegramAccounts();
 
 function authorized(req: http.IncomingMessage): boolean {
   const given = Buffer.from(String(req.headers["x-internal-token"] ?? ""));
@@ -41,6 +43,52 @@ const server = http.createServer(async (req, res) => {
   if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
   const parts = url.pathname.split("/").filter(Boolean);
   try {
+    // Telegram accounts: /telegram/sessions/… (ids "tg-…"), the same calls as WhatsApp's, and a
+    // password step for an account with two-step verification.
+    if (parts[0] === "telegram" && parts[1] === "sessions") {
+      const id = parts[2];
+      const action = parts[3];
+      if (!id && method === "GET") return send(res, 200, telegram.list());
+      if (!id && method === "POST") {
+        const b = await body(req);
+        return send(res, 201, await telegram.create(String(b.name ?? "")));
+      }
+      if (id && !action && method === "DELETE") {
+        await telegram.remove(id);
+        return send(res, 204);
+      }
+      if (action === "restart" && method === "POST") return send(res, 200, await telegram.restart(id));
+      if (action === "qr" && method === "GET") return send(res, 200, await telegram.qr(id));
+      if (action === "password" && method === "POST") {
+        const b = await body(req);
+        return send(res, 200, telegram.password(id, String(b.password ?? "")));
+      }
+      if (action === "chats" && method === "GET") return send(res, 200, await telegram.chats(id));
+      if (action === "send" && method === "POST") {
+        const b = await body(req);
+        const text = String(b.text ?? "");
+        if (!text.trim()) return send(res, 400, { error: "empty" });
+        return send(res, 200, await telegram.send(id, String(b.chat_id ?? ""), text.slice(0, 4000), Number(b.typing_ms ?? 0)));
+      }
+      if (action === "ask" && method === "POST") {
+        const b = await body(req);
+        const text = String(b.text ?? "");
+        if (!text.trim()) return send(res, 400, { error: "empty" });
+        return send(
+          res,
+          200,
+          await telegram.ask(id, {
+            chatId: String(b.chat_id ?? ""),
+            text: text.slice(0, 500),
+            timeoutMs: Number(b.timeout_ms ?? 12_000),
+            quietMs: Number(b.quiet_ms ?? 1_500),
+            until: String(b.until ?? ""),
+            typingMs: Number(b.typing_ms ?? 0),
+          }),
+        );
+      }
+      return send(res, 404, { error: "not_found" });
+    }
     if (parts[0] !== "sessions") return send(res, 404, { error: "not_found" });
     const id = parts[1];
     const action = parts[2];
@@ -95,6 +143,7 @@ const server = http.createServer(async (req, res) => {
 if (TOKEN.length < 16) console.error("WHATSAPP_TOKEN is missing or shorter than 16 characters: every request is refused");
 server.listen(PORT, "0.0.0.0", () => console.log(JSON.stringify({ message: `whatsapp service on ${PORT}` })));
 void sessions.load();
+void telegram.load();
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {

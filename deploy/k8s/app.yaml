@@ -86,6 +86,9 @@ spec:
           env:
             - { name: WHATSAPP_TOKEN, valueFrom: { secretKeyRef: { name: callora-env, key: WHATSAPP_TOKEN } } }
             - { name: MAX_SESSIONS, valueFrom: { secretKeyRef: { name: callora-env, key: WHATSAPP_MAX_SESSIONS } } }
+            # Telegram accounts (the price bot answers on Telegram): none until these are set.
+            - { name: TELEGRAM_API_ID, valueFrom: { secretKeyRef: { name: callora-env, key: TELEGRAM_API_ID, optional: true } } }
+            - { name: TELEGRAM_API_HASH, valueFrom: { secretKeyRef: { name: callora-env, key: TELEGRAM_API_HASH, optional: true } } }
           ports: [{ containerPort: 3100 }]
           readinessProbe:
             httpGet: { path: /health, port: 3100 }
