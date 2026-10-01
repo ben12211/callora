@@ -156,6 +156,10 @@ pub struct CallState {
     pub run: Option<PipelineRun>,
     /// Runs paused by an intent switch, resumed afterwards (most recent last).
     pub suspended: Vec<PipelineRun>,
+    /// Actions that change nothing (a price) and failed in this call, by action and input:
+    /// asked again, they fail at once instead of making the caller wait as long again.
+    #[serde(default)]
+    pub failed_actions: Vec<String>,
     pub completed: Vec<CompletedRun>,
     pub last_plan: Option<SpeechPlan>,
     pub fallback_level: u32,
@@ -256,6 +260,7 @@ impl CallState {
             phase: Phase::Active,
             run: None,
             suspended: Vec::new(),
+            failed_actions: Vec::new(),
             completed: Vec::new(),
             last_plan: None,
             fallback_level: 0,

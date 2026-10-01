@@ -434,7 +434,7 @@
         { "kind": "price_bot", "query": "מ {from} ל{to}", "cache_minutes": 180 },
         { "kind": "http", "url_env": "TAXI_DISPATCH_URL", "token_env": "TAXI_DISPATCH_TOKEN" }
       ],
-      "timeout_ms": 15000,
+      "timeout_ms": 8000,
       "max_attempts": 1
     },
     "report_lost_item": {

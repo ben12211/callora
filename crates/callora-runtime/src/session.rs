@@ -70,6 +70,9 @@ const CONTINUATION_GAP: Duration = Duration::from_millis(2500);
 /// Consecutive speech recognition reconnects (with no transcript in between) before the
 /// call is handed off.
 const MAX_STT_RECONNECTS: u32 = 4;
+/// A yes said this close to the end of the read-back ("כן, תשלח" over its "לשלוח?") is the
+/// answer: a live caller said "כן" six times over a long one and had to say it again after.
+const YES_AT_THE_END: Duration = Duration::from_millis(2500);
 /// How long the transcript of an end of speech may take before recognition is taken for
 /// stuck and reconnected.
 const FINAL_OVERDUE: Duration = Duration::from_secs(6);
@@ -353,6 +356,8 @@ pub struct Session {
     pending_agent: Option<PendingAgent>,
     /// The recognizer's latest partial text for the utterance in progress.
     last_partial: String,
+    /// A yes said over the read-back, and when: taken as the answer if it came at its end.
+    yes_over_read_back: Option<(Instant, String)>,
     clock: Option<TurnClock>,
     /// The caller turn the live-TTS cover last played on (never two turns in a row).
     cover_turn: Option<u32>,
@@ -441,6 +446,7 @@ impl Session {
             stt_next: None,
             pending_agent: None,
             last_partial: String::new(),
+            yes_over_read_back: None,
             clock: None,
             cover_turn: None,
             phrase_words: Vec::new(),

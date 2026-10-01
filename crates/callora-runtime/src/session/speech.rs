@@ -212,6 +212,16 @@ impl Session {
                 if let Some(after) = self.after_speech.take() {
                     return Some(self.terminate(after).await);
                 }
+                if let Some((at, yes)) = self.yes_over_read_back.take() {
+                    if at.elapsed() < YES_AT_THE_END
+                        && !self.vad.is_speaking()
+                        && self.engine.context().awaiting_confirmation
+                    {
+                        tracing::info!(call = %self.info.call_sid, caller = %yes, "a yes at the end of the read-back; the answer");
+                        self.on_final(yes);
+                        return None;
+                    }
+                }
                 self.arm_silence();
             }
             PlayoutEvent::Finished { .. } => self.queued_items = self.queued_items.saturating_sub(1),

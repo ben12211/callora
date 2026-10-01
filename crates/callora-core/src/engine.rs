@@ -2207,6 +2207,18 @@ impl Engine {
             let run_id = self.state.next_action_run;
             self.state.next_action_run += 1;
             let input = self.action_input(run_id);
+            // The same question already failed in this call (the price bot did not answer):
+            // its failure now, not another wait for it.
+            let changes = action.as_ref().is_some_and(|a| a.requires_confirmation);
+            if !changes && self.state.failed_actions.contains(&failed_key(action_id, &input)) {
+                tracing::info!(action = %action_id, "failed before in this call; not asked again");
+                if let Some(r) = &pipeline.on_failure {
+                    let ctx = self.render_ctx(None);
+                    self.say(out, r, ctx, true);
+                }
+                self.finish_run(out, "failed", Some(json!({ "error": "failed before in this call" })));
+                return;
+            }
             if let Some(run) = &mut self.state.run {
                 run.step = Step::Executing { action_run: run_id };
                 run.attempts = 1;
@@ -2333,6 +2345,11 @@ impl Engine {
                 let changes = self.business.config.actions.get(&action_id).is_some_and(|a| a.requires_confirmation);
                 if changes {
                     self.state.action_failures += 1;
+                } else {
+                    let key = failed_key(&action_id, &self.action_input(run_id));
+                    if !self.state.failed_actions.contains(&key) {
+                        self.state.failed_actions.push(key);
+                    }
                 }
                 if let Some(r) = &pipeline.on_failure {
                     let ctx = self.render_ctx(None);
@@ -3002,4 +3019,9 @@ fn street_before_city(raw: &str) -> Option<String> {
     let words: Vec<&str> = raw.split_whitespace().collect();
     let at = words.iter().position(|w| w.chars().all(|c| c.is_ascii_digit()))?;
     (at > 0 && at + 1 < words.len()).then(|| words[..=at].join(" "))
+}
+
+/// An action and what it was asked, without its run id: the same question twice.
+fn failed_key(action: &str, input: &serde_json::Value) -> String {
+    format!("{action} {}", input.get("slots").unwrap_or(input))
 }

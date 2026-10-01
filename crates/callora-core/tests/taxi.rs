@@ -925,7 +925,7 @@ fn a_price_asked_during_a_booking_goes_back_to_the_booking() {
 #[test]
 fn a_price_list_that_does_not_answer_sends_no_one_to_the_desk() {
     let (mut call, _) = Call::new(with_desk());
-    for _ in 0..3 {
+    for attempt in 0..3 {
         let d = call.engine.on_agent_turn(
             "כמה עולה מבני ברק לירושלים?",
             decide(
@@ -936,8 +936,14 @@ fn a_price_list_that_does_not_answer_sends_no_one_to_the_desk() {
             ),
             "",
         );
-        let (run_id, _, _) = action(&d).expect("the price is asked");
-        let d = call.engine.on_action_result(run_id, Err("the price bot: no answer in time".into()));
+        let d = if attempt == 0 {
+            let (run_id, _, _) = action(&d).expect("the price is asked");
+            call.engine.on_action_result(run_id, Err("the price bot: no answer in time".into()))
+        } else {
+            // A live call waited 15 s more for the same price: it fails at once.
+            assert!(action(&d).is_none(), "the same price is not asked again: {d:?}");
+            d
+        };
         assert!(spoken(&d).contains("אין לי כרגע מחיר"), "{}", spoken(&d));
         assert!(!d.iter().any(|d| matches!(d, Directive::Handoff { .. } | Directive::Hangup)), "{d:?}");
     }

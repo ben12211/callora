@@ -267,6 +267,9 @@ impl Session {
         if self.engine.is_backchannel(&text) {
             if self.agent_busy() {
                 tracing::info!(call = %self.info.call_sid, caller = %text, "said over the read-back; not an answer");
+                if self.business.affirm.find(&callora_core::text::normalize(&text)).is_some() {
+                    self.yes_over_read_back = Some((Instant::now(), text));
+                }
                 return;
             }
             if std::mem::take(&mut self.cut_read_back) {
@@ -278,6 +281,7 @@ impl Session {
             }
         }
         self.cut_read_back = false;
+        self.yes_over_read_back = None;
         self.interrupted = false;
         self.silence_generation += 1;
         if self.speech_ended_at.is_none() {

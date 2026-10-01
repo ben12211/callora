@@ -169,7 +169,13 @@ pub struct WhatsAppChatBot {
     answers: parking_lot::Mutex<HashMap<String, (DateTime<Utc>, String)>>,
     /// When each account asked, over the last day.
     asked: parking_lot::Mutex<HashMap<String, Vec<Instant>>>,
+    /// When each account's bot last left a question unanswered.
+    silent: parking_lot::Mutex<HashMap<String, Instant>>,
 }
+
+/// How long a bot that did not answer is not asked again: a live call waited 15 s for it,
+/// was told there was no price, asked again and waited 15 s more.
+const SILENT_FOR: Duration = Duration::from_secs(5 * 60);
 
 impl WhatsAppChatBot {
     pub fn new(service: Service, settings: Arc<crate::settings::SettingsStore>, db: Option<PgPool>) -> Self {
@@ -180,6 +186,7 @@ impl WhatsAppChatBot {
             pace: BotPace::default(),
             answers: parking_lot::Mutex::new(HashMap::new()),
             asked: parking_lot::Mutex::new(HashMap::new()),
+            silent: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -283,7 +290,12 @@ impl crate::ports::ChatBot for WhatsAppChatBot {
             return Ok(Some(answer(k)));
         }
         let stale = known.filter(|(at, _)| now - *at < STALE_ANSWER);
-        if let Err(why) = self.may_ask(&bot.account, ahead).await {
+        let silent = self.silent.lock().get(&bot.account).is_some_and(|t| t.elapsed() < SILENT_FOR);
+        let may = if silent { Err("the bot did not answer a few minutes ago") } else { Ok(()) };
+        if let Err(why) = match may {
+            Ok(()) => self.may_ask(&bot.account, ahead).await,
+            Err(why) => Err(why),
+        } {
             return match (stale, ahead) {
                 (Some(k), false) => {
                     tracing::info!(
@@ -306,6 +318,16 @@ impl crate::ports::ChatBot for WhatsAppChatBot {
                 ServiceError::Refused(m) => anyhow::anyhow!("refused: {m} (is the bot a saved contact?)"),
                 other => anyhow::anyhow!("{other:?}"),
             });
+        match &asked {
+            Ok(_) => {
+                self.silent.lock().remove(&bot.account);
+            }
+            Err(e) if e.to_string() == "no answer in time" => {
+                tracing::warn!(business_id, account = %bot.account, "the price bot did not answer; not asked again for a few minutes");
+                self.silent.lock().insert(bot.account.clone(), Instant::now());
+            }
+            Err(_) => {}
+        }
         match asked {
             Ok(replies) => {
                 let text_back = replies.join("\n\n");
