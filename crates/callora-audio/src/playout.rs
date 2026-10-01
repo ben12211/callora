@@ -12,9 +12,10 @@
 //! The buffer is there because TTS streams come in bursts: eleven_v3 sends a third of a
 //! second of speech, stops for half a second, then sends the rest faster than real time.
 //! Played as it came, a sentence broke up mid-word ("קטוע"). Measured on Hebrew replies, a
-//! 600 ms start covers most; a stream that still runs dry pauses once, for 400 ms, rather
-//! than stuttering frame by frame. (eleven_v4_turbo streams steadily, several times faster
-//! than real time: its 600 ms are there a tenth of a second after its first byte.)
+//! 600 ms start covered most. eleven_v4_turbo, the voice now, streams steadily and several
+//! times faster than real time (no buffer needed in any measured reply), so 250 ms are
+//! enough and the 350 ms more were silence before every live sentence ("too slow", the
+//! owner). A stream that still runs dry pauses once, for 250 ms, rather than stuttering.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -27,9 +28,9 @@ use tokio::time::{Instant, MissedTickBehavior};
 use crate::mulaw::{apply_gain, FRAME_BYTES, FRAME_MS, SILENCE};
 
 /// Speech a stream buffers before it starts (μ-law 8 kHz: 8 bytes a millisecond).
-const START_BUFFER_BYTES: usize = 600 * 8;
+const START_BUFFER_BYTES: usize = 250 * 8;
 /// Speech a stream that ran dry mid-item buffers before it goes on.
-const REBUFFER_BYTES: usize = 400 * 8;
+const REBUFFER_BYTES: usize = 250 * 8;
 
 pub enum Source {
     Clip(Bytes),
@@ -400,22 +401,22 @@ mod tests {
         let (p, _task) = Playout::spawn(out_tx, ev_tx, 3);
         let (tts_tx, tts_rx) = mpsc::channel(64);
         p.enqueue(PlayItem { id: 1, source: Source::Stream(tts_rx), gain_db: 0.0 });
-        // A third of a second, then nothing: eleven_v3's first burst.
-        tts_tx.send(Ok(frames(17))).await.unwrap();
+        // A fifth of a second, then nothing.
+        tts_tx.send(Ok(frames(10))).await.unwrap();
         tokio::time::advance(Duration::from_millis(300)).await;
         assert!(drain(&mut out).await.is_empty(), "not enough to start");
-        tts_tx.send(Ok(frames(13))).await.unwrap();
+        tts_tx.send(Ok(frames(3))).await.unwrap();
         tokio::time::advance(Duration::from_millis(20)).await;
-        assert!(!drain(&mut out).await.is_empty(), "600 ms buffered: it plays");
-        // It all plays, then the stream runs dry: it waits for 400 ms before going on.
-        tokio::time::advance(Duration::from_millis(700)).await;
+        assert!(!drain(&mut out).await.is_empty(), "250 ms buffered: it plays");
+        // It all plays, then the stream runs dry: it waits for 250 ms before going on.
+        tokio::time::advance(Duration::from_millis(400)).await;
         drain(&mut out).await;
         tts_tx.send(Ok(frames(5))).await.unwrap();
         tokio::time::advance(Duration::from_millis(100)).await;
         assert!(drain(&mut out).await.is_empty(), "100 ms is not enough to go on");
-        tts_tx.send(Ok(frames(15))).await.unwrap();
+        tts_tx.send(Ok(frames(8))).await.unwrap();
         tokio::time::advance(Duration::from_millis(20)).await;
-        assert!(!drain(&mut out).await.is_empty(), "400 ms buffered: it goes on");
+        assert!(!drain(&mut out).await.is_empty(), "250 ms buffered: it goes on");
         // The end of a stream plays whatever is left, however short.
         tokio::time::advance(Duration::from_millis(500)).await;
         drain(&mut out).await;

@@ -466,6 +466,13 @@ impl Engine {
         self.state.remember(Speaker::Caller, transcript);
         // Notes were for the decision just made; new ones are for the next.
         self.state.agent_notes.clear();
+        let mut turn = turn;
+        if let Some(intent) = turn.phrase.as_deref().and_then(|p| self.refused_wrongly(transcript, p)) {
+            tracing::info!(transcript, %intent, "a refusal of what the business does; its task instead");
+            turn.phrase = None;
+            turn.say.clear();
+            turn.task = Some(intent);
+        }
         // Asked the same thing five times over and still stuck: a person takes the call (or,
         // with no desk, it ends politely) rather than a sixth round of the same question.
         if self.state.same_question_streak() >= 5 {
@@ -494,7 +501,8 @@ impl Engine {
         }
         let was_confirming = self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
         self.misplaced_city(transcript);
-        let fields = self.by_preposition(transcript, &turn.fields);
+        let fields = self.street_answer(transcript, &turn);
+        let fields = self.by_preposition(transcript, &fields);
         let fields = self.with_patterns(transcript, &fields);
         let fields = self.answer_in_place(transcript, &fields);
         let fields = self.with_cues(transcript, &fields);
@@ -514,7 +522,6 @@ impl Engine {
             turn.action
         };
         // "רגע, מעביר למוקדן" with no transfer: words that promise what does not happen.
-        let mut turn = turn;
         if action != AgentAction::Transfer && self.business.announces_transfer(&turn.say) {
             tracing::info!(say = %turn.say, "a transfer announced without one; not said");
             turn.say.clear();
@@ -638,6 +645,14 @@ impl Engine {
         self.note_asked(&asks);
 
         match action {
+            // Every detail of a task with no read-back (a price) known: it runs now, whatever the
+            // agent chose. A live call heard "רגע, בודק" for a price nothing was asked for, then
+            // "הלו? אני פה. רגע, בודק." until the caller hung up.
+            AgentAction::None if self.runs_without_read_back() => {
+                tracing::info!(transcript, "every detail of a task with no read-back; running it");
+                self.agent_say(&mut out, None, "", spoken);
+                self.advance(&mut out, false);
+            }
             AgentAction::None => self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken),
             AgentAction::Transfer => {
                 self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken);
@@ -733,6 +748,29 @@ impl Engine {
             self.question_again(&mut out);
         }
         self.finish(out)
+    }
+
+    /// A phrase said on its own (a refusal: "בזה אני לא יכול לעזור, רק במוניות") for words that
+    /// name one of the business's own tasks ("כמה זה יוצא לי?"): that task's id. A live call's
+    /// price question was refused as off topic.
+    pub fn refused_wrongly(&self, transcript: &str, phrase: &str) -> Option<String> {
+        if !self.business.response(phrase).is_some_and(|r| r.alone) {
+            return None;
+        }
+        let (u, _) = crate::understanding::fast_path(&self.business, &self.context(), transcript);
+        u.intent.map(|i| i.id).filter(|id| self.business.intent(id).is_some_and(|i| i.pipeline.is_some()))
+    }
+
+    /// The task in progress has no read-back, an action, and every required detail.
+    fn runs_without_read_back(&self) -> bool {
+        let Some(run) = &self.state.run else { return false };
+        if !matches!(run.step, Step::Collecting { .. }) {
+            return false;
+        }
+        let pipeline = self.pipeline_of(run);
+        pipeline.confirm.is_none()
+            && pipeline.action.is_some()
+            && pipeline.slots.iter().all(|ps| !ps.required || ps.default.is_some() || run.slots.contains_key(&ps.slot))
     }
 
     /// Speak the agent's words: its recorded phrase, then its `say`. When the runtime
@@ -987,6 +1025,44 @@ impl Engine {
                 }
             })
             .collect()
+    }
+
+    /// The street asked for ("איפה בביתר עילית לאסוף?"), answered in a word or two the agent
+    /// passed nothing for ("אהרן"): that answer, in that city, so it is looked up (and the
+    /// closest street offered) instead of the question asked again. A live call heard "רק לוודא
+    /// שאין טעות, איזה רחוב?" and answered "אהרן" twice. Not a yes or no, a hello, a
+    /// question or noise.
+    fn street_answer(&self, transcript: &str, turn: &AgentTurn) -> Vec<(String, String)> {
+        let fields = turn.fields.clone();
+        let Some(run) = &self.state.run else { return fields };
+        if !fields.is_empty() || turn.action != AgentAction::None || !matches!(run.step, Step::Collecting { .. }) {
+            return fields;
+        }
+        let Some(slot) = self.state.last_asks.iter().find(|s| {
+            self.business.config.slots.get(*s).is_some_and(|c| c.kind == crate::config::SlotKind::Place)
+                && !run.slots.contains_key(*s)
+                && self.state.place_cities.contains_key(*s)
+        }) else {
+            return fields;
+        };
+        let words = crate::text::normalize(transcript);
+        let rest = self.business.fillers.strip(&words);
+        let count = rest.split_whitespace().count();
+        let (u, _) = crate::understanding::fast_path(&self.business, &self.context(), transcript);
+        if !(1..=4).contains(&count)
+            || transcript.trim_end().ends_with('?')
+            || u.noise
+            || u.meta.is_some()
+            || self.is_hello(transcript)
+            || self.business.affirm.find(&words).is_some()
+            || self.business.deny.find(&words).is_some()
+        {
+            return fields;
+        }
+        let city = &self.state.place_cities[slot];
+        let value = format!("{}, {city}", transcript.trim().trim_end_matches(['.', '!', ',']));
+        tracing::info!(%slot, %value, "the street asked for, answered without the agent passing it");
+        vec![(slot.clone(), value)]
     }
 
     /// A place that is only a city, given to the wrong one of two places: the caller now says it
@@ -2532,9 +2608,11 @@ impl Engine {
         // שומעים אותי? סליחה, יש קצת רעש בקו. צריך מונית?".
         // Only its question: a live call's reprompt said "רגע, מעביר למוקדן שיתקן את ההזמנה.
         // אחלה. אז שבעה נוסעים ... לשלוח?" again, twice.
+        // And no question, nothing again: "הלו? אני פה. רגע, בודק." was said three times.
         let last = self.state.last_plan.clone().map(|p| self.without_noise_apology(p)).map(|mut p| {
-            if let Some(i) = p.segments.iter().rposition(|s| s.text.trim_end().ends_with('?')) {
-                p.segments = vec![p.segments[i].clone()];
+            match p.segments.iter().rposition(|s| s.text.trim_end().ends_with('?')) {
+                Some(i) => p.segments = vec![p.segments[i].clone()],
+                None => p.segments.clear(),
             }
             p
         });

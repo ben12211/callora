@@ -320,6 +320,15 @@ impl Session {
             p.held_phrase = Some(id);
             return;
         }
+        // A refusal of what the business does ("רק במוניות" to "כמה זה יוצא לי?"): the engine
+        // takes the business's task instead.
+        if self.engine.refused_wrongly(&p.transcript, &id).is_some() {
+            tracing::info!(call = %self.info.call_sid, phrase = %id, "a refusal of the business's own task; held");
+            if let Some(p) = self.pending_agent.as_mut() {
+                p.hold_say = true;
+            }
+            return;
+        }
         // It asks for a value this same reply passes: the engine decides once the value is
         // checked (the next question if it was taken, this one if it was not).
         let asked = self.engine.slot_asked_by(&id);

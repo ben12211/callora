@@ -2889,6 +2889,7 @@ fn towns() -> Arc<callora_core::gazetteer::Gazetteer> {
         }
     }
     tsv.push_str("1309\tאלעד\t100\tבן זכאי\tsynonym\n");
+    tsv.push_str("3780\tביתר עילית\t200\tהר\"ן\tofficial\n");
     Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(&tsv))
 }
 
@@ -2977,4 +2978,96 @@ fn the_agent_hears_of_the_area_town_it_was_said_as() {
     engine.hint_towns("מלאדי, ירושלים.");
     let request = callora_core::agent::build_request(&b, &engine.state, "מלאדי, ירושלים.");
     assert!(request.user.contains("\"מלאדי\" is no place, but sounds like אלעד"), "{}", request.user);
+}
+
+#[test]
+fn a_price_with_its_places_known_is_asked_whatever_the_agent_chose() {
+    // A live call: "כמה, מה המחיר?" during a booking, task price_question but action none and
+    // the phrase "רגע, בודק": nothing was asked, and the caller heard "הלו? אני פה. רגע, בודק."
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(towns()));
+    call.engine.on_agent_turn(
+        "מביתר לירושלים",
+        decide(
+            AgentAction::None,
+            "",
+            Some("book_ride"),
+            &[("pickup", "רחוב 3 3, ביתר עילית"), ("destination", "הנביאים 4, ירושלים"), ("passengers", "2")],
+        ),
+        "",
+    );
+    let mut turn = decide(
+        AgentAction::None,
+        "",
+        Some("price_question"),
+        &[("price_from", "ביתר עילית"), ("price_to", "ירושלים"), ("asks_about", "price")],
+    );
+    turn.phrase = Some("filler_checking".into());
+    let d = call.engine.on_agent_turn("כמה, כמה, מה המחיר?", turn, "");
+    let (_, name, _) = action(&d).expect("the price is asked");
+    assert_eq!(name, "estimate_price");
+    assert_eq!(spoken(&d).matches("בודק").count() + spoken(&d).matches("מסתכל").count(), 1, "{}", spoken(&d));
+    // And the agent cannot say "רגע, בודק" itself any more.
+    let b = business(&[]);
+    let request = callora_core::agent::build_request(&b, &call.engine.state, "כמה זה?");
+    assert!(!request.schema.to_string().contains("filler_checking"), "not one of the agent's phrases");
+}
+
+#[test]
+fn a_street_answered_in_a_word_is_looked_up_not_asked_again() {
+    // "איפה בביתר עילית לאסוף?" "אהרן." and the agent passed nothing: "רק לוודא שאין טעות, איזה
+    // רחוב?", then "אהרן." again. The answer is looked up at once.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(towns()));
+    let mut turn = decide(
+        AgentAction::None,
+        "איפה בביתר עילית לאסוף?",
+        Some("book_ride"),
+        &[("pickup", "ביתר עילית"), ("destination", "ירושלים")],
+    );
+    turn.asks = vec!["pickup".into()];
+    call.engine.on_agent_turn("מביתר לירושלים.", turn, "");
+    let mut turn = decide(AgentAction::None, "", Some("book_ride"), &[]);
+    turn.phrase = Some("ask_again_street".into());
+    turn.asks = vec!["pickup".into()];
+    let d = call.engine.on_agent_turn("אהרן.", turn, "");
+    let said = spoken(&d);
+    assert!(said.contains("הר\"ן"), "the street heard is looked up, the closest offered: {said}");
+    assert!(!said.contains("רק לוודא"), "{said}");
+    // A yes, a hello or a question is no street.
+    for answer in ["כן.", "הלו?", "מה?"] {
+        let (mut call, _) = Call::new(business(&[]));
+        call.engine.set_gazetteer(Some(towns()));
+        let mut turn = decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "ביתר עילית")]);
+        turn.asks = vec!["pickup".into()];
+        call.engine.on_agent_turn("מביתר", turn, "");
+        let mut turn = decide(AgentAction::None, "איפה בביתר?", Some("book_ride"), &[]);
+        turn.asks = vec!["pickup".into()];
+        let d = call.engine.on_agent_turn(answer, turn, "");
+        assert!(!spoken(&d).contains("לא מצאתי"), "{answer}: {}", spoken(&d));
+    }
+}
+
+#[test]
+fn a_price_question_is_never_refused_as_off_topic() {
+    // "אלשמי, כמה זה יוצא לי?" got "בזה אני לא יכול לעזור, רק במוניות".
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(towns()));
+    call.engine.on_agent_turn(
+        "מרחוב 3 3 בביתר עילית להנביאים 4 בירושלים, שניים",
+        decide(
+            AgentAction::None,
+            "",
+            Some("book_ride"),
+            &[("pickup", "רחוב 3 3, ביתר עילית"), ("destination", "הנביאים 4, ירושלים"), ("passengers", "2")],
+        ),
+        "",
+    );
+    assert!(call.engine.refused_wrongly("אלשמי, כמה זה יוצא לי?", "off_topic").is_some());
+    assert!(call.engine.refused_wrongly("מי היה ראש הממשלה הראשון?", "off_topic").is_none());
+    let mut turn = decide(AgentAction::None, "", Some("book_ride"), &[]);
+    turn.phrase = Some("off_topic".into());
+    let d = call.engine.on_agent_turn("אלשמי, כמה זה יוצא לי?", turn, "");
+    assert!(!spoken(&d).contains("רק במוניות"), "{}", spoken(&d));
+    assert_eq!(action(&d).map(|(_, n, _)| n), Some("estimate_price".to_string()), "{d:?}");
 }
