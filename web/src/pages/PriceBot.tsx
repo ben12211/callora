@@ -163,8 +163,13 @@ export function PriceBotCard({ id, bot, whatsapp, canSave }: { id: string; bot: 
                     />
                   </div>
                   <ul className="max-h-60 divide-y divide-slate-100 overflow-y-auto rounded-xl ring-1 ring-inset ring-slate-200 dark:divide-white/[0.06] dark:ring-white/10">
-                    {chats.loading && <li className="px-3.5 py-3 text-sm text-slate-500">טוען אנשי קשר…</li>}
-                    {!chats.loading && contacts.length === 0 && <li className="px-3.5 py-3 text-sm text-slate-500">לא נמצא איש קשר</li>}
+                    {chats.loading && <li className="px-3.5 py-3 text-sm text-slate-500">טוען…</li>}
+                    {!chats.loading && chats.error && (
+                      <li className="px-3.5 py-3 text-sm text-rose-600 dark:text-rose-400">
+                        הרשימה לא נטענה. אם החשבון רק התחבר, חכו כמה שניות ובחרו אותו שוב.
+                      </li>
+                    )}
+                    {!chats.loading && !chats.error && contacts.length === 0 && <li className="px-3.5 py-3 text-sm text-slate-500">לא נמצא</li>}
                     {contacts.slice(0, 50).map((c) => (
                       <li key={c.id}>
                         <button

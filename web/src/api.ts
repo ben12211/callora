@@ -163,6 +163,15 @@ export function useApi<T>(path: string | null, refreshMs?: number) {
     [path],
   );
 
+  // Another path is other data: what the last one showed must not stand for it while it loads,
+  // nor when it fails (a Telegram account's bots were searched in a WhatsApp contact list).
+  const shown = useRef(path);
+  if (shown.current !== path) {
+    shown.current = path;
+    setData(null);
+    setError(null);
+  }
+
   useEffect(() => {
     void load();
     if (!refreshMs) return;
