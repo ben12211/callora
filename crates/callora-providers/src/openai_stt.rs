@@ -28,7 +28,7 @@ pub const DEFAULT_PROMPT: &str = "A phone call in Hebrew to a business in Israel
                                   names and English words too: דוד, ביי, אוקיי.";
 
 /// Hints at most: the prompt is context, not a list the recognizer must pick from.
-const MAX_HINTS: usize = 40;
+const MAX_HINTS: usize = 50;
 
 pub struct OpenAiStt {
     api_key: String,
@@ -226,7 +226,10 @@ mod tests {
         let u = s.session_update("he-IL", &terms);
         let prompt = u["session"]["audio"]["input"]["transcription"]["prompt"].as_str().unwrap_or("").to_string();
         assert!(prompt.starts_with(DEFAULT_PROMPT) && prompt.contains("רחוב 0, רחוב 1"), "{prompt}");
-        assert!(prompt.contains("רחוב 39") && !prompt.contains("רחוב 40"), "forty at most");
+        assert!(
+            prompt.contains("רחוב 49") && !prompt.contains("רחוב 50"),
+            "fifty at most: the area, the city and its streets"
+        );
         assert_eq!(
             s.session_update("he-IL", &[])["session"]["audio"]["input"]["transcription"]["prompt"],
             DEFAULT_PROMPT

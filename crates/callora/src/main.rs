@@ -85,6 +85,9 @@ enum Command {
         /// The business's words as hints (what a call gives between street questions).
         #[arg(long)]
         business_words: bool,
+        /// Also the towns of the taxi business's service area, as live calls are given them.
+        #[arg(long)]
+        area: bool,
     },
     /// Print the agent's system prompt and reply schema, as JSON.
     AgentPrompt {
@@ -418,13 +421,21 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::SttProbe { file, limit, city, business_words } => {
+        Command::SttProbe { file, limit, city, business_words, area } => {
             init_tracing();
             let mut terms = Vec::new();
+            let towns = if area {
+                load_registry(&cli.businesses)?.by_id("taxi").context("no taxi business")?.config.service_area.clone()
+            } else {
+                Vec::new()
+            };
             if let Some(city) = &city {
                 let g = load_gazetteer().context("the streets list is needed for --city")?;
                 terms.push(city.clone());
+                terms.extend(towns.iter().cloned());
                 terms.extend(g.street_keyterms(city, 38));
+            } else {
+                terms.extend(towns.iter().cloned());
             }
             if business_words {
                 let reg = load_registry(&cli.businesses)?;
@@ -1058,6 +1069,72 @@ async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod streets {
     use callora_core::gazetteer::Lookup;
+
+    fn area() -> Vec<String> {
+        let text = include_str!("../../../businesses/taxi.json");
+        let v: serde_json::Value = serde_json::from_str(text).expect("taxi.json");
+        v["service_area"]
+            .as_array()
+            .expect("service_area")
+            .iter()
+            .filter_map(|t| t.as_str().map(String::from))
+            .collect()
+    }
+
+    /// Live calls' first sentences, with the real list: the area's towns however they were
+    /// written, and nothing in everyday words.
+    #[test]
+    fn the_service_area_is_heard_in_live_mishearings() {
+        std::env::set_var("STREETS_FILE", concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/israel-streets.tsv.gz"));
+        std::env::set_var("PLACES_FILE", concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/israel-places.tsv.gz"));
+        let g = super::load_gazetteer().expect("the list loads");
+        let area = area();
+        let towns = |t: &str| g.area_towns_heard(t, &area).into_iter().map(|(_, town)| town).collect::<Vec<_>>();
+        for (said, town) in [
+            ("מלאד לירושלים", "אלעד"),
+            ("מלאדי, ירושלים.", "אלעד"),
+            ("בלד לירושלים.", "אלעד"),
+            ("מלעד לבנבר.", "אלעד"),
+            ("מלעד לבנבר.", "בני ברק"),
+            ("מלאד לבנברג.", "בני ברק"),
+            ("בנברץ, עזרא 11.", "בני ברק"),
+        ] {
+            assert!(towns(said).iter().any(|t| t == town), "{said}: {:?}", g.area_towns_heard(said, &area));
+        }
+        for said in [
+            "אני רוצה להזמין מונית.",
+            "כן, אני רוצה",
+            "יש פרטים נוספים",
+            "שלושה נוסעים",
+            "מאלעד לבני ברק",
+            "תודה רבה",
+            // Each was taken for a town before the rules were measured on every caller sentence.
+            "שלום. ביי.",
+            "לא, רושם.",
+            "רחוב של מה",
+            "על הקושי לאמא שלך.",
+            "מי היה ראש הממשלה הראשון",
+        ] {
+            assert!(towns(said).is_empty(), "{said}: {:?}", g.area_towns_heard(said, &area));
+        }
+    }
+
+    /// Every caller sentence in CALLER_LINES (one per line), with what it would be taken for.
+    #[test]
+    #[ignore]
+    fn sweep_caller_lines() {
+        std::env::set_var("STREETS_FILE", concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/israel-streets.tsv.gz"));
+        std::env::set_var("PLACES_FILE", concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/israel-places.tsv.gz"));
+        let g = super::load_gazetteer().expect("the list loads");
+        let area = area();
+        let lines = std::fs::read_to_string(std::env::var("CALLER_LINES").expect("CALLER_LINES")).expect("lines");
+        for line in lines.lines() {
+            let hits = g.area_towns_heard(line, &area);
+            if !hits.is_empty() {
+                println!("{line}  =>  {hits:?}");
+            }
+        }
+    }
 
     /// The real list, as shipped in the image.
     #[test]

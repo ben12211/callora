@@ -49,6 +49,12 @@ pub struct BusinessConfig {
     /// service area. Known place names and aliases are added automatically.
     #[serde(default)]
     pub stt_keyterms: Vec<String>,
+    /// The towns the business mostly serves, the most frequent first. Recognition is told of
+    /// them from the first word of a call, and a word that sounds like one of them is taken
+    /// for it more loosely than for the rest of the country ("מלאד", "בלד" for אלעד;
+    /// "לבנברג" for בני ברק): one rule for every town of the area, not one per mishearing.
+    #[serde(default)]
+    pub service_area: Vec<String>,
     pub pipelines: BTreeMap<PipelineId, PipelineConfig>,
     #[serde(default)]
     pub actions: BTreeMap<ActionId, ActionConfig>,

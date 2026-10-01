@@ -765,8 +765,20 @@ impl Engine {
         let Some(g) = &self.gazetteer else { return };
         // The business's own words are what they are: "מונית" sounds like the kibbutz מענית.
         let known: Vec<String> = self.business.stt_keyterms().iter().map(|t| crate::text::normalize(t)).collect();
+        // The business's own towns first, and more loosely: "מלאד" is אלעד where the taxis drive.
+        for (heard, town) in g.area_towns_heard(transcript, &self.business.config.service_area) {
+            let note = format!(
+                "\"{heard}\" is no place, but sounds like {town}, a town this business serves: it is {town}, unless the caller says otherwise"
+            );
+            if !self.state.agent_notes.contains(&note) {
+                self.state.agent_notes.push(note);
+            }
+        }
         for (heard, town) in g.towns_sounding_like(transcript) {
             if known.iter().any(|k| k.split(' ').any(|w| w == crate::text::normalize(&heard))) {
+                continue;
+            }
+            if self.state.agent_notes.iter().any(|n| n.starts_with(&format!("\"{heard}\""))) {
                 continue;
             }
             let note = format!(
@@ -1156,6 +1168,8 @@ impl Engine {
         // And the full names of the towns the caller named now: "מביתר" is ביתר עילית.
         if let Some(g) = &self.gazetteer {
             understood.extend(g.towns_named(&heard));
+            understood
+                .extend(g.area_towns_heard(&heard, &self.business.config.service_area).into_iter().map(|(_, t)| t));
         }
         let heard = if understood.is_empty() { heard } else { format!("{heard}. {}", understood.join(". ")) };
         // The optional questions asked before the read-back ("יש משהו שהנהג צריך לדעת?"): a "no"

@@ -413,6 +413,75 @@ impl Gazetteer {
         out
     }
 
+    /// Words of `text` that sound like a town of `area` (the business's own) without being a
+    /// place: "מלאד", "מלאדי", "בלד" (אלעד), "לבנבר", "לבנברג" (בני ברק), all heard in live
+    /// calls. Looser than [`Self::towns_sounding_like`], which is for the whole country, and
+    /// measured on every caller sentence so far ("שלום", "רושם" are no ירושלים, "הראשון" no
+    /// ראש העין):
+    /// - a name of five consonants or more: one off, the first the same ("לבנבר", בני ברק);
+    /// - three or four: the same consonants, in as many words ("מפרט", אפרת);
+    /// - two (אלעד): the same two, after a preposition ("מלאד", "בלד").
+    ///
+    /// Each phrase as heard, with the town; a phrase that could be two towns, or that has a
+    /// real place's name in it, is left out.
+    pub fn area_towns_heard(&self, text: &str, area: &[String]) -> Vec<(String, String)> {
+        let towns: Vec<(String, String, usize)> = area
+            .iter()
+            .filter_map(|t| {
+                let (ci, _) = self.city_keys.get(&norm(t))?;
+                Some((self.cities[*ci].name.clone(), sound(&norm(t)), norm(t).split(' ').count()))
+            })
+            .filter(|(_, s, _)| s.chars().count() >= 2)
+            .collect();
+        let normalized = norm(text);
+        let words: Vec<&str> = normalized.split(' ').filter(|w| !w.is_empty()).collect();
+        let mut out: Vec<(String, String)> = Vec::new();
+        for n in [2, 1] {
+            for window in words.windows(n) {
+                let heard = window.join(" ");
+                if out.iter().any(|(w, _)| w.split(' ').any(|x| window.contains(&x))) {
+                    continue;
+                }
+                let bare = strip_prefix(window[0])
+                    .map(|b| std::iter::once(b).chain(window[1..].iter().copied()).collect::<Vec<_>>().join(" "));
+                // A place by its name, with or without its preposition: nothing to guess.
+                let named = |w: &str| {
+                    self.city_keys.contains_key(w) || strip_prefix(w).is_some_and(|b| self.city_keys.contains_key(b))
+                };
+                if self.city_keys.contains_key(heard.as_str())
+                    || bare.as_ref().is_some_and(|b| self.city_keys.contains_key(b.as_str()))
+                    || window.iter().any(|w| named(w))
+                {
+                    continue;
+                }
+                let forms: Vec<(&str, bool)> =
+                    std::iter::once((heard.as_str(), false)).chain(bare.as_deref().map(|b| (b, true))).collect();
+                let hits: Vec<&String> = towns
+                    .iter()
+                    .filter(|(_, town, town_words)| {
+                        forms.iter().any(|(form, prefixed)| {
+                            let heard = sound(form);
+                            match town.chars().count() {
+                                2 => *prefixed && heard == *town,
+                                3 | 4 => heard == *town && form.split(' ').count() == *town_words,
+                                _ => {
+                                    heard.chars().count() >= 4
+                                        && heard.chars().next() == town.chars().next()
+                                        && distance(&heard, town) <= 1
+                                }
+                            }
+                        })
+                    })
+                    .map(|(name, _, _)| name)
+                    .collect();
+                if let [town] = hits[..] {
+                    out.push((heard, town.clone()));
+                }
+            }
+        }
+        out
+    }
+
     /// A town said after a prefix whose first letter recognition swallowed: "מלעד" is מ + אלעד
     /// (a live call's pickup, then booked in ירושלים), "לעכו" ל + עכו. Its name has too few
     /// consonants for the match by sound. Towns only (enough streets).

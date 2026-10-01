@@ -2876,8 +2876,13 @@ fn the_street_the_caller_said_wins_over_the_agents_reading() {
 /// אלעד and ירושלים as towns (20 streets each), as in the real list.
 fn towns() -> Arc<callora_core::gazetteer::Gazetteer> {
     let mut tsv = String::new();
-    for (code, city, first) in [("1309", "אלעד", "רבן יוחנן בן זכאי"), ("3000", "ירושלים", "הנביאים")]
-    {
+    for (code, city, first) in [
+        ("1309", "אלעד", "רבן יוחנן בן זכאי"),
+        ("3000", "ירושלים", "הנביאים"),
+        ("6100", "בני ברק", "עזרא"),
+        ("3780", "ביתר עילית", "הרמב\"ן"),
+        ("3650", "אפרת", "הגפן"),
+    ] {
         tsv.push_str(&format!("{code}\t{city}\t100\t{first}\tofficial\n"));
         for i in 1..20 {
             tsv.push_str(&format!("{code}\t{city}\t{}\tרחוב {i}\tofficial\n", 100 + i));
@@ -2938,4 +2943,38 @@ fn a_city_given_to_the_wrong_place_is_taken_back_when_said_with_the_other() {
         "",
     );
     assert!(pickup_city(&call).is_some(), "a ride inside one city");
+}
+
+#[test]
+fn a_town_of_the_service_area_is_known_however_recognition_writes_it() {
+    // Every one of these was a live call's first sentence.
+    let g = towns();
+    let area: Vec<String> = ["אלעד", "בני ברק", "ירושלים", "ביתר עילית", "אפרת"].map(String::from).to_vec();
+    let heard = |text: &str| g.area_towns_heard(text, &area).into_iter().map(|(_, t)| t).collect::<Vec<_>>();
+    for (said, town) in [
+        ("מלאד לירושלים", "אלעד"),
+        ("מלאדי, ירושלים", "אלעד"),
+        ("בלד לירושלים", "אלעד"),
+        ("מלעד לבנבר", "אלעד"),
+        ("מלאד לבנברג", "אלעד"),
+    ] {
+        assert!(heard(said).contains(&town.to_string()), "{said}: {:?}", heard(said));
+    }
+    assert!(heard("מלעד לבנבר").contains(&"בני ברק".to_string()), "{:?}", g.area_towns_heard("מלעד לבנבר", &area));
+    assert!(heard("מלאד לבנברג").contains(&"בני ברק".to_string()));
+    assert!(heard("בנברץ, עזרא 11").contains(&"בני ברק".to_string()));
+    // Places said right, and everyday words, are no guess.
+    assert!(heard("מאלעד לבני ברק").is_empty(), "{:?}", heard("מאלעד לבני ברק"));
+    assert!(heard("אני רוצה להזמין מונית לשלושה נוסעים").is_empty());
+    assert!(heard("יש פרטים נוספים").is_empty(), "{:?}", heard("יש פרטים נוספים"));
+}
+
+#[test]
+fn the_agent_hears_of_the_area_town_it_was_said_as() {
+    let b = business(&[]);
+    let mut engine = Engine::new(b.clone(), 7);
+    engine.set_gazetteer(Some(towns()));
+    engine.hint_towns("מלאדי, ירושלים.");
+    let request = callora_core::agent::build_request(&b, &engine.state, "מלאדי, ירושלים.");
+    assert!(request.user.contains("\"מלאדי\" is no place, but sounds like אלעד"), "{}", request.user);
 }

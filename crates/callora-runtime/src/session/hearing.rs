@@ -421,13 +421,19 @@ impl Session {
     // -----------------------------------------------------------------------------------
     // Recognition hints
 
-    /// Recognition hints: the city's streets when the call waits for one, then the business's
-    /// own words (the recognizer keeps as many from the front as it takes).
+    /// Recognition hints: the city's streets when the call waits for one, the towns of the
+    /// business's area always, then the business's own words (the recognizer keeps as many
+    /// from the front as it takes). The area from the first word: on 150 recorded utterances
+    /// it turned "מלעד לבנון" into "מאלעד לבני ברק", "מאילת" into "מאלעד", "מפרט" into "מאפרת".
     pub(super) fn stt_keyterms(&self, city: Option<&str>) -> Vec<String> {
         let mut terms = Vec::new();
+        let area = &self.business.config.service_area;
         if let (Some(city), Some(g)) = (city, &self.services.gazetteer) {
             terms.push(city.to_string());
+            terms.extend(area.iter().cloned());
             terms.extend(g.street_keyterms(city, 38));
+        } else {
+            terms.extend(area.iter().cloned());
         }
         if self.services.stt.wants_business_words() {
             terms.extend(self.business.stt_keyterms());
