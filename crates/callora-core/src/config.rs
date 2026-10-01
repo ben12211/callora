@@ -117,6 +117,15 @@ pub struct VoiceConfig {
     /// so the caller hears something during the second the synthesis takes.
     #[serde(default)]
     pub dynamic_cover: Option<ResponseId>,
+    /// How much faster than the model speaks the caller hears it, at the same pitch (1.25:
+    /// a quarter faster). For models that ignore `speed`: eleven_v4_turbo speaks about 40%
+    /// slower than eleven_v3 ("נורא איטי, נמרח"). The library and live speech alike.
+    #[serde(default = "default_tempo")]
+    pub tempo: f32,
+}
+
+fn default_tempo() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

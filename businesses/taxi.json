@@ -13,7 +13,8 @@
     "library_model": "eleven_v4_turbo",
     "dynamic_model": "eleven_v4_turbo",
     "personality": ["צעיר", "ישראלי", "חברי", "מהיר", "ישיר", "לא פורמלי מדי", "רגוע", "יעיל"],
-    "settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.0, "speed": 1.0},
+    "settings": {"stability": 0.9, "similarity_boost": 0.75, "style": 0.0, "speed": 1.0},
+    "tempo": 1.25,
     "deliveries": {
       "normal": {},
       "quick": { "speed": 1.08 },
@@ -485,7 +486,7 @@
     "ask_destination_price": { "variants": ["לאן הנסיעה?"] },
     "ask_passengers": {"variants": ["כמה נוסעים?", "כמה אתם?", "וכמה אנשים?"]},
     "confirm_ride": {"prefix": "ack", "variants": ["{passengers} מ{pickup} ל{destination}, {pickup_time}. לשלוח?", "אז {passengers} מ{pickup} ל{destination}, {pickup_time}. לשלוח?"], "params": {"passengers": {"kind": "count", "gender": "masculine", "singular": "נוסע אחד", "plural": "נוסעים", "range": [1, 8]}, "pickup_time": {"kind": "time"}}},
-    "filler_searching": {"variants": ["סגור, רושם את ההזמנה.", "מעולה, רושם.", "יאללה, רושם."]},
+    "filler_searching": {"variants": ["סגור, רושם את ההזמנה.", "מעולה, שולח את ההזמנה.", "יאללה, רושם את זה."]},
     "filler_checking": {"variants": ["שנייה, אני בודק.", "רגע, בודק.", "שנייה, מסתכל.", "רגע אחד, בודק."]},
     "off_topic": {
       "variants": ["את זה אני לא יודע, אני פה רק בשביל מוניות. צריך מונית?", "בזה אני לא יכול לעזור, רק במוניות. צריך מונית?"],

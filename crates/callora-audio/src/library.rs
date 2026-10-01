@@ -145,9 +145,12 @@ impl VoiceLibrary {
             voice_id: Some(manifest.voice_id.clone()),
             model: Some(manifest.model.clone()),
         };
+        // Recorded at the model's own pace; played at the business's.
+        let tempo = business.config.voice.tempo;
         for e in &manifest.entries {
             match std::fs::read(dir.join(&e.file)) {
                 Ok(bytes) => {
+                    let bytes = if tempo == 1.0 { bytes } else { crate::tempo::stretch(&bytes, tempo) };
                     lib.loose.insert(loose_key(&e.delivery, &e.text), e.key.clone());
                     lib.clips.insert(e.key.clone(), Bytes::from(bytes));
                 }

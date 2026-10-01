@@ -127,7 +127,8 @@ impl Session {
                 self.services.metrics.segment("tts");
                 let (tx, rx) = mpsc::channel(64);
                 self.enqueue(PlayItem { id, source: Source::Stream(rx), gain_db: plan.gain_db });
-                spawn_tts(tts, request, key, tx, self.services.tts_cache.clone(), self.events.clone());
+                let tempo = self.business.config.voice.tempo;
+                spawn_tts(tts, request, key, tx, self.services.tts_cache.clone(), self.events.clone(), tempo);
             }
         }
     }
@@ -321,9 +322,12 @@ pub(super) fn spawn_tts(
     tx: mpsc::Sender<anyhow::Result<Bytes>>,
     cache: TtsCache,
     events: mpsc::UnboundedSender<Ev>,
+    tempo: f32,
 ) {
     use futures::StreamExt;
     tokio::spawn(async move {
+        // Faster at the same pitch, as it arrives (callora_audio::tempo).
+        let mut pace = callora_audio::tempo::Tempo::new(tempo);
         let started = Instant::now();
         // A stream that stops sending would keep the reply "playing" for ever: nothing is
         // asked again, "הלו?" is not answered while the agent talks, the call hangs.
@@ -356,10 +360,14 @@ pub(super) fn spawn_tts(
                         first = false;
                         let _ = events.send(Ev::TtsFirstChunk { elapsed: started.elapsed() });
                     }
+                    let bytes = pace.push(&bytes);
+                    if bytes.is_empty() {
+                        continue;
+                    }
                     all.extend_from_slice(&bytes);
                     // Keep synthesizing after a barge-in: the finished audio goes to the
                     // cache, and "what?" usually asks for exactly this sentence again.
-                    if listener && tx.send(Ok(bytes)).await.is_err() {
+                    if listener && tx.send(Ok(Bytes::from(bytes))).await.is_err() {
                         listener = false;
                     }
                 }
@@ -367,6 +375,13 @@ pub(super) fn spawn_tts(
                     let _ = tx.send(Err(e)).await;
                     return;
                 }
+            }
+        }
+        let rest = pace.finish();
+        if !rest.is_empty() {
+            all.extend_from_slice(&rest);
+            if listener {
+                let _ = tx.send(Ok(Bytes::from(rest))).await;
             }
         }
         if !all.is_empty() {
@@ -421,7 +436,7 @@ mod tests {
             language: "he-IL".into(),
         };
         let cache = callora_audio::tts::TtsCache::new(4);
-        super::spawn_tts(std::sync::Arc::new(Stalls), request, "k".into(), tx, cache.clone(), events);
+        super::spawn_tts(std::sync::Arc::new(Stalls), request, "k".into(), tx, cache.clone(), events, 1.0);
         assert!(matches!(rx.recv().await, Some(Ok(_))), "what came, plays");
         assert!(matches!(rx.recv().await, Some(Err(_))), "then the stall ends the item");
         assert!(rx.recv().await.is_none());
