@@ -193,7 +193,8 @@ reclaim_disk_space() {
   fi
 
   # Only containers left behind by earlier deployments; anything from this one is younger.
-  docker container prune --force --filter until=24h >/dev/null 2>&1 || true
+  # Never minikube's node: stopped for a day, it is still the cluster Callora runs in.
+  docker container prune --force --filter until=24h --filter 'label!=created_by.minikube.sigs.k8s.io' >/dev/null 2>&1 || true
 
   while IFS= read -r image; do
     [[ -n "$image" && "$image" != *'<none>'* ]] || continue

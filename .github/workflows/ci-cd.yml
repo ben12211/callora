@@ -64,10 +64,20 @@ jobs:
           PUBLIC_BASE_URL: https://callora.example.invalid
           TWILIO_ACCOUNT_SID: AC00000000000000000000000000000000
           TWILIO_AUTH_TOKEN: validation-only
+          CALLORA_UPSTREAM: 192.168.49.2:30300
         run: |
-          bash -n deploy/deploy.sh deploy/bootstrap-oracle-linux.sh
+          bash -n deploy/deploy.sh deploy/k8s-deploy.sh deploy/bootstrap-oracle-linux.sh
           docker compose -f docker-compose.yml config -q
           docker compose -f docker-compose.prod.yml config -q
+          docker compose -f docker-compose.edge.yml config -q
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          python3 - <<'PY'
+          import yaml
+          for f in ('deploy/k8s/base.yaml', 'deploy/k8s/app.yaml'):
+              docs = [d for d in yaml.safe_load_all(open(f)) if d]
+              assert docs and all(d.get('kind') and d.get('metadata', {}).get('name') for d in docs), f
+              print(f, [d['kind'] + '/' + d['metadata']['name'] for d in docs])
+          PY
 
       - name: Stop the development stack
         if: always()
@@ -199,12 +209,18 @@ jobs:
           MODE: ${{ inputs.mode }}
         run: |
           source "$SSH_DIR/ssh.env"
-          "${SCP[@]}" deploy/deploy.sh "$REMOTE:/opt/callora/incoming/deploy.sh"
-          "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
+          "${SCP[@]}" deploy/deploy.sh deploy/k8s-deploy.sh "$REMOTE:/opt/callora/incoming/"
+          "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/incoming/k8s-deploy.sh /opt/callora/'
           if [[ "$MODE" == 'reset' ]]; then
             "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh purge-legacy I-UNDERSTAND-THIS-DELETES-THE-CALLORA-DATABASE'
           fi
           printf 'PUBLIC_BASE_URL=%s\n' "$PUBLIC_BASE_URL" | "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh init-host'
+
+      # Callora runs in the VM's minikube: it must be installed and running (started if not).
+      - name: Check the minikube cluster
+        run: |
+          source "$SSH_DIR/ssh.env"
+          "${SSH[@]}" "$REMOTE" 'bash /opt/callora/k8s-deploy.sh check'
 
   deploy:
     name: Deploy production
@@ -221,6 +237,8 @@ jobs:
       DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
       DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
       CALLORA_IMAGE: ${{ vars.DOCKER_HUB_USERNAME }}/callora:${{ github.sha }}
+      # Empty when its build failed: the cluster keeps the WhatsApp service it runs.
+      WHATSAPP_IMAGE: ${{ needs.whatsapp-image.result == 'success' && format('{0}/callora:whatsapp-{1}', vars.DOCKER_HUB_USERNAME, github.sha) || '' }}
       TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
       TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
       STREAM_TOKEN_SECRET: ${{ secrets.STREAM_TOKEN_SECRET }}
@@ -281,25 +299,21 @@ jobs:
           SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: deploy/ci-ssh-setup.sh
 
-      - name: Upload and deploy
+      # Callora runs in the VM's minikube (deploy/k8s, deploy/k8s-deploy.sh); Caddy stays in
+      # Docker in front of it (docker-compose.edge.yml), since it also serves the VM's other
+      # sites. The images are public on Docker Hub: the cluster pulls them itself.
+      - name: Upload and deploy to minikube
         run: |
           source "$SSH_DIR/ssh.env"
-          REMOTE_DOCKER_CONFIG="/tmp/callora-docker-${GITHUB_SHA}"
-          cleanup() {
-            "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker logout >/dev/null 2>&1 || true; rm -rf -- '$REMOTE_DOCKER_CONFIG'" || true
-          }
-          trap cleanup EXIT
-
-          "${SSH[@]}" "$REMOTE" 'install -d -m 700 /opt/callora/incoming'
-          "${SCP[@]}" docker-compose.prod.yml Caddyfile deploy/deploy.sh "$REMOTE:/opt/callora/incoming/"
-          "${SSH[@]}" "$REMOTE" "install -d -m 700 '$REMOTE_DOCKER_CONFIG'"
-          printf '%s' "$DOCKER_HUB_TOKEN" | "${SSH[@]}" "$REMOTE" \
-            "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' docker login --username '$DOCKER_HUB_USERNAME' --password-stdin >/dev/null"
-          "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/deploy.sh'
+          "${SSH[@]}" "$REMOTE" 'install -d -m 700 /opt/callora/incoming /opt/callora/incoming/k8s'
+          "${SCP[@]}" docker-compose.edge.yml Caddyfile deploy/deploy.sh deploy/k8s-deploy.sh "$REMOTE:/opt/callora/incoming/"
+          "${SCP[@]}" deploy/k8s/base.yaml deploy/k8s/app.yaml "$REMOTE:/opt/callora/incoming/k8s/"
+          "${SSH[@]}" "$REMOTE" 'install -m 0755 /opt/callora/incoming/deploy.sh /opt/callora/incoming/k8s-deploy.sh /opt/callora/'
           "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh reclaim' || true
 
           # Runtime settings travel as NAME=VALUE lines on stdin: never on a command line,
-          # never printed. deploy.sh accepts only the names it knows.
+          # never printed. deploy.sh accepts only the names it knows and keeps them in
+          # /opt/callora/.env, which k8s-deploy.sh turns into the cluster's Secret.
           for name in TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN STREAM_TOKEN_SECRET \
                       ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID ELEVENLABS_DYNAMIC_MODEL \
                       STT_PROVIDER OPENAI_STT_HINTS DEEPGRAM_API_KEY CARTESIA_API_KEY OPENAI_API_KEY GEMINI_API_KEY GEMINI_MODEL \
@@ -312,12 +326,18 @@ jobs:
             printf '%s=%s\n' "$name" "$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           done | "${SSH[@]}" "$REMOTE" 'bash /opt/callora/deploy.sh update-secrets'
 
-          if ! "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh deploy '$CALLORA_IMAGE'"; then
-            echo 'Production deployment failed; the server attempted an automatic rollback.' >&2
+          if ! "${SSH[@]}" "$REMOTE" "bash /opt/callora/k8s-deploy.sh deploy '$CALLORA_IMAGE' '$WHATSAPP_IMAGE'"; then
+            echo 'Production deployment failed; the server rolled back what it had changed.' >&2
             exit 1
           fi
-          if ! "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh confirm"; then
+          if ! "${SSH[@]}" "$REMOTE" 'bash /opt/callora/k8s-deploy.sh confirm'; then
             echo 'Release confirmation failed; rolling back.' >&2
-            "${SSH[@]}" "$REMOTE" "DOCKER_CONFIG='$REMOTE_DOCKER_CONFIG' bash /opt/callora/deploy.sh rollback" || true
+            "${SSH[@]}" "$REMOTE" 'bash /opt/callora/k8s-deploy.sh rollback' || true
             exit 1
           fi
+
+      - name: What runs now
+        if: always()
+        run: |
+          source "$SSH_DIR/ssh.env"
+          "${SSH[@]}" "$REMOTE" 'bash /opt/callora/k8s-deploy.sh status' || true

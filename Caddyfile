@@ -1,7 +1,9 @@
 {$PUBLIC_BASE_URL} {
 	encode zstd gzip
 
-	reverse_proxy backend:3000 {
+	# The backend's NodePort in minikube (docker-compose.edge.yml); `backend:3000` is the
+	# Compose stack this replaced, kept as the default so it can still be started.
+	reverse_proxy {$CALLORA_UPSTREAM:backend:3000} {
 		health_uri /health
 		health_interval 10s
 		health_timeout 3s

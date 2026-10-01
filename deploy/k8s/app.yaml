@@ -1,0 +1,116 @@
+# Callora's backend and WhatsApp service (base.yaml first). deploy/k8s-deploy.sh fills in the
+# images and the settings' hash: a change of settings restarts the pods that read them.
+# The backend: one replica, and a new one is ready before the old one stops. Migrations run
+# first, as an init container under the application's migration lock.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: backend, namespace: callora }
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
+  selector: { matchLabels: { app: backend } }
+  template:
+    metadata: { labels: { app: backend }, annotations: { callora/settings: __SETTINGS_HASH__ } }
+    spec:
+      # Long enough for calls in progress to finish their current reply.
+      terminationGracePeriodSeconds: 30
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532 }
+      initContainers:
+        - name: migrate
+          image: __CALLORA_IMAGE__
+          args: [migrate]
+          envFrom: [{ secretRef: { name: callora-env } }]
+          securityContext: &locked
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: backend
+          image: __CALLORA_IMAGE__
+          args: [serve]
+          envFrom: [{ secretRef: { name: callora-env } }]
+          # These win over anything of the same name in the Secret.
+          env:
+            - { name: HOST, value: 0.0.0.0 }
+            - { name: PORT, value: "3000" }
+            - { name: AUDIO_LIBRARY_DIR, value: /data/voice-library }
+            - { name: WHATSAPP_URL, value: "http://whatsapp:3100" }
+          ports: [{ containerPort: 3000, name: http }]
+          readinessProbe:
+            exec: { command: [/usr/local/bin/callora, healthcheck] }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec: { command: [/usr/local/bin/callora, healthcheck] }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests: { memory: 128Mi, cpu: 200m }
+            limits: { memory: 1Gi }
+          securityContext: *locked
+          volumeMounts:
+            - { name: voice-library, mountPath: /data/voice-library }
+      volumes:
+        - { name: voice-library, persistentVolumeClaim: { claimName: voice-library } }
+---
+# Caddy, outside the cluster on the `minikube` Docker network, reaches the backend here.
+apiVersion: v1
+kind: Service
+metadata: { name: backend, namespace: callora }
+spec:
+  type: NodePort
+  selector: { app: backend }
+  ports: [{ port: 3000, targetPort: 3000, nodePort: 30300, name: http }]
+---
+# WhatsApp (whatsapp-web.js with Chromium). One pod at a time: two would fight over the
+# same signed-in account.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: whatsapp, namespace: callora }
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: whatsapp } }
+  template:
+    metadata: { labels: { app: whatsapp }, annotations: { callora/settings: __SETTINGS_HASH__ } }
+    spec:
+      terminationGracePeriodSeconds: 20
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000 }
+      containers:
+        - name: whatsapp
+          image: __WHATSAPP_IMAGE__
+          env:
+            - { name: WHATSAPP_TOKEN, valueFrom: { secretKeyRef: { name: callora-env, key: WHATSAPP_TOKEN } } }
+            - { name: MAX_SESSIONS, valueFrom: { secretKeyRef: { name: callora-env, key: WHATSAPP_MAX_SESSIONS } } }
+          ports: [{ containerPort: 3100 }]
+          readinessProbe:
+            httpGet: { path: /health, port: 3100 }
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /health, port: 3100 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 4
+          resources:
+            requests: { memory: 512Mi, cpu: 100m }
+            limits: { memory: 1800Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: whatsapp } }
+        # Chromium needs a real /dev/shm.
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 1Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: whatsapp, namespace: callora }
+spec:
+  selector: { app: whatsapp }
+  ports: [{ port: 3100, targetPort: 3100 }]

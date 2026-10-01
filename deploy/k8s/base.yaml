@@ -1,0 +1,123 @@
+# Callora on the VM's minikube (one node, docker driver). deploy/k8s-deploy.sh applies this first (the
+# namespace, the storage and PostgreSQL), then app.yaml; the settings come from /opt/callora/.env as the callora-env
+# Secret, created by the script (never in this file).
+#
+# Data lives on the node under /var/lib/callora, which is the VM's
+# /var/lib/docker/volumes/minikube/_data/lib/callora: it survives `minikube stop`/`start`
+# and reboots, and is lost with `minikube delete`.
+#
+# Caddy stays outside, in Docker on the VM, because it also serves the VM's other sites:
+# it joins the `minikube` Docker network and reaches the backend on its NodePort.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: callora
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: callora-postgres
+spec:
+  capacity: { storage: 10Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: callora-local
+  hostPath: { path: /var/lib/callora/postgres, type: DirectoryOrCreate }
+  claimRef: { namespace: callora, name: postgres }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: callora-voice-library
+spec:
+  capacity: { storage: 2Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: callora-local
+  hostPath: { path: /var/lib/callora/voice-library, type: DirectoryOrCreate }
+  claimRef: { namespace: callora, name: voice-library }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: callora-whatsapp
+spec:
+  capacity: { storage: 5Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: callora-local
+  hostPath: { path: /var/lib/callora/whatsapp, type: DirectoryOrCreate }
+  claimRef: { namespace: callora, name: whatsapp }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: postgres, namespace: callora }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: callora-local
+  volumeName: callora-postgres
+  resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: voice-library, namespace: callora }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: callora-local
+  volumeName: callora-voice-library
+  resources: { requests: { storage: 2Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: whatsapp, namespace: callora }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: callora-local
+  volumeName: callora-whatsapp
+  resources: { requests: { storage: 5Gi } }
+---
+# PostgreSQL: the Service is named `db`, as in Compose, so DATABASE_URL is unchanged.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: db, namespace: callora }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: db } }
+  template:
+    metadata: { labels: { app: db } }
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - { name: POSTGRES_USER, valueFrom: { secretKeyRef: { name: callora-env, key: POSTGRES_USER } } }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: callora-env, key: POSTGRES_PASSWORD } } }
+            - { name: POSTGRES_DB, valueFrom: { secretKeyRef: { name: callora-env, key: POSTGRES_DB } } }
+            - { name: POSTGRES_INITDB_ARGS, value: --auth-host=scram-sha-256 }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: [sh, -c, 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: [sh, -c, 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'] }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { memory: 128Mi, cpu: 50m }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: postgres } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 128Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: db, namespace: callora }
+spec:
+  selector: { app: db }
+  ports: [{ port: 5432, targetPort: 5432 }]

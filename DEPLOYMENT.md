@@ -1,12 +1,44 @@
 # Callora production deployment
 
-Callora V2 deploys the same way the legacy stack did: three containers on one Oracle Linux 9 ARM64 VM:
+Callora runs in **minikube** on the Oracle Linux 9 ARM64 VM (one node, docker driver), in the
+`callora` namespace (`deploy/k8s/base.yaml`, `deploy/k8s/app.yaml`):
 
-- Caddy terminates HTTPS on ports 80/443 and proxies to the backend.
-- The non-root, distroless Callora backend (a single static Rust binary) is available only inside the Docker network. It keeps its pre-generated voice library in the `callora_voice_library` named volume.
-- PostgreSQL is available only inside its private Docker network and stores data in the fixed `callora_postgres_data` named volume.
+- `db`: PostgreSQL 16, data on the node in `/var/lib/callora/postgres`.
+- `backend`: the distroless Callora binary, one replica, rolled out new-before-old; migrations run
+  in an init container; its voice library is in `/var/lib/callora/voice-library`. A NodePort
+  (30300) is how Caddy reaches it.
+- `whatsapp`: the WhatsApp service, one pod at a time (two would sign each other out); its
+  logins are in `/var/lib/callora/whatsapp`.
 
-The production stack is defined in `docker-compose.prod.yml`. Normal deployments never run `docker compose down`, never use `--volumes`, and never recreate or delete the PostgreSQL volume.
+The node's `/var` is the VM's `/var/lib/docker/volumes/minikube/_data`, so the data survives
+`minikube stop`/`start` and reboots, and is **lost with `minikube delete`**.
+
+**Caddy stays in Docker** (`docker-compose.edge.yml`, the same `callora-caddy-1` container and
+certificate volumes): it also serves the VM's other sites on plain HTTP. It joins the `minikube`
+Docker network and proxies HTTPS to the backend's NodePort (`/opt/callora/edge.env`, written by
+the deploy from `minikube ip`).
+
+The deploy job uploads the manifests and runs `deploy/k8s-deploy.sh` over SSH:
+
+```bash
+bash /opt/callora/k8s-deploy.sh status      # pods, services, volumes, calls in progress
+bash /opt/callora/k8s-deploy.sh rollback    # the previous backend and WhatsApp revisions
+kubectl -n callora logs deploy/backend -f   # the backend's log
+```
+
+Settings still live in `/opt/callora/.env` (`deploy.sh init-host` and `update-secrets`, below);
+each deploy turns it into the `callora-env` Secret, and pods that read it restart when it
+changes. A deploy records missing voice-library sentences (a Job), waits for calls in progress
+to end, rolls the backend out, and fails back to the previous revision if it does not become
+ready. The images must stay **public** on Docker Hub: the cluster pulls them without
+credentials.
+
+The first deploy into the cluster adopted the Docker Compose stack (`docker-compose.prod.yml`,
+kept for reference): its database by `pg_dump`, its voice library and WhatsApp logins by copy;
+Caddy was pointed at the cluster, and the old containers were removed once the public address
+answered from it. Their volumes (`callora_postgres_data`, `callora_voice_library`,
+`callora_whatsapp_data`) are kept as a backup. The sections below on Compose describe that
+older setup.
 
 ## One-time Docker Hub setup
 
