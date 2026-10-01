@@ -473,6 +473,19 @@ impl Engine {
             turn.say.clear();
             turn.task = Some(intent);
         }
+        // Words that decide the task (a price question) over the agent's choice: its words were
+        // for the other task, the task's own next step is said instead.
+        let mut decided = false;
+        if let Some(intent) = self.decisive_intent(transcript).filter(|i| turn.task.as_deref() != Some(i.as_str())) {
+            tracing::info!(transcript, %intent, agent = ?turn.task, "the caller's words decide the task");
+            turn.phrase = None;
+            turn.say.clear();
+            turn.task = Some(intent);
+            if turn.action == AgentAction::None || turn.action == AgentAction::ReadBack {
+                turn.action = AgentAction::None;
+            }
+            decided = true;
+        }
         // Asked the same thing five times over and still stuck: a person takes the call (or,
         // with no desk, it ends politely) rather than a sixth round of the same question.
         if self.state.same_question_streak() >= 5 {
@@ -648,8 +661,8 @@ impl Engine {
             // Every detail of a task with no read-back (a price) known: it runs now, whatever the
             // agent chose. A live call heard "רגע, בודק" for a price nothing was asked for, then
             // "הלו? אני פה. רגע, בודק." until the caller hung up.
-            AgentAction::None if self.runs_without_read_back() => {
-                tracing::info!(transcript, "every detail of a task with no read-back; running it");
+            AgentAction::None if decided || self.runs_without_read_back() => {
+                tracing::info!(transcript, "the task goes on by its own steps");
                 self.agent_say(&mut out, None, "", spoken);
                 self.advance(&mut out, false);
             }
@@ -759,6 +772,19 @@ impl Engine {
         }
         let (u, _) = crate::understanding::fast_path(&self.business, &self.context(), transcript);
         u.intent.map(|i| i.id).filter(|id| self.business.intent(id).is_some_and(|i| i.pipeline.is_some()))
+    }
+
+    /// A task whose keywords decide it over the agent's choice (`decisive`), when the caller's
+    /// words have one ("עולה נסיעה").
+    pub fn decisive_intent(&self, transcript: &str) -> Option<String> {
+        let norm = crate::text::normalize(transcript);
+        self.business.config.intents.iter().filter(|i| i.decisive).find_map(|i| {
+            self.business
+                .intent_keywords
+                .iter()
+                .any(|(id, k)| *id == i.id && k.find(&norm).is_some())
+                .then(|| i.id.clone())
+        })
     }
 
     /// The task in progress has no read-back, an action, and every required detail.

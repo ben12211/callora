@@ -304,6 +304,11 @@ pub struct IntentConfig {
     /// Minimum confidence to switch away from an active pipeline to this intent.
     #[serde(default = "default_switch_confidence")]
     pub switch_confidence: f32,
+    /// Its keywords decide the task whatever the agent chose: "(כמה) עולה נסיעה מברקת
+    /// לאלעד", "כמה" heard as "אמא", was taken for a booking and answered "איפה בברקת לאסוף?",
+    /// and the caller hung up.
+    #[serde(default)]
+    pub decisive: bool,
 }
 
 fn default_switch_confidence() -> f32 {

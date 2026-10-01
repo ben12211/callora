@@ -3077,3 +3077,27 @@ fn a_price_question_is_never_refused_as_off_topic() {
     assert!(!spoken(&d).contains("רק במוניות"), "{}", spoken(&d));
     assert_eq!(action(&d).map(|(_, n, _)| n), Some("estimate_price".to_string()), "{d:?}");
 }
+
+#[test]
+fn a_price_question_is_one_whatever_the_agent_took_it_for() {
+    // "כמה עולה נסיעה מברקת לאלעד?" heard "אמא, עולה נסיעה מברקת לאלעד": taken for a booking,
+    // answered "איפה בברקת לאסוף?", and the caller hung up.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(towns()));
+    let mut turn = decide(
+        AgentAction::None,
+        "איפה בבני ברק לאסוף?",
+        Some("book_ride"),
+        &[("pickup", "בני ברק"), ("destination", "אלעד")],
+    );
+    turn.asks = vec!["pickup".into()];
+    let said = "אמא, עולה נסיעה מבני ברק לאלעד.";
+    assert_eq!(call.engine.decisive_intent(said).as_deref(), Some("price_question"));
+    let d = call.engine.on_agent_turn(said, turn, "");
+    assert!(!spoken(&d).contains("לאסוף"), "{}", spoken(&d));
+    let (_, name, input) = action(&d).expect("the price is asked");
+    assert_eq!(name, "estimate_price");
+    assert_eq!(input["slots"]["price_from"]["spoken"], "בני ברק");
+    // A booking's words are no price question.
+    assert!(call.engine.decisive_intent("אני רוצה להזמין מונית מבני ברק").is_none());
+}

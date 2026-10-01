@@ -237,6 +237,7 @@ impl Session {
             });
         }
         self.services.metrics.llm_calls_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let decided = self.engine.decisive_intent(&transcript).is_some();
         self.pending_agent = Some(PendingAgent {
             turn,
             transcript,
@@ -250,7 +251,9 @@ impl Session {
             fields: Vec::new(),
             partial_phrase: None,
             done: None,
-            hold_say: false,
+            // Words that decide the task (a price question): the agent's own words may be for
+            // another (a booking's next question), so the engine speaks.
+            hold_say: decided,
             asks: Vec::new(),
             held_for: None,
         });
