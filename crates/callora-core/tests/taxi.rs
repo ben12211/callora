@@ -2872,3 +2872,70 @@ fn the_street_the_caller_said_wins_over_the_agents_reading() {
     let to = call.slot("destination").map(|v| v.spoken()).unwrap_or_default();
     assert!(to.contains("עזרא 11") && !to.contains("אליעזר"), "{to}");
 }
+
+/// אלעד and ירושלים as towns (20 streets each), as in the real list.
+fn towns() -> Arc<callora_core::gazetteer::Gazetteer> {
+    let mut tsv = String::new();
+    for (code, city, first) in [("1309", "אלעד", "רבן יוחנן בן זכאי"), ("3000", "ירושלים", "הנביאים")]
+    {
+        tsv.push_str(&format!("{code}\t{city}\t100\t{first}\tofficial\n"));
+        for i in 1..20 {
+            tsv.push_str(&format!("{code}\t{city}\t{}\tרחוב {i}\tofficial\n", 100 + i));
+        }
+    }
+    tsv.push_str("1309\tאלעד\t100\tבן זכאי\tsynonym\n");
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(&tsv))
+}
+
+#[test]
+fn a_town_whose_first_letter_was_swallowed_is_still_the_town() {
+    // "מלעד לירושלים": מ + אלעד. The match by sound needs three consonants; אלעד has two.
+    let g = towns();
+    assert_eq!(g.towns_named("מלעד לירושלים"), vec!["אלעד".to_string(), "ירושלים".to_string()]);
+    assert_eq!(g.towns_sounding_like("מלעד לירושלים"), vec![("מלעד".to_string(), "אלעד".to_string())]);
+    assert!(g.towns_sounding_like("מלא שלום").is_empty(), "no town, no hint");
+    assert!(g.towns_sounding_like("בלעד ולעד").is_empty(), "only after מ and ל");
+}
+
+#[test]
+fn a_city_given_to_the_wrong_place_is_taken_back_when_said_with_the_other() {
+    // "מלאדי, ירושלים" became pickup ירושלים; "מלעד לירושלים" says it is the destination.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(towns()));
+    call.engine.on_agent_turn(
+        "מלאדי, ירושלים.",
+        decide(AgentAction::None, "איפה בירושלים לאסוף?", Some("book_ride"), &[("pickup", "ירושלים")]),
+        "",
+    );
+    let pickup_city =
+        |c: &Call| c.engine.state.place_cities.get("pickup").cloned().or_else(|| c.slot("pickup").map(|v| v.spoken()));
+    assert_eq!(pickup_city(&call).as_deref(), Some("ירושלים"));
+    call.engine.on_agent_turn(
+        "מלעד לירושלים.",
+        decide(AgentAction::None, "", Some("book_ride"), &[("destination", "ירושלים")]),
+        "",
+    );
+    assert_eq!(pickup_city(&call), None, "ירושלים is no longer the pickup");
+    let to = call
+        .engine
+        .state
+        .place_cities
+        .get("destination")
+        .cloned()
+        .or_else(|| call.slot("destination").map(|v| v.spoken()));
+    assert!(to.is_some_and(|t| t.contains("ירושלים")), "the destination");
+    // A ride inside one city keeps its pickup: "לירושלים" with nothing else said with מ.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(towns()));
+    call.engine.on_agent_turn(
+        "מירושלים",
+        decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "ירושלים")]),
+        "",
+    );
+    call.engine.on_agent_turn(
+        "גם לירושלים",
+        decide(AgentAction::None, "", Some("book_ride"), &[("destination", "ירושלים")]),
+        "",
+    );
+    assert!(pickup_city(&call).is_some(), "a ride inside one city");
+}

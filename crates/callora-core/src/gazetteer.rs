@@ -401,9 +401,37 @@ impl Gazetteer {
                         }
                     }
                 }
+                if n == 1 {
+                    if let Some(name) = self.town_without_first_letter(window[0]) {
+                        if !out.contains(&name) {
+                            out.push(name);
+                        }
+                    }
+                }
             }
         }
         out
+    }
+
+    /// A town said after a prefix whose first letter recognition swallowed: "מלעד" is מ + אלעד
+    /// (a live call's pickup, then booked in ירושלים), "לעכו" ל + עכו. Its name has too few
+    /// consonants for the match by sound. Towns only (enough streets).
+    /// Only after "from" and "to" (מ, ל), three letters left at least, and not the common words
+    /// that look the same ("לומר", "מודים", "לשרת"): "בלי", "לכו", "וכו" would be towns.
+    fn town_without_first_letter(&self, word: &str) -> Option<String> {
+        const COMMON: [&str; 9] = ["לומר", "מומר", "מודים", "משרת", "לשרת", "מזור", "מילת", "מרכז", "לרכז"];
+        let bare = strip_prefix(word).filter(|b| b.chars().count() >= 3)?;
+        if !matches!(word.chars().next(), Some('מ' | 'ל'))
+            || COMMON.contains(&word)
+            || self.city_keys.contains_key(word)
+            || self.city_keys.contains_key(bare)
+        {
+            return None;
+        }
+        ['א', 'ע'].iter().find_map(|lead| {
+            let (ci, _) = self.city_keys.get(&format!("{lead}{bare}"))?;
+            (self.cities[*ci].streets.len() >= 20).then(|| self.cities[*ci].name.clone())
+        })
     }
 
     /// Words of `text` that are no locality's name but sound like exactly one town's ("מפרט":
@@ -413,6 +441,12 @@ impl Gazetteer {
         let mut out: Vec<(String, String)> = Vec::new();
         for word in norm(text).split(' ').filter(|w| w.chars().count() >= 3) {
             if self.city_keys.contains_key(word) {
+                continue;
+            }
+            if let Some(name) = self.town_without_first_letter(word) {
+                if !out.iter().any(|(w, _)| w == word) {
+                    out.push((word.to_string(), name));
+                }
                 continue;
             }
             let forms = std::iter::once(word).chain(strip_prefix(word)).filter(|f| !self.city_keys.contains_key(*f));

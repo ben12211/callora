@@ -493,6 +493,7 @@ impl Engine {
             }
         }
         let was_confirming = self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
+        self.misplaced_city(transcript);
         let fields = self.by_preposition(transcript, &turn.fields);
         let fields = self.with_patterns(transcript, &fields);
         let fields = self.answer_in_place(transcript, &fields);
@@ -974,6 +975,60 @@ impl Engine {
                 }
             })
             .collect()
+    }
+
+    /// A place that is only a city, given to the wrong one of two places: the caller now says it
+    /// with the other's preposition, beside another place said with this one's ("מלעד
+    /// לירושלים" after ירושלים was taken for the pickup). It is cleared, so it is asked for
+    /// again: a live ride went out from בן זכאי 45 in ירושלים instead of אלעד.
+    fn misplaced_city(&mut self, transcript: &str) {
+        let (Some(g), Some(run)) = (&self.gazetteer, &self.state.run) else { return };
+        if !matches!(run.step, Step::Collecting { .. }) {
+            return;
+        }
+        let heard = crate::text::normalize(transcript);
+        let words: Vec<&str> = heard.split(' ').filter(|w| !w.is_empty()).collect();
+        let prefixes = |slot: &str| -> Vec<String> {
+            self.business.config.slots.get(slot).map(|c| c.strip_prefixes.clone()).unwrap_or_default()
+        };
+        let mut wrong = None;
+        for (slot, other) in [("pickup", "destination"), ("destination", "pickup")] {
+            // The city alone: as the value, or (a street still to come) as its city so far.
+            let city_said = match run.slots.get(slot).map(|s| &s.value) {
+                Some(SlotValue::Place { spoken, .. }) => match g.resolve(spoken) {
+                    Lookup::Found(a) if a.street.is_none() && a.place.is_none() => a.city_said,
+                    _ => continue,
+                },
+                Some(_) => continue,
+                None => match self.state.place_cities.get(slot) {
+                    Some(city) => city.clone(),
+                    None => continue,
+                },
+            };
+            let city = crate::text::normalize(&city_said);
+            let Some(first) = city.split(' ').next() else { continue };
+            let (own, theirs) = (prefixes(slot), prefixes(other));
+            let with =
+                |ps: &[String]| words.iter().any(|w| ps.iter().any(|p| w.strip_prefix(p.as_str()) == Some(first)));
+            // And another place said with this one's preposition ("מלעד").
+            let another = words.iter().any(|w| {
+                own.iter()
+                    .any(|p| w.strip_prefix(p.as_str()).is_some_and(|rest| rest.chars().count() >= 2 && rest != first))
+            });
+            if with(&theirs) && !with(&own) && another {
+                wrong = Some((slot.to_string(), city_said.clone(), other.to_string()));
+                break;
+            }
+        }
+        let Some((slot, city, other)) = wrong else { return };
+        tracing::info!(%slot, %city, transcript, "a city said with the other place's preposition; cleared");
+        if let Some(run) = &mut self.state.run {
+            run.clear(&slot);
+        }
+        self.state.place_cities.remove(&slot);
+        self.state.agent_notes.push(format!(
+            "{slot}: {city} is the {other} (the caller said it so); {slot} is the other place they said"
+        ));
     }
 
     /// Details the caller said in words the business's patterns know ("אנחנו שלושה", "השארתי
