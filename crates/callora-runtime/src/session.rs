@@ -70,6 +70,9 @@ const CONTINUATION_GAP: Duration = Duration::from_millis(2500);
 /// Consecutive speech recognition reconnects (with no transcript in between) before the
 /// call is handed off.
 const MAX_STT_RECONNECTS: u32 = 4;
+/// How long the transcript of an end of speech may take before recognition is taken for
+/// stuck and reconnected.
+const FINAL_OVERDUE: Duration = Duration::from_secs(6);
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -213,6 +216,10 @@ enum Ev {
     },
     /// A hangup or handoff with nothing left to say.
     TerminateNow,
+    /// The transcript asked for at this end of speech, checked for.
+    FinalOverdue {
+        sent_at: Instant,
+    },
     /// Words taken for noise, then nothing: ask the question again.
     Unheard {
         generation: u64,
@@ -707,6 +714,14 @@ impl Session {
                 if generation != self.no_words_generation || utterance != self.speech_count || self.utterance_heard {
                     return;
                 }
+                // A guess begun on partial words that never became a transcript: nothing will
+                // finish it, and it kept the call silent until the caller spoke again.
+                if self.pending_agent.as_ref().is_some_and(|p| p.speculative) {
+                    if let Some(p) = self.pending_agent.take() {
+                        tracing::info!(call = %self.info.call_sid, "a guess on words never confirmed; dropped");
+                        p.task.abort();
+                    }
+                }
                 if utterance == self.speech_count
                     && !self.utterance_heard
                     && !self.vad.is_speaking()
@@ -728,8 +743,16 @@ impl Session {
                 }
             }
             Ev::TtsFirstChunk { elapsed } => self.services.metrics.tts_first_chunk.observe(elapsed.as_millis() as u64),
+            Ev::UnfinishedDue { generation } if generation == self.unfinished_generation && self.vad.is_speaking() => {
+                // Not now, but not never: dropped, the held words blocked every reprompt.
+                let tx = self.events.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(UNFINISHED_WAIT).await;
+                    let _ = tx.send(Ev::UnfinishedDue { generation });
+                });
+            }
             Ev::UnfinishedDue { generation } => {
-                if generation == self.unfinished_generation && !self.vad.is_speaking() {
+                if generation == self.unfinished_generation {
                     if let Some(text) = self.unfinished.take() {
                         // Answer what there is; strip the trailing marks so it is not held again.
                         let text = text.trim_end_matches(['.', '…', '-', ' ']).to_string();
@@ -794,6 +817,19 @@ impl Session {
                 self.finish_agent(result, rest, usage);
             }
             Ev::TerminateNow => {}
+            Ev::FinalOverdue { sent_at } => {
+                if self.finalize_sent_at == Some(sent_at) {
+                    // Every end of speech gets a transcript, empty for noise: none means the
+                    // connection is up and dead. Without this, every answer was "the line is
+                    // noisy" until the caller hung up.
+                    tracing::warn!(call = %self.info.call_sid, "no transcript for the end of speech; reconnecting recognition");
+                    self.finalize_sent_at = None;
+                    if let Some(stt) = &self.stt {
+                        let _ = stt.input.try_send(SttInput::Close);
+                    }
+                    self.on_stt(SttEvent::Closed);
+                }
+            }
         }
     }
 }

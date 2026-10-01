@@ -13,6 +13,8 @@ impl Session {
         self.keep_audio(&frame, vad_event.as_ref());
         match vad_event {
             Some(VadEvent::SpeechStarted) => {
+                // The words of the speech before are no guess at this one.
+                self.last_partial.clear();
                 self.cancel_no_words();
                 self.silence_generation += 1;
                 self.speech_started_at = Some(Instant::now());
@@ -50,6 +52,11 @@ impl Session {
                 if let Some(stt) = &self.stt {
                     if stt.input.try_send(SttInput::Finalize).is_ok() {
                         self.finalize_sent_at = Some(now);
+                        let tx = self.events.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(FINAL_OVERDUE).await;
+                            let _ = tx.send(Ev::FinalOverdue { sent_at: now });
+                        });
                     }
                 }
                 self.speculate();

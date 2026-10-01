@@ -339,6 +339,8 @@ fn load_registry(dir: &Path) -> anyhow::Result<BusinessRegistry> {
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
+        // A backstop: nothing a call waits on may hang it (each caller has a shorter one).
+        .timeout(Duration::from_secs(30))
         .pool_idle_timeout(Duration::from_secs(90))
         .build()
         .unwrap_or_default()

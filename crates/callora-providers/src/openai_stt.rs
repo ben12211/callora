@@ -115,8 +115,9 @@ fn event(v: &Value, partial: &mut String) -> Option<SttEvent> {
         }
         "conversation.item.input_audio_transcription.completed" => {
             partial.clear();
+            // Empty too (noise): the runtime knows the recognizer answered.
             let text = v.get("transcript").and_then(Value::as_str).unwrap_or("").trim().to_string();
-            Some(SttEvent::Final(text)).filter(|e| !matches!(e, SttEvent::Final(t) if t.is_empty()))
+            Some(SttEvent::Final(text))
         }
         "conversation.item.input_audio_transcription.failed" => {
             partial.clear();
@@ -129,7 +130,7 @@ fn event(v: &Value, partial: &mut String) -> Option<SttEvent> {
             let code = v.pointer("/error/code").and_then(Value::as_str).unwrap_or("");
             // A commit with nothing in it (the VAD fired on a click): nothing was said.
             if code.contains("buffer_too_small") || code.contains("commit_empty") {
-                return None;
+                return Some(SttEvent::Final(String::new()));
             }
             Some(SttEvent::Error(format!(
                 "{code}: {}",
@@ -252,7 +253,12 @@ mod tests {
         assert!(matches!(event(&done, &mut p), Some(SttEvent::Final(t)) if t == "מירושלים."));
         assert!(p.is_empty(), "the next turn starts clean");
         let empty = json!({ "type": "error", "error": { "code": "input_audio_buffer_commit_empty", "message": "" } });
-        assert!(event(&empty, &mut p).is_none(), "a commit of nothing is not an error");
+        assert!(
+            matches!(event(&empty, &mut p), Some(SttEvent::Final(t)) if t.is_empty()),
+            "a commit of nothing is no error: an empty transcript, so the runtime knows recognition answered"
+        );
+        let nothing = json!({ "type": "conversation.item.input_audio_transcription.completed", "transcript": "" });
+        assert!(matches!(event(&nothing, &mut p), Some(SttEvent::Final(t)) if t.is_empty()));
         let bad = json!({ "type": "error", "error": { "code": "invalid_api_key", "message": "no" } });
         assert!(matches!(event(&bad, &mut p), Some(SttEvent::Error(_))));
     }

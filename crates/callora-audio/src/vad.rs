@@ -19,6 +19,10 @@ pub struct VadConfig {
     pub trigger_ms: u64,
     /// Silence after speech that ends the utterance.
     pub endpoint_ms: u64,
+    /// Longer "speech" than this is steady noise (a car, wind, a TV): it ends, and the noise
+    /// level becomes the threshold. Without it the call waited for the end of a sentence
+    /// that never came.
+    pub max_speech_ms: u64,
 }
 
 impl Default for VadConfig {
@@ -27,7 +31,7 @@ impl Default for VadConfig {
         // of the sentence. Scribe keeps every word (a word after an early commit starts the
         // next segment, and a new sentence while the agent thinks joins the utterance), so
         // 500 ms is safe and saves 200 ms on every turn.
-        Self { threshold_rms: 900.0, trigger_ms: 100, endpoint_ms: 500 }
+        Self { threshold_rms: 900.0, trigger_ms: 100, endpoint_ms: 500, max_speech_ms: 15_000 }
     }
 }
 
@@ -44,11 +48,24 @@ pub struct Vad {
     silence_ms: u64,
     speaking: bool,
     pub last_rms: f32,
+    /// The threshold now: the configured one, or above the steady noise heard.
+    threshold: f32,
+    speaking_ms: u64,
+    loudness: f64,
 }
 
 impl Vad {
     pub fn new(cfg: VadConfig) -> Self {
-        Self { cfg, speech_ms: 0, silence_ms: 0, speaking: false, last_rms: 0.0 }
+        Self {
+            cfg,
+            speech_ms: 0,
+            silence_ms: 0,
+            speaking: false,
+            last_rms: 0.0,
+            threshold: cfg.threshold_rms,
+            speaking_ms: 0,
+            loudness: 0.0,
+        }
     }
 
     pub fn is_speaking(&self) -> bool {
@@ -59,7 +76,7 @@ impl Vad {
     pub fn push(&mut self, frame: &[u8]) -> Option<VadEvent> {
         let frame_ms = (frame.len() as u64 * 1000) / 8000;
         self.last_rms = rms(frame);
-        if self.last_rms >= self.cfg.threshold_rms {
+        if self.last_rms >= self.threshold {
             self.speech_ms = (self.speech_ms + frame_ms).min(2 * self.cfg.trigger_ms);
             self.silence_ms = 0;
         } else {
@@ -68,7 +85,22 @@ impl Vad {
         }
         if !self.speaking && self.speech_ms >= self.cfg.trigger_ms {
             self.speaking = true;
+            self.speaking_ms = 0;
+            self.loudness = 0.0;
             return Some(VadEvent::SpeechStarted);
+        }
+        if self.speaking {
+            self.speaking_ms += frame_ms;
+            self.loudness += f64::from(self.last_rms) * frame_ms as f64;
+            if self.speaking_ms >= self.cfg.max_speech_ms {
+                let mean = (self.loudness / self.speaking_ms as f64) as f32;
+                self.threshold = self.threshold.max(mean * 1.2);
+                tracing::info!(threshold = self.threshold, "steady noise, not speech: the threshold goes above it");
+                self.speaking = false;
+                self.speech_ms = 0;
+                self.silence_ms = 0;
+                return Some(VadEvent::SpeechEnded);
+            }
         }
         if self.speaking && self.silence_ms >= self.cfg.endpoint_ms {
             self.speaking = false;
@@ -127,5 +159,19 @@ mod tests {
             vad.push(&quiet);
         }
         assert!(!vad.is_speaking());
+    }
+
+    #[test]
+    fn steady_noise_ends_and_raises_the_threshold() {
+        let mut vad = Vad::new(VadConfig::default());
+        let mut events = Vec::new();
+        for _ in 0..(16_000 / 20) {
+            if let Some(e) = vad.push(&loud()) {
+                events.push(e);
+            }
+        }
+        assert_eq!(events, vec![VadEvent::SpeechStarted, VadEvent::SpeechEnded], "it ends after 15 s");
+        // The same noise again is not speech any more.
+        assert!((0..100).all(|_| vad.push(&loud()).is_none()) && !vad.is_speaking());
     }
 }

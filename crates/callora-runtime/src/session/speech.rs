@@ -311,6 +311,9 @@ pub(super) fn split_for_tts(text: &str) -> Vec<String> {
     out
 }
 
+/// The longest a TTS stream may go without sending anything.
+const TTS_STALL: Duration = Duration::from_secs(5);
+
 pub(super) fn spawn_tts(
     tts: Arc<dyn Synthesizer>,
     request: TtsRequest,
@@ -322,17 +325,31 @@ pub(super) fn spawn_tts(
     use futures::StreamExt;
     tokio::spawn(async move {
         let started = Instant::now();
-        let mut stream = match tts.synthesize(request).await {
-            Ok(s) => s,
-            Err(e) => {
+        // A stream that stops sending would keep the reply "playing" for ever: nothing is
+        // asked again, "הלו?" is not answered while the agent talks, the call hangs.
+        let mut stream = match tokio::time::timeout(TTS_STALL, tts.synthesize(request)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
                 let _ = tx.send(Err(e)).await;
+                return;
+            }
+            Err(_) => {
+                let _ = tx.send(Err(anyhow::anyhow!("tts did not answer in {TTS_STALL:?}"))).await;
                 return;
             }
         };
         let mut all = Vec::new();
         let mut first = true;
         let mut listener = true;
-        while let Some(chunk) = stream.next().await {
+        loop {
+            let chunk = match tokio::time::timeout(TTS_STALL, stream.next()).await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = tx.send(Err(anyhow::anyhow!("tts stream stalled for {TTS_STALL:?}"))).await;
+                    return;
+                }
+            };
             match chunk {
                 Ok(bytes) => {
                     if first {
@@ -369,5 +386,45 @@ mod tests {
         assert_eq!(pieces.join(" "), long, "nothing is lost");
         assert!(pieces.len() >= 3, "{pieces:?}");
         assert_eq!(super::split_for_tts("לאיזה רחוב בבני ברק?"), vec!["לאיזה רחוב בבני ברק?"]);
+    }
+
+    /// A stream that sends a little and then nothing, the way a stalled provider does.
+    struct Stalls;
+
+    #[async_trait::async_trait]
+    impl callora_audio::tts::Synthesizer for Stalls {
+        async fn synthesize(&self, _: super::TtsRequest) -> anyhow::Result<callora_audio::tts::AudioStream> {
+            use futures::StreamExt;
+            let first = futures::stream::iter([Ok(bytes::Bytes::from_static(&[0x55; 160]))]);
+            Ok(first.chain(futures::stream::pending()).boxed())
+        }
+
+        fn name(&self) -> &'static str {
+            "stalls"
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stream_that_stalls_ends_instead_of_holding_the_call() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (events, _ev) = tokio::sync::mpsc::unbounded_channel();
+        let request = super::TtsRequest {
+            text: "שלום".into(),
+            voice_id: "v".into(),
+            model: "m".into(),
+            settings: callora_core::config::VoiceSettings {
+                stability: 0.5,
+                similarity_boost: 0.75,
+                style: 0.0,
+                speed: 1.0,
+            },
+            language: "he-IL".into(),
+        };
+        let cache = callora_audio::tts::TtsCache::new(4);
+        super::spawn_tts(std::sync::Arc::new(Stalls), request, "k".into(), tx, cache.clone(), events);
+        assert!(matches!(rx.recv().await, Some(Ok(_))), "what came, plays");
+        assert!(matches!(rx.recv().await, Some(Err(_))), "then the stall ends the item");
+        assert!(rx.recv().await.is_none());
+        assert!(cache.get("k").is_none(), "a broken sentence is not kept for next time");
     }
 }
