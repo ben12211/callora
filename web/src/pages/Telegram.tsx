@@ -271,7 +271,13 @@ function Connect({ account: a, onRestart }: { account: TgAccount; onRestart: () 
           <li>סרקו את הקוד. הוא מתחלף לבד כל חצי דקה.</li>
         </ol>
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">אם לחשבון יש אימות דו-שלבי, אחרי הסריקה תתבקשו להקליד כאן את הסיסמה.</p>
-        {status === "disconnected" && <p className="mt-3 text-amber-700 dark:text-amber-400">החשבון התנתק. סרקו שוב.</p>}
+        {status === "disconnected" && (
+          <p className="mt-3 text-amber-700 dark:text-amber-400">
+            {sign?.error === "telegram_ended_the_login" || a.error === "telegram_ended_the_login"
+              ? "טלגרם ניתקה את החיבור (מהטלפון: הגדרות ← מכשירים, או טלגרם עצמה). לחצו ״חבר מחדש״ וסרקו שוב."
+              : "החשבון התנתק. לחצו ״חבר מחדש״ וסרקו שוב."}
+          </p>
+        )}
         {status === "failed" && (
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <span className="text-rose-600 dark:text-rose-400">{sign?.error ? `שגיאה: ${sign.error}` : "החיבור לא עלה."}</span>

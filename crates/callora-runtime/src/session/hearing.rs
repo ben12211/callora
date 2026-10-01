@@ -265,9 +265,19 @@ impl Session {
         // "כן", "בסדר" while the details are read back: the caller listening. Neither a stop nor
         // a yes; after a read-back cut off, the read-back again.
         if self.engine.is_backchannel(&text) {
-            if self.agent_busy() {
+            let yes = self.business.affirm.find(&callora_core::text::normalize(&text)).is_some();
+            // The same read-back again (a silence's reprompt), heard to its end before: a yes
+            // over it is the answer now. A live caller said "כן. כן." and "כן" over it, both
+            // dropped, then "לא" in frustration, taken for a correction.
+            let heard_before =
+                self.read_back_heard.is_some() && self.read_back_heard == self.engine.last_question_text();
+            if self.agent_busy() && yes && heard_before {
+                tracing::info!(call = %self.info.call_sid, caller = %text, "a yes over a read-back heard before; the answer");
+                self.barge_in();
+                self.cut_read_back = false;
+            } else if self.agent_busy() {
                 tracing::info!(call = %self.info.call_sid, caller = %text, "said over the read-back; not an answer");
-                if self.business.affirm.find(&callora_core::text::normalize(&text)).is_some() {
+                if yes {
                     self.yes_over_read_back = Some((Instant::now(), text));
                 }
                 return;

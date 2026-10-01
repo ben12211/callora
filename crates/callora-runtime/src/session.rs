@@ -358,6 +358,8 @@ pub struct Session {
     last_partial: String,
     /// A yes said over the read-back, and when: taken as the answer if it came at its end.
     yes_over_read_back: Option<(Instant, String)>,
+    /// The read-back the caller has heard to its end, word for word.
+    read_back_heard: Option<String>,
     clock: Option<TurnClock>,
     /// The caller turn the live-TTS cover last played on (never two turns in a row).
     cover_turn: Option<u32>,
@@ -447,6 +449,7 @@ impl Session {
             pending_agent: None,
             last_partial: String::new(),
             yes_over_read_back: None,
+            read_back_heard: None,
             clock: None,
             cover_turn: None,
             phrase_words: Vec::new(),

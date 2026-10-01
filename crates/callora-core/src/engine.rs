@@ -2569,6 +2569,13 @@ impl Engine {
         plan
     }
 
+    /// The words of the last question said ("... לשלוח?"), to tell a read-back said again
+    /// word for word from one with something changed in it.
+    pub fn last_question_text(&self) -> Option<String> {
+        let plan = self.state.last_plan.as_ref()?;
+        plan.segments.iter().rev().find(|s| s.text.trim_end().ends_with('?')).map(|s| s.text.clone())
+    }
+
     /// The last question alone ("לאן נוסעים?", not the "סגור." said before it).
     fn last_question(&self) -> Option<SpeechPlan> {
         self.state.last_plan.as_ref().and_then(|p| {

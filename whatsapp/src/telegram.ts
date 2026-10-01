@@ -24,6 +24,17 @@ const MAX_ACCOUNTS = Number(process.env.TELEGRAM_MAX_ACCOUNTS ?? 3);
 /** How long a question may wait for its answer, at most. */
 const MAX_ASK_MS = 30_000;
 
+/** How often a signed-in account checks that Telegram still knows its login. */
+const CHECK_EVERY_MS = 60_000;
+
+/** Telegram no longer knows the login: ended from the phone (Settings > Devices), or by
+ * Telegram itself. A live account showed "ready" for an hour after this, and every question
+ * to the price bot failed as "not a contact". */
+function loginGone(e: unknown): boolean {
+  const m = e instanceof Error ? `${e.name} ${e.message}` : String(e);
+  return /AUTH_KEY_UNREGISTERED|AuthKeyUnregistered|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|AUTH_KEY_DUPLICATED/i.test(m);
+}
+
 /** Whether the server has the API id and hash Telegram requires (my.telegram.org). */
 export const telegramConfigured = API_ID > 0 && API_HASH.length > 0;
 
@@ -45,6 +56,7 @@ class Account {
   client: TelegramClient | null = null;
   private password: ((p: string) => void) | null = null;
   private abort: AbortController | null = null;
+  private check: NodeJS.Timeout | null = null;
   private generation = 0;
   private readers = new Set<(m: { id: number; from: string; text: string }) => void>();
 
@@ -132,6 +144,12 @@ class Account {
       client.addEventHandler((e: EditedMessageEvent) => deliver(e.message), new EditedMessage({}));
       this.status = "ready";
       this.error = null;
+      this.check = setInterval(() => {
+        if (!current() || this.status !== "ready") return;
+        client.invoke(new Api.updates.GetState()).catch((e: unknown) => {
+          if (current() && loginGone(e)) void this.gone();
+        });
+      }, CHECK_EVERY_MS);
       if (!this.stored.first_ready_at) {
         this.stored.first_ready_at = new Date().toISOString();
         this.onChange();
@@ -145,6 +163,26 @@ class Account {
     }
   }
 
+  /** Telegram ended the login: the account shows as disconnected, to be scanned again. */
+  async gone() {
+    log(this.stored.id, "Telegram ended the login");
+    this.generation++;
+    await this.stop();
+    await rm(this.file(), { force: true });
+    this.status = "disconnected";
+    this.me = null;
+    this.error = "telegram_ended_the_login";
+  }
+
+  /** An error of a call to Telegram: the login gone makes the account disconnected. */
+  async failed(e: unknown): Promise<never> {
+    if (loginGone(e)) {
+      await this.gone();
+      throw new NotReady("not_ready");
+    }
+    throw e;
+  }
+
   /** The two-step password, while it is asked for. */
   givePassword(password: string) {
     if (this.status !== "password" || !this.password) throw new NotAllowed("no_password_asked");
@@ -156,6 +194,8 @@ class Account {
   }
 
   async stop() {
+    if (this.check) clearInterval(this.check);
+    this.check = null;
     this.abort?.abort();
     this.abort = null;
     this.password = null;
@@ -274,8 +314,9 @@ export class TelegramAccounts {
   /** The account's chats, in the shape the WhatsApp service gives: groups, and people and
    * bots as "contacts" (a bot by its @name, which is what it is asked by). */
   async chats(id: string) {
-    const client = this.get(id).ready();
-    const dialogs = await client.getDialogs({ limit: 200 });
+    const account = this.get(id);
+    const client = account.ready();
+    const dialogs = await client.getDialogs({ limit: 200 }).catch((e: unknown) => account.failed(e));
     const groups: { id: string; name: string }[] = [];
     const contacts: { id: string; name: string; number: string; bot: boolean }[] = [];
     for (const d of dialogs) {
@@ -301,8 +342,10 @@ export class TelegramAccounts {
   }
 
   async send(id: string, chatId: string, text: string, typingMs: number) {
-    const client = this.get(id).ready();
-    const peer = await client.getInputEntity(chatId).catch(() => {
+    const account = this.get(id);
+    const client = account.ready();
+    const peer = await client.getInputEntity(chatId).catch(async (e: unknown) => {
+      if (loginGone(e)) return account.failed(e);
       throw new NotAllowed("not_a_contact");
     });
     if (typingMs > 0) {
@@ -315,6 +358,7 @@ export class TelegramAccounts {
       const m = await client.sendMessage(peer, { message: text });
       return { id: String(m.id) };
     } catch (e) {
+      if (loginGone(e)) return account.failed(e);
       log(id, "send outcome unknown", e instanceof Error ? e.message : String(e));
       throw new OutcomeUnknown("outcome_unknown");
     }
@@ -341,7 +385,8 @@ export class TelegramAccounts {
   ): Promise<{ replies: string[] }> {
     const account = this.get(id);
     const client = account.ready();
-    const entity = await client.getEntity(a.chatId).catch(() => {
+    const entity = await client.getEntity(a.chatId).catch(async (e: unknown) => {
+      if (loginGone(e)) return account.failed(e);
       throw new NotAllowed("not_a_contact");
     });
     const bot = String(entity.id);

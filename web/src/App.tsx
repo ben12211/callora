@@ -8,6 +8,7 @@ import { Overview } from "./pages/Overview";
 import { Calls } from "./pages/Calls";
 import { CallView } from "./pages/CallView";
 import { Orders } from "./pages/Orders";
+import type { TgOverview } from "./pages/Telegram";
 import { type WaOverview, WhatsApp, whatsappTrouble } from "./pages/WhatsApp";
 import { Rules } from "./pages/Rules";
 import { Settings as SettingsPage } from "./pages/Settings";
@@ -113,8 +114,11 @@ function Shell({ session, onLogout, children }: { session: Session; onLogout: ()
   const [dark, toggleTheme] = useTheme();
   const stats = useApi<Stats>("/api/stats?days=30", 60_000);
   const wa = useApi<WaOverview>("/api/whatsapp", 60_000);
+  const tg = useApi<TgOverview>("/api/telegram", 60_000);
   const verify = stats.data?.to_verify ?? 0;
-  const trouble = whatsappTrouble(wa.data) != null;
+  // A Telegram account Telegram signed out asks the price bot nothing until scanned again.
+  const tgDown = (tg.data?.accounts ?? []).some((a) => a.status === "disconnected" || a.status === "failed");
+  const trouble = whatsappTrouble(wa.data) != null || tgDown;
   const business = session.businesses[0]?.name ?? "קלורה";
 
   // A new page starts at the top, and the tab says where it is.

@@ -212,6 +212,8 @@ impl Session {
                 if let Some(after) = self.after_speech.take() {
                     return Some(self.terminate(after).await);
                 }
+                self.read_back_heard =
+                    if self.engine.context().awaiting_confirmation { self.engine.last_question_text() } else { None };
                 if let Some((at, yes)) = self.yes_over_read_back.take() {
                     if at.elapsed() < YES_AT_THE_END
                         && !self.vad.is_speaking()
