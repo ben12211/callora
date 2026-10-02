@@ -31,7 +31,7 @@ A voice stops the agent when `barge::classify` says so (see the module doc). Lis
 | `BARGE_SINGLE_WORD_MS` | `500` | Voice needed before a single word counts. |
 | `BARGE_STRONG_MS` | `500` | A loud voice this long stops the agent without words. `0` turns the rule off. |
 | `BARGE_STRONG_RMS_RATIO` | `2.5` | "Loud" = utterance mean level over this multiple of the VAD threshold. |
-| `BARGE_FINAL_MIN_VOICED_MS` | `200` | A final transcript that arrives while the agent talks stops it only with real words and this much voice; otherwise it is background speech and is ignored. `0`: any final stops it. |
+| `BARGE_FINAL_MIN_VOICED_MS` | `200` | A final transcript that arrives while the agent talks stops it only with real words and this much voice; otherwise it does not cut the agent, but is still answered once the agent has finished (words are never dropped). `0`: any final stops it. |
 | `BARGE_LEGACY` | off | `true`: any words stop the agent at once, no loud rule (the old behaviour). |
 
 ## Sentence-end protection
@@ -49,6 +49,7 @@ A live TTS sentence still arriving has an unknown end and is always cut.
 | `VAD_ENDPOINT_MS` | `500` | Silence that ends an utterance (existing). |
 | `VAD_ENDPOINT_SHORT_MS` | `350` | Used when the partial transcript is a finished short answer (≤3 words, and the call is waiting for a short answer: the read-back, "anything else?"). |
 | `VAD_ENDPOINT_LONG_MS` | `700` | Used when the partial transcript looks broken off ("…", a lone letter). |
+| `VAD_THRESHOLD_RMS` | `600` | Level (RMS, 16-bit scale) that counts as the caller's voice. Was 900: quiet callers' words sat at 600-900, so the ends of their sentences were taken for silence. |
 | `VAD_TRIGGER_MS` | `100` | Voice needed for the VAD to say speech started (existing). |
 | `AGENT_SPECULATE` | on | Start the agent on the partial transcript (existing). |
 
@@ -67,7 +68,7 @@ adaptation off.
 | `AUDIO_JOIN_PAD_MS` | `60` | Silence kept before the first sound. |
 | `AUDIO_TRIM_TAIL_PAD_MS` | `100` | Silence kept after the last sound (word endings fade out). Only the silence at the two ends is ever cut, never anything inside a sentence. |
 | `AUDIO_GAP_WARN_MS` | `120` | A hole this long inside a reply is logged as a warning. |
-| `AUDIO_GAP_IGNORE_MS` | `3000` | A longer one is a pause (a reprompt), not a hole. |
+| `AUDIO_GAP_IGNORE_MS` | `2500` | A longer one is a pause (a reprompt), not a hole. |
 
 ## Metrics (`/metrics`)
 

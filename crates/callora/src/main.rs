@@ -599,6 +599,7 @@ fn apply_voice_env(session: &mut SessionConfig) {
         };
     }
     // Loudness.
+    set!("VAD_THRESHOLD_RMS", session.vad.threshold_rms);
     set!("TTS_GAIN_DB", session.tts_gain_db);
     set!("TTS_GAIN_MAX_DB", session.tts_gain_max_db);
     set!("TTS_LIMITER_CEILING_DBFS", session.limiter_ceiling_dbfs);

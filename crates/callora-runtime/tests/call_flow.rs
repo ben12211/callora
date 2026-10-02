@@ -935,3 +935,18 @@ async fn the_recognizer_gets_every_byte_of_the_callers_audio_and_one_finalize_pe
     assert_eq!(*h.stt.audio.lock(), sent, "the recognizer heard exactly what the caller sent");
     assert_eq!(*h.stt.finalizes.lock(), 2, "one finalize for each utterance");
 }
+
+#[tokio::test]
+async fn a_transcript_that_does_not_stop_the_agent_is_still_answered_not_dropped() {
+    let (h, mut ws) = call_at_the_read_back(no_gain(), "CA81").await;
+    // A blink of voice, then its words: too little to cut the agent...
+    send_frames(&mut ws, true, 5).await;
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    h.stt.say("לא").await;
+    let (_, clears) = collect(&mut ws, Duration::from_millis(150)).await;
+    assert_eq!(clears, 0, "the agent is not cut");
+    assert_eq!(h.metrics.barge_in_suppressed.get("late_final"), 1);
+    // ...and the read-back plays on to its end (the words are handled after it, not lost).
+    let (frames, _) = collect(&mut ws, Duration::from_millis(2500)).await;
+    assert!(!frames.is_empty(), "the agent finishes what it was saying");
+}

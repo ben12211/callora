@@ -44,7 +44,8 @@ pub struct BargeConfig {
     pub strong_rms_ratio: f32,
     /// A final transcript that arrives while the agent talks stops it only when it has real
     /// words and the caller's voice lasted this long; shorter is background speech or a
-    /// late result for a blip. `0`: any final stops the agent (the old behaviour).
+    /// late result for a blip; it is then still answered, after the agent finishes. `0`: any
+    /// final stops the agent (the old behaviour).
     pub final_min_voiced_ms: u64,
 }
 
@@ -155,7 +156,7 @@ pub fn classify(cfg: &BargeConfig, i: &BargeInput) -> Option<BargeReason> {
 /// A final transcript arrived while the agent was talking: does it stop the agent? The same
 /// rules as [`classify`], except that the transcript itself is the evidence of words, so
 /// real words over `final_min_voiced_ms` of voice are enough. `None`: background speech or a
-/// blip; the agent goes on and the transcript is not answered.
+/// blip; the agent goes on (the transcript is still answered, when it has finished).
 pub fn classify_final(cfg: &BargeConfig, i: &BargeInput) -> Option<BargeReason> {
     if let Some(reason) = classify(cfg, i) {
         return Some(reason);

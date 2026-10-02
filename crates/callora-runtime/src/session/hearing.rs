@@ -374,8 +374,11 @@ impl Session {
         }
         // A transcript that arrives while the agent talks is no interruption by itself: the
         // same rules as for the voice decide, so a late result for background speech does
-        // not cut the agent. Then it is not answered either.
+        // not cut the agent.
         let mut final_barge = None;
+        // Words are never dropped: a transcript that does not stop the agent is still
+        // answered, once the agent has finished what it is saying.
+        let mut keep_talking = false;
         if self.agent_busy() && !self.protecting && self.speech_count > 0 {
             let listening = self.engine.is_listening_sound(&text);
             // "כן" to a question the call is waiting on is an answer, not a listening sound.
@@ -400,9 +403,9 @@ impl Session {
                         call = %self.info.call_sid,
                         caller = %text,
                         voiced_ms = self.voiced_ms,
-                        "transcript over the agent was not an interruption; ignored"
+                        "transcript over the agent did not stop it; answered after it finishes"
                     );
-                    return;
+                    keep_talking = true;
                 }
             }
         }
@@ -417,7 +420,7 @@ impl Session {
         // also a barge-in (the VAD may have missed a quiet caller, `speech_count == 0`).
         if let Some(reason) = final_barge {
             self.barge_in(reason);
-        } else if self.agent_busy() && !self.protecting {
+        } else if self.agent_busy() && !self.protecting && !keep_talking {
             self.barge_in(BargeReason::Final);
         }
         if let Some(c) = &mut self.clock {

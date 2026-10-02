@@ -7,7 +7,9 @@
 //! - **endpoint** (speech ended): ask the STT to finalize now instead of waiting for its
 //!   own, longer silence timeout. This is most of the speech-end → reply latency.
 //!
-//! Tuned from the legacy system: -31 dBFS threshold, and quiet frames drain the speech
+//! Tuned from the legacy system: -31 dBFS threshold (lowered to 600, -35 dBFS, after live calls
+//! showed quiet callers whose words sat at 600-900 RMS: the end of their sentences counted as
+//! silence, the utterance was cut early and the rest became a second, lost, transcript), and quiet frames drain the speech
 //! counter twice as fast as speech fills it, so clicks and breaths never add up.
 
 use crate::mulaw::rms;
@@ -31,7 +33,7 @@ impl Default for VadConfig {
         // of the sentence. Scribe keeps every word (a word after an early commit starts the
         // next segment, and a new sentence while the agent thinks joins the utterance), so
         // 500 ms is safe and saves 200 ms on every turn.
-        Self { threshold_rms: 900.0, trigger_ms: 100, endpoint_ms: 500, max_speech_ms: 15_000 }
+        Self { threshold_rms: 600.0, trigger_ms: 100, endpoint_ms: 500, max_speech_ms: 15_000 }
     }
 }
 

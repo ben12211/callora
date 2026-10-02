@@ -149,7 +149,7 @@ impl Default for SessionConfig {
             tts_rebuffer_ms: 250,
             trim_silence: Some(TrimConfig { threshold_rms: 60.0, pad_ms: 60, tail_pad_ms: 100 }),
             audio_gap_warn_ms: 120,
-            audio_gap_ignore_ms: 3000,
+            audio_gap_ignore_ms: 2500,
             sample_audio_from: Vec::new(),
         }
     }
