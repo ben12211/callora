@@ -122,10 +122,6 @@ pub struct VoiceConfig {
     /// slower than eleven_v3 ("נורא איטי, נמרח"). The library and live speech alike.
     #[serde(default = "default_tempo")]
     pub tempo: f32,
-    /// The tone for the agent's own sentences (free text, not a configured response), so
-    /// they sound like the same person as the recorded phrases. `None`: no tone tag.
-    #[serde(default)]
-    pub free_tone: Option<String>,
 }
 
 fn default_tempo() -> f32 {

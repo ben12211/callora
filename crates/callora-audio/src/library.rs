@@ -27,14 +27,7 @@ pub const FORMAT: &str = "mulaw_8000";
 /// The text for TTS with the response's tone before it ("[warmly] אהלן, איך אפשר לעזור?"): an
 /// audio tag eleven_v3 and eleven_v4 follow and do not say.
 pub fn with_tone(b: &Business, response_id: &str, spoken: String) -> String {
-    // A configured response has its own tone (or none); anything else is the agent's own
-    // words, which take the voice's `free_tone`. One rule for the library, cached and live
-    // speech alike: they all come through here.
-    let tone = match b.response(response_id) {
-        Some(r) => r.tone.as_deref(),
-        None => b.config.voice.free_tone.as_deref(),
-    };
-    match tone.filter(|t| !t.trim().is_empty()) {
+    match b.response(response_id).and_then(|r| r.tone.as_deref()).filter(|t| !t.trim().is_empty()) {
         Some(tone) => format!("[{}] {spoken}", tone.trim()),
         None => spoken,
     }
@@ -284,24 +277,16 @@ impl LibraryBuilder<'_> {
 mod tone_tests {
     use super::*;
 
-    fn taxi() -> Business {
-        Business::from_json(include_str!("../../../businesses/taxi.json"), "taxi.json", &|_| None).expect("taxi")
-    }
-
     #[test]
     fn a_tone_goes_to_the_voice_before_the_words() {
-        let b = taxi();
-        assert_eq!(with_tone(&b, "greeting", "אהלן".into()), "[warm, casual, conversational] אהלן");
-        assert_eq!(with_tone(&b, "ride_failed", "אוי".into()), "[calm, concerned, helpful] אוי");
-        assert_eq!(with_tone(&b, "filler_hmm", "אממ...".into()), "אממ...", "no tone, no tag");
-    }
-
-    #[test]
-    fn the_agents_own_words_take_the_voices_free_tone() {
-        let b = taxi();
-        assert_eq!(with_tone(&b, "agent", "סבבה.".into()), "[attentive, conversational] סבבה.");
-        let mut plain = taxi();
-        plain.config.voice.free_tone = None;
-        assert_eq!(with_tone(&plain, "agent", "סבבה.".into()), "סבבה.", "without a free tone: no tag");
+        let text = include_str!("../../../businesses/taxi.json").replacen(
+            "\"greeting\": {\"variants\": [",
+            "\"greeting\": {\"tone\": \"warmly\", \"variants\": [",
+            1,
+        );
+        assert!(text.contains("\"tone\": \"warmly\""));
+        let b = Business::from_json(&text, "taxi.json", &|_| None).expect("taxi");
+        assert_eq!(with_tone(&b, "greeting", "אהלן".into()), "[warmly] אהלן");
+        assert_eq!(with_tone(&b, "ask_route", "מאיפה לאן?".into()), "מאיפה לאן?", "no tone, no tag");
     }
 }
