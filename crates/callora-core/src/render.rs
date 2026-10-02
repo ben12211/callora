@@ -32,6 +32,11 @@ pub struct SpeechSegment {
     pub response_id: String,
     pub delivery: String,
     pub origin: SegmentOrigin,
+    /// It comes from its response's `prefix` (an acknowledgement such as "סגור."). Said
+    /// after other speech of the same turn it is left out: "…והנהג יגיד את המחיר. מעולה.
+    /// שלושה נוסעים…" was an "ok" to bad news.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prefix: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,13 +61,17 @@ impl SpeechPlan {
                 response_id: "agent".into(),
                 delivery: delivery.to_string(),
                 origin: SegmentOrigin::Dynamic,
+                prefix: false,
             }],
             gain_db,
         }
     }
 
     pub fn then(mut self, other: SpeechPlan) -> Self {
-        self.segments.extend(other.segments);
+        // A plan that begins with an acknowledgement does not repeat it after something
+        // already said in this turn.
+        let after_speech = !self.segments.is_empty();
+        self.segments.extend(other.segments.into_iter().skip_while(|s| after_speech && s.prefix));
         self
     }
 
@@ -261,7 +270,7 @@ impl Renderer<'_> {
         let mut plan = SpeechPlan { segments: Vec::new(), gain_db: self.gain_db };
         if let Some(prefix) = &response.prefix {
             if let Some(p) = self.render(prefix, ctx, chooser, last_variant) {
-                plan.segments.extend(p.segments);
+                plan.segments.extend(p.segments.into_iter().map(|s| SpeechSegment { prefix: true, ..s }));
             }
         }
         let n = response.variants.len();
@@ -276,6 +285,7 @@ impl Renderer<'_> {
                     response_id: response_id.to_string(),
                     delivery: self.delivery_for(response),
                     origin,
+                    prefix: false,
                 });
                 return Some(plan);
             }
@@ -352,4 +362,34 @@ pub fn library_entries(b: &Business) -> Vec<LibraryEntry> {
         }
     }
     out.into_iter().collect()
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    fn seg(id: &str, text: &str) -> SpeechSegment {
+        SpeechSegment {
+            text: text.into(),
+            response_id: id.into(),
+            delivery: "normal".into(),
+            origin: SegmentOrigin::Template,
+            prefix: id == "ack",
+        }
+    }
+
+    fn with_ack() -> SpeechPlan {
+        SpeechPlan { segments: vec![seg("ack", "מעולה."), seg("confirm_ride", "לשלוח?")], gain_db: 0.0 }
+    }
+
+    #[test]
+    fn an_acknowledgement_is_not_said_after_other_speech_of_the_turn() {
+        let bad_news = SpeechPlan { segments: vec![seg("price_failed", "אין לי מחיר.")], gain_db: 0.0 };
+        assert_eq!(bad_news.clone().then(with_ack()).text(), "אין לי מחיר. לשלוח?");
+        // On its own, or first, it is kept.
+        assert_eq!(SpeechPlan::empty().then(with_ack()).text(), "מעולה. לשלוח?");
+        // A question taken out of a plan is never mistaken for its acknowledgement.
+        let question = SpeechPlan { segments: vec![seg("confirm_ride", "לשלוח?")], gain_db: 0.0 };
+        assert_eq!(bad_news.clone().then(question).text(), "אין לי מחיר. לשלוח?");
+    }
 }

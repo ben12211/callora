@@ -230,7 +230,7 @@ fn wait_says_so_changes_nothing_and_waits_longer() {
     assert_eq!(call.engine.silence_after_ms(), 15_000, "a longer wait before \"שומעים אותי?\"");
     let d = call.engine.on_silence();
     assert!(spoken(&d).contains("הלו"), "{}", spoken(&d));
-    assert_eq!(call.engine.silence_after_ms(), 5_000, "then the usual wait");
+    assert_eq!(call.engine.silence_after_ms(), 3_000, "then the usual wait");
 }
 
 #[test]
@@ -2083,7 +2083,7 @@ fn a_silent_caller_with_details_given_is_waited_for() {
     for _ in 0..2 {
         assert!(spoken(&call.engine.on_silence()).contains("הלו"));
     }
-    assert_eq!(call.engine.silence_after_ms(), 5_000);
+    assert_eq!(call.engine.silence_after_ms(), 3_000);
     for _ in 0..2 {
         let d = call.engine.on_silence();
         assert!(spoken(&d).contains("אני") && !d.iter().any(|d| matches!(d, Directive::Hangup)), "{}", spoken(&d));
