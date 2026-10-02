@@ -599,7 +599,7 @@
     "after_action_failures": 2
   },
   "silence": {
-    "reprompt_after_ms": 5000,
+    "reprompt_after_ms": 3000,
     "max_reprompts": 2,
     "response": "still_there",
     "patient_after_ms": 15000,

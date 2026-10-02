@@ -40,6 +40,8 @@ const TOKEN: &str = "test-auth-token";
 struct ScriptedStt {
     events: Arc<Mutex<Option<mpsc::Sender<SttEvent>>>>,
     finalizes: Arc<Mutex<usize>>,
+    /// Every inbound audio byte the session handed to the recognizer.
+    audio: Arc<Mutex<Vec<u8>>>,
 }
 
 #[async_trait]
@@ -49,10 +51,13 @@ impl SpeechToText for ScriptedStt {
         let (ev_tx, ev_rx) = mpsc::channel(16);
         *self.events.lock() = Some(ev_tx);
         let finalizes = self.finalizes.clone();
+        let audio = self.audio.clone();
         tokio::spawn(async move {
             while let Some(i) = in_rx.recv().await {
-                if i == SttInput::Finalize {
-                    *finalizes.lock() += 1;
+                match i {
+                    SttInput::Finalize => *finalizes.lock() += 1,
+                    SttInput::Audio(a) => audio.lock().extend_from_slice(&a),
+                    _ => {}
                 }
             }
         });
@@ -905,4 +910,28 @@ async fn consecutive_segments_of_one_reply_play_back_to_back() {
     let m = h.metrics.render();
     assert!(!m.contains("callora_audio_gaps_total{"), "no silence over the warning size: {m}");
     assert!(h.metrics.audio_gap.count() == 0 || m.contains("callora_audio_gap_ms_bucket"), "{m}");
+}
+
+#[tokio::test]
+async fn the_recognizer_gets_every_byte_of_the_callers_audio_and_one_finalize_per_utterance() {
+    // The caller talks over nothing and then over the agent: nothing the voice changes
+    // (gain, barge-in, endpoint, trimming) may touch what the recognizer hears.
+    let h = start_server_cfg(None, SessionConfig::default()).await;
+    let mut ws = open_call(&h, "CA80").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    let mut sent = Vec::new();
+    for (loud, n) in [(true, 25usize), (false, 40), (true, 25), (false, 40)] {
+        for _ in 0..n {
+            let f = if loud { loud_frame() } else { quiet_frame() };
+            let v: Value = serde_json::from_str(&f).unwrap();
+            sent.extend(
+                base64::engine::general_purpose::STANDARD.decode(v["media"]["payload"].as_str().unwrap()).unwrap(),
+            );
+            ws.send(Message::Text(f.into())).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(*h.stt.audio.lock(), sent, "the recognizer heard exactly what the caller sent");
+    assert_eq!(*h.stt.finalizes.lock(), 2, "one finalize for each utterance");
 }

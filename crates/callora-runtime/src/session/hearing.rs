@@ -61,8 +61,9 @@ impl Session {
                 let speech_ms = self.vad.speaking_ms().saturating_sub(self.vad.silence_ms());
                 self.services.metrics.vad_endpoint.observe(waited.as_millis() as u64);
                 self.services.metrics.caller_speech.observe(speech_ms);
-                tracing::debug!(
+                tracing::info!(
                     call = %self.info.call_sid,
+                    stt_connected = self.stt.is_some(),
                     speech_ms,
                     endpoint_ms = waited.as_millis() as u64,
                     rms_mean = self.vad.mean_rms(),
