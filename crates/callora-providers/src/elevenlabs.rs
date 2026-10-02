@@ -25,6 +25,13 @@ impl ElevenLabs {
     }
 }
 
+/// The stability actually sent for a model. `eleven_v3` accepts only three presets
+/// (creative 0.0 / natural 0.5 / robust 1.0), so 0.9 and 1.0 are the same voice there and
+/// 0.5 is the next step down; the models in use now (`eleven_v4_turbo`) take the value as is.
+pub fn effective_stability(model: &str, stability: f32) -> f32 {
+    stability_for(model, stability)
+}
+
 /// `eleven_v3` accepts only three stability presets (creative / natural / robust).
 fn stability_for(model: &str, stability: f32) -> f32 {
     if model.starts_with("eleven_v3") {
@@ -55,7 +62,7 @@ pub fn request_body(req: &TtsRequest) -> serde_json::Value {
             "similarity_boost": s.similarity_boost,
             "style": s.style,
             "speed": s.speed,
-            "use_speaker_boost": true,
+            "use_speaker_boost": s.speaker_boost,
         },
     });
     if let Some(code) = language_code(&req.model, &req.language) {
@@ -103,7 +110,13 @@ mod tests {
             text: "שלום".into(),
             voice_id: "v".into(),
             model: model.into(),
-            settings: VoiceSettings { stability: 0.35, similarity_boost: 0.75, style: 0.0, speed: 1.0 },
+            settings: VoiceSettings {
+                stability: 0.35,
+                similarity_boost: 0.75,
+                style: 0.0,
+                speed: 1.0,
+                speaker_boost: true,
+            },
             language: "he-IL".into(),
         }
     }
@@ -120,5 +133,28 @@ mod tests {
         let b = request_body(&req("eleven_flash_v2_5"));
         assert_eq!(b["language_code"], "he");
         assert!((b["voice_settings"]["stability"].as_f64().unwrap() - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_high_stability_and_natural_presets_stay_different_on_v3() {
+        // 0.9 snaps to the robust preset, 0.5 is natural: the A/B compares two real voices.
+        assert_eq!(effective_stability("eleven_v3", 0.9), 1.0);
+        assert_eq!(effective_stability("eleven_v3", 0.5), 0.5);
+        // The turbo model is continuous: 0.9 stays 0.9.
+        assert!((effective_stability("eleven_v4_turbo", 0.9) - 0.9).abs() < 1e-6);
+        assert!((effective_stability("eleven_v4_turbo", 0.55) - 0.55).abs() < 1e-6);
+    }
+
+    #[test]
+    fn speaker_boost_is_sent_as_configured_and_on_by_default() {
+        let mut r = req("eleven_v4_turbo");
+        assert_eq!(request_body(&r)["voice_settings"]["use_speaker_boost"], true);
+        r.settings.speaker_boost = false;
+        assert_eq!(request_body(&r)["voice_settings"]["use_speaker_boost"], false);
+        // A saved setting without the field (every existing library) means boost on.
+        let s: VoiceSettings =
+            serde_json::from_str(r#"{"stability":0.9,"similarity_boost":0.75,"speed":1.0}"#).unwrap();
+        assert!(s.speaker_boost);
+        assert!(!serde_json::to_string(&s).unwrap().contains("speaker_boost"), "the library manifest is unchanged");
     }
 }

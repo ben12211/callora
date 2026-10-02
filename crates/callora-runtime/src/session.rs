@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use callora_audio::library::VoiceLibrary;
-use callora_audio::playout::{OutFrame, PlayItem, Playout, PlayoutEvent, Source};
+use callora_audio::playout::{OutFrame, PlayItem, Playout, PlayoutConfig, PlayoutEvent, Source, TrimConfig};
 use callora_audio::tts::{Synthesizer, TtsCache, TtsRequest};
 use callora_audio::vad::{Vad, VadConfig, VadEvent};
 use callora_core::agent::{self, AgentAction, SayStream};
@@ -32,6 +32,7 @@ use callora_core::speech::prepare_for_tts;
 use callora_core::state::Speaker;
 use callora_core::understanding::{fast_path, merge, Understanding};
 
+use crate::barge::{classify, classify_final, suppressed_label, BargeConfig, BargeInput, BargeReason, Phase};
 use crate::metrics::Metrics;
 use crate::ports::{
     ActionRunner, CallInfo, CallRecord, CallStore, LanguageModel, SpeechToText, SttEvent, SttInput, SttSession,
@@ -52,14 +53,9 @@ const UNFINISHED_WAIT: Duration = Duration::from_millis(1200);
 /// live call waited 11 seconds in silence after its "שלום" (likely "שלוש") was dropped.
 const UNHEARD_WAIT: Duration = Duration::from_millis(2000);
 
-/// How long the caller's voice must go on over the agent before it stops, unless words come
-/// first: a cough, a car horn or the TV cut the agent off mid-question in live calls. 450 ms
-/// was a "הלו" over the greeting, which then stopped mid-sentence.
-const BARGE_CONFIRM: Duration = Duration::from_millis(900);
-/// The same over the greeting, when callers say "הלו", "כן?" as the line opens.
-const BARGE_CONFIRM_GREETING: Duration = Duration::from_millis(1500);
-/// The same during a read-back, where "כן", "אהה" are the caller listening.
-const BARGE_CONFIRM_READ_BACK: Duration = Duration::from_millis(1200);
+// How long the caller's voice must go on over the agent before it stops lives in
+// `crate::barge::BargeConfig`: a cough, a car horn or the TV cut the agent off mid-question
+// in live calls, and 450 ms was a "הלו" over the greeting, which then stopped mid-sentence.
 /// After speech with no words at all (noise the recognizer returned nothing for), how long
 /// before the question is asked again: otherwise nothing is said until the caller speaks.
 const NO_WORDS_WAIT: Duration = Duration::from_millis(2000);
@@ -92,7 +88,38 @@ pub struct SessionConfig {
     /// Start the agent on the recognizer's partial text at the end of speech. Off by default:
     /// on live calls the partial rarely matched the final transcript (1 turn in ~15), and
     /// every miss spends a full request against the account's tokens-per-minute limit.
+    ///
+    /// (`SessionConfig::default()` leaves it off; the `callora` binary turns it on unless
+    /// `AGENT_SPECULATE=false`.)
     pub agent_speculate: bool,
+    /// Gain added to everything the agent says, in dB (library clips, cached and live TTS).
+    /// 0 plays the audio untouched. The caller's "speak louder" request adds to it.
+    pub tts_gain_db: f32,
+    /// The most gain in total, base plus "speak louder".
+    pub tts_gain_max_db: f32,
+    /// The loudest the output may be after gain (dBFS); the limiter keeps it under.
+    pub limiter_ceiling_dbfs: f32,
+    /// What decides that the caller's voice is an interruption.
+    pub barge: BargeConfig,
+    /// A sentence with at most this much left to play is let finish when the caller
+    /// interrupts. 0 cuts at once, as before.
+    pub sentence_end_protect_ms: u64,
+    /// The silence that ends an utterance when the caller has plainly finished a short
+    /// answer, and when the sentence sounds unfinished. Equal to `vad.endpoint_ms`: no
+    /// adaptation.
+    pub endpoint_short_ms: u64,
+    pub endpoint_long_ms: u64,
+    /// Speech a live TTS sentence buffers before it starts: the first of a reply, and the
+    /// ones that follow other audio of the same reply.
+    pub tts_start_buffer_ms: u32,
+    pub tts_continuation_buffer_ms: u32,
+    pub tts_rebuffer_ms: u32,
+    /// Silence at the ends of a sentence is cut to this much. `None`: audio plays as is.
+    pub trim_silence: Option<TrimConfig>,
+    /// A silence this long between two pieces of one reply is logged as a warning.
+    pub audio_gap_warn_ms: u64,
+    /// Longer than this is a pause (a reprompt, a turn), not a hole in a reply.
+    pub audio_gap_ignore_ms: u64,
     /// Callers (E.164) whose utterances are kept as audio, to compare recognizers. Empty:
     /// no audio is kept.
     pub sample_audio_from: Vec<String>,
@@ -108,6 +135,21 @@ impl Default for SessionConfig {
             dynamic_model: None,
             stt_buffer_frames: 150,
             agent_speculate: false,
+            // +4 dB: measured nothing yet on live calls; the limiter makes it safe, and a
+            // business that plays too loud turns it down with TTS_GAIN_DB.
+            tts_gain_db: 4.0,
+            tts_gain_max_db: 12.0,
+            limiter_ceiling_dbfs: -1.5,
+            barge: BargeConfig::default(),
+            sentence_end_protect_ms: 400,
+            endpoint_short_ms: 350,
+            endpoint_long_ms: 700,
+            tts_start_buffer_ms: 250,
+            tts_continuation_buffer_ms: 120,
+            tts_rebuffer_ms: 250,
+            trim_silence: Some(TrimConfig { threshold_rms: 60.0, pad_ms: 60, tail_pad_ms: 100 }),
+            audio_gap_warn_ms: 120,
+            audio_gap_ignore_ms: 3000,
             sample_audio_from: Vec::new(),
         }
     }
@@ -283,8 +325,16 @@ struct PendingAgent {
 /// Where one reply's time went, from the end of the caller's speech to the first audio.
 struct TurnClock {
     speech_end: Instant,
+    /// When the caller's last sound was (the VAD ends an utterance after the endpoint
+    /// silence): `speech_end` minus the silence waited.
+    voice_end: Instant,
+    /// How long the caller spoke, and how loud (mean and peak RMS).
+    speech_ms: u64,
+    rms_mean: f32,
+    rms_peak: f32,
     final_at: Option<Instant>,
     agent_first: Option<Instant>,
+    tts_first_byte: Option<Instant>,
     speculative_hit: bool,
     audio: &'static str,
 }
@@ -320,11 +370,21 @@ pub struct Session {
     /// The route whose price list was asked ahead of the caller.
     priced: Option<(String, String)>,
     barge_in_started: Option<Instant>,
+    /// A sentence nearly over was let finish after an interruption (until the playout idles).
+    protecting: bool,
+    /// Why the voice over the agent has not stopped it yet, for the metric.
+    barge_hint: &'static str,
+    /// The caller utterance count at the last audio of the agent's: a gap with the caller
+    /// speaking in between is a turn, not a hole in a reply.
+    audio_speech_count: u64,
     /// The agent was cut off and no real utterance has followed yet.
     interrupted: bool,
     /// The caller's voice began over the agent, which goes on until words (or a long enough
     /// voice) show it is not noise.
     barge_pending: bool,
+    /// What the recognizer has heard of the voice over the agent: real words, and whether it
+    /// is only a listening sound.
+    barge_words: (usize, bool),
     /// Audio of the current utterance so far, in ms (8 kHz μ-law: 8 bytes a millisecond).
     voiced_ms: u64,
     /// A read-back was cut off: a "yes" now was said without hearing all of it.
@@ -394,7 +454,18 @@ impl Session {
 
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
         let (pl_tx, mut pl_rx) = mpsc::unbounded_channel();
-        let (playout, playout_task) = Playout::spawn(outbound, pl_tx, cfg.lead_frames);
+        let (playout, playout_task) = Playout::spawn_with(
+            outbound,
+            pl_tx,
+            PlayoutConfig {
+                lead_frames: cfg.lead_frames,
+                limiter_ceiling_dbfs: cfg.limiter_ceiling_dbfs,
+                start_buffer_ms: cfg.tts_start_buffer_ms,
+                continuation_buffer_ms: cfg.tts_continuation_buffer_ms,
+                rebuffer_ms: cfg.tts_rebuffer_ms,
+                trim: cfg.trim_silence,
+            },
+        );
         let seed = info.call_id.as_u128() as u64;
         let mut engine = Engine::new(business.clone(), seed);
         engine.set_gazetteer(services.gazetteer.clone());
@@ -426,8 +497,12 @@ impl Session {
             overlap: false,
             priced: None,
             barge_in_started: None,
+            protecting: false,
+            barge_hint: "noise",
+            audio_speech_count: 0,
             interrupted: false,
             barge_pending: false,
+            barge_words: (0, false),
             voiced_ms: 0,
             cut_read_back: false,
             speech_count: 0,
@@ -751,7 +826,12 @@ impl Session {
                     self.arm_no_words();
                 }
             }
-            Ev::TtsFirstChunk { elapsed } => self.services.metrics.tts_first_chunk.observe(elapsed.as_millis() as u64),
+            Ev::TtsFirstChunk { elapsed } => {
+                self.services.metrics.tts_first_chunk.observe(elapsed.as_millis() as u64);
+                if let Some(c) = &mut self.clock {
+                    c.tts_first_byte.get_or_insert_with(Instant::now);
+                }
+            }
             Ev::UnfinishedDue { generation } if generation == self.unfinished_generation && self.vad.is_speaking() => {
                 // Not now, but not never: dropped, the held words blocked every reprompt.
                 let tx = self.events.clone();

@@ -33,6 +33,9 @@ impl TtsRequest {
             "{}\u{1f}{}\u{1f}{}\u{1f}{:.3}/{:.3}/{:.3}/{:.3}\u{1f}{}",
             self.voice_id, self.model, self.language, s.stability, s.similarity_boost, s.style, s.speed, self.text
         ));
+        if !s.speaker_boost {
+            h.update(b"|no-boost");
+        }
         hex::encode(&h.finalize()[..16])
     }
 }

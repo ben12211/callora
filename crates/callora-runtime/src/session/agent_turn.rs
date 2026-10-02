@@ -390,7 +390,10 @@ impl Session {
         let text = plan.text();
         let recorded = plan.segments.iter().all(|s| self.library.get_loose(&s.delivery, &s.text).is_some());
         if let Some(c) = &mut self.clock {
-            c.agent_first.get_or_insert_with(Instant::now);
+            if c.agent_first.is_none() {
+                c.agent_first = Some(Instant::now());
+                self.services.metrics.agent_first.observe(c.speech_end.elapsed().as_millis() as u64);
+            }
             if c.audio.is_empty() {
                 c.audio = if recorded { "recorded" } else { "live tts" };
             }

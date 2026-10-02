@@ -183,6 +183,7 @@ impl Session {
         match e {
             PlayoutEvent::Started { at, .. } => {
                 self.speaking = true;
+                self.audio_speech_count = self.speech_count;
                 if let Some(t) = self.speech_ended_at.take() {
                     self.services.metrics.response_latency.observe(at.saturating_duration_since(t).as_millis() as u64);
                 }
@@ -192,23 +193,61 @@ impl Session {
                     tracing::info!(
                         call = %self.info.call_sid,
                         stt_ms = ms(c.speech_end, final_at),
+                        endpoint_ms = ms(c.voice_end, c.speech_end),
+                        caller_speech_ms = c.speech_ms,
+                        caller_rms_mean = c.rms_mean,
+                        caller_rms_peak = c.rms_peak,
                         agent_first_words_ms = c.agent_first.map(|a| ms(c.speech_end, a)),
+                        tts_first_byte_ms = c.tts_first_byte.map(|a| ms(c.speech_end, a)),
                         speculative_hit = c.speculative_hit,
                         audio = c.audio,
                         reply_ms = ms(c.speech_end, at),
+                        reply_from_voice_end_ms = ms(c.voice_end, at),
                         "turn timing (from the end of the caller's speech)"
                     );
                 }
             }
-            PlayoutEvent::Cancelled { ids } => {
+            PlayoutEvent::Cancelled { ids, remaining_ms } => {
                 self.queued_items = self.queued_items.saturating_sub(ids.len());
                 if let Some(t) = self.barge_in_started.take() {
                     let detect = self.cfg.vad.trigger_ms;
                     self.services.metrics.barge_in_latency.observe(detect + t.elapsed().as_millis() as u64);
+                    self.services.metrics.barge_in_remaining.observe(remaining_ms);
+                    tracing::info!(call = %self.info.call_sid, remaining_ms, dropped = ids.len(), "agent audio cut by the interruption");
+                }
+            }
+            PlayoutEvent::Protected { id, remaining_ms } => {
+                self.protecting = true;
+                let m = &self.services.metrics;
+                m.sentence_end_protected_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                m.barge_in_remaining.observe(remaining_ms);
+                if let Some(t) = self.barge_in_started.take() {
+                    m.barge_in_latency.observe(self.cfg.vad.trigger_ms + t.elapsed().as_millis() as u64);
+                }
+                tracing::info!(
+                    call = %self.info.call_sid,
+                    item = id,
+                    remaining_ms,
+                    "interrupted near the end of the sentence: it plays to the end"
+                );
+            }
+            PlayoutEvent::Gap { id, ms, seam } => {
+                // Between turns (the caller spoke since the agent's last audio) and long
+                // pauses (a reprompt) are not holes in a reply.
+                let in_reply = self.speech_count == self.audio_speech_count && ms <= self.cfg.audio_gap_ignore_ms;
+                self.audio_speech_count = self.speech_count;
+                if in_reply {
+                    self.services.metrics.audio_gap.observe(ms);
+                    if ms >= self.cfg.audio_gap_warn_ms {
+                        let kind = if seam { "seam" } else { "underrun" };
+                        self.services.metrics.audio_gaps.inc(kind);
+                        tracing::warn!(call = %self.info.call_sid, item = id, ms, kind, "silence inside the agent's reply");
+                    }
                 }
             }
             PlayoutEvent::Idle => {
                 self.speaking = false;
+                self.protecting = false;
                 if let Some(after) = self.after_speech.take() {
                     return Some(self.terminate(after).await);
                 }
@@ -236,7 +275,11 @@ impl Session {
         self.queued_items > 0
     }
 
-    pub(super) fn enqueue(&mut self, item: PlayItem) {
+    pub(super) fn enqueue(&mut self, mut item: PlayItem) {
+        // The one place gain is added: the library, cached and live speech all come through.
+        // The base gain and the caller's "speak louder" together stay under the maximum, and
+        // the playout's limiter keeps the peaks under the ceiling.
+        item.gain_db = (item.gain_db + self.cfg.tts_gain_db).min(self.cfg.tts_gain_max_db.max(item.gain_db));
         self.queued_items += 1;
         self.playout.enqueue(item);
     }
@@ -444,6 +487,7 @@ mod tests {
                 similarity_boost: 0.75,
                 style: 0.0,
                 speed: 1.0,
+                speaker_boost: true,
             },
             language: "he-IL".into(),
         };

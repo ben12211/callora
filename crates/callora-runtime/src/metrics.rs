@@ -47,6 +47,36 @@ impl Histogram {
     }
 }
 
+/// A counter split by one label (`reason`, `kind`): barge-ins by what stopped the agent.
+#[derive(Default)]
+pub struct LabeledCounter {
+    values: Mutex<BTreeMap<&'static str, u64>>,
+}
+
+impl LabeledCounter {
+    pub fn inc(&self, label: &'static str) {
+        *self.values.lock().entry(label).or_default() += 1;
+    }
+
+    pub fn get(&self, label: &str) -> u64 {
+        self.values.lock().get(label).copied().unwrap_or(0)
+    }
+
+    fn render(&self, name: &str, help: &str, key: &str, out: &mut String) {
+        out.push_str(&format!(
+            "# HELP {name} {help}
+# TYPE {name} counter
+"
+        ));
+        for (label, n) in self.values.lock().iter() {
+            out.push_str(&format!(
+                "{name}{{{key}=\"{label}\"}} {n}
+"
+            ));
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Metrics {
     pub calls_active: AtomicU64,
@@ -66,6 +96,24 @@ pub struct Metrics {
     pub stt_final: Histogram,
     pub tts_first_chunk: Histogram,
     pub action_latency: Histogram,
+    /// Caller stopped speaking → the agent's first decision (token or phrase).
+    pub agent_first: Histogram,
+    /// Silence the VAD waited after the caller's last sound before ending the utterance.
+    pub vad_endpoint: Histogram,
+    /// How long the caller's utterances were.
+    pub caller_speech: Histogram,
+    /// Silence the caller heard between two pieces of one reply.
+    pub audio_gap: Histogram,
+    /// Agent audio still to play when the caller interrupted it.
+    pub barge_in_remaining: Histogram,
+    /// Interruptions by what stopped the agent (`words`, `voiced_duration`, ...).
+    pub barge_in_reasons: LabeledCounter,
+    /// Voice over the agent that did not stop it (`noise`, `backchannel`, `short`).
+    pub barge_in_suppressed: LabeledCounter,
+    /// Gaps over the warning threshold (`seam` between items, `underrun` inside one).
+    pub audio_gaps: LabeledCounter,
+    /// Interruptions that let the agent finish a nearly finished sentence.
+    pub sentence_end_protected_total: AtomicU64,
     /// Audio segments by source: cached / template / tts.
     segments: Mutex<BTreeMap<&'static str, u64>>,
 }
@@ -130,6 +178,41 @@ impl Metrics {
         self.stt_final.render("callora_stt_final_ms", "End of speech to final transcript.", "", &mut out);
         self.tts_first_chunk.render("callora_tts_first_chunk_ms", "Dynamic TTS time to first audio.", "", &mut out);
         self.action_latency.render("callora_action_latency_ms", "Business action latency.", "", &mut out);
+        self.agent_first.render(
+            "callora_agent_first_ms",
+            "Caller speech end to the agent's first decision.",
+            "",
+            &mut out,
+        );
+        self.vad_endpoint.render("callora_vad_endpoint_ms", "Silence waited to end an utterance.", "", &mut out);
+        self.caller_speech.render("callora_caller_speech_ms", "Length of the caller's utterances.", "", &mut out);
+        self.audio_gap.render("callora_audio_gap_ms", "Silence between audio of one reply.", "", &mut out);
+        self.barge_in_remaining.render(
+            "callora_barge_in_remaining_ms",
+            "Agent audio left to play when interrupted.",
+            "",
+            &mut out,
+        );
+        self.barge_in_reasons.render(
+            "callora_barge_in_reason_total",
+            "Interruptions by what stopped the agent.",
+            "reason",
+            &mut out,
+        );
+        self.barge_in_suppressed.render(
+            "callora_barge_in_suppressed_total",
+            "Voice over the agent that did not stop it.",
+            "reason",
+            &mut out,
+        );
+        self.audio_gaps.render("callora_audio_gaps_total", "Audio gaps over the warning threshold.", "kind", &mut out);
+        g(
+            &mut out,
+            "callora_sentence_end_protected_total",
+            "Interruptions that let a nearly finished sentence end.",
+            "counter",
+            &self.sentence_end_protected_total,
+        );
         out
     }
 }

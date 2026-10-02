@@ -153,6 +153,28 @@ enum LibraryCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Synthesize the same sentences with different voice settings, to listen and compare
+    /// (`stability`, `style`, speaker boost), as a caller would hear them (tempo and gain
+    /// applied). Writes WAV files and an `index.html` of players. Calls ElevenLabs.
+    Ab {
+        #[arg(long)]
+        business: String,
+        #[arg(long, default_value = "voice-ab")]
+        out: PathBuf,
+        /// Model to synthesize with; the business's dynamic model when omitted.
+        #[arg(long)]
+        model: Option<String>,
+        /// `name=stability[,style[,boost]]`, repeatable. Without any: `current` (the
+        /// business's settings), `natural` (stability 0.5) and `expressive` (0.5, style 0.25).
+        #[arg(long = "preset")]
+        presets: Vec<String>,
+        /// Sentences per preset, taken from the business's responses.
+        #[arg(long, default_value_t = 6)]
+        sentences: usize,
+        /// Gain applied to what is written, as on a call.
+        #[arg(long)]
+        gain_db: Option<f32>,
+    },
     /// Show how much of each business's library exists.
     Status {
         #[arg(long, env = "AUDIO_LIBRARY_DIR", default_value = "voice-library")]
@@ -459,6 +481,166 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// The voice presets to compare: `name=stability[,style[,boost]]`, applied over the
+/// business's settings.
+fn parse_presets(
+    specs: &[String],
+    base: callora_core::config::VoiceSettings,
+) -> anyhow::Result<Vec<(String, callora_core::config::VoiceSettings)>> {
+    if specs.is_empty() {
+        let natural = callora_core::config::VoiceSettings { stability: 0.5, ..base };
+        return Ok(vec![
+            ("current".into(), base),
+            ("natural".into(), natural),
+            ("expressive".into(), callora_core::config::VoiceSettings { style: 0.25, ..natural }),
+        ]);
+    }
+    specs
+        .iter()
+        .map(|spec| {
+            let (name, values) = spec.split_once('=').context("a preset is `name=stability[,style[,boost]]`")?;
+            let mut it = values.split(',');
+            let mut settings = base;
+            settings.stability = it.next().context("stability")?.trim().parse().context("stability is a number")?;
+            if let Some(v) = it.next() {
+                settings.style = v.trim().parse().context("style is a number")?;
+            }
+            if let Some(v) = it.next() {
+                settings.speaker_boost = v.trim().parse().context("boost is true or false")?;
+            }
+            Ok((name.trim().to_string(), settings))
+        })
+        .collect()
+}
+
+/// `callora voice-library ab`: the same sentences in each preset, as a caller hears them.
+async fn voice_ab(
+    b: &Business,
+    out: &Path,
+    model: Option<String>,
+    specs: &[String],
+    sentences: usize,
+    gain_db: Option<f32>,
+) -> anyhow::Result<()> {
+    let api_key = env("ELEVENLABS_API_KEY").context("ELEVENLABS_API_KEY is required")?;
+    let voice_id = b.voice_id.clone().context("the business voice id is not set (see voice.voice_id_env)")?;
+    let model = model.unwrap_or_else(|| b.config.voice.dynamic_model.clone());
+    let presets = parse_presets(specs, b.config.voice.settings)?;
+    let gain = gain_db.unwrap_or(SessionConfig::default().tts_gain_db);
+    let synth = ElevenLabs::new(http(), api_key, env("ELEVENLABS_API_BASE_URL"));
+
+    // Static sentences from the business, shortest first mixed with the longest, so both a
+    // quick acknowledgement and a full question are heard.
+    let mut texts: Vec<(String, String)> =
+        library_entries(b).into_iter().filter(|e| e.delivery == "normal").map(|e| (e.response_id, e.text)).collect();
+    texts.sort_by_key(|(_, t)| t.chars().count());
+    texts.dedup_by(|a, c| a.1 == c.1);
+    let step = (texts.len() / sentences.max(1)).max(1);
+    let picked: Vec<(String, String)> = texts.into_iter().step_by(step).take(sentences).collect();
+
+    std::fs::create_dir_all(out)?;
+    let mut html = String::from(
+        "<!doctype html><meta charset=utf-8><title>voice A/B</title><body dir=rtl style=\"font-family:sans-serif\">",
+    );
+    html.push_str(&format!("<h2>{} · {model} · gain {gain} dB</h2>", b.config.id));
+    for (name, settings) in &presets {
+        let effective = callora_providers::elevenlabs::effective_stability(&model, settings.stability);
+        println!(
+            "{name}: stability {} (sent {effective}) style {} boost {}",
+            settings.stability, settings.style, settings.speaker_boost
+        );
+        html.push_str(&format!(
+            "<h3>{name} — stability {} (sent {effective}), style {}, boost {}</h3>",
+            settings.stability, settings.style, settings.speaker_boost
+        ));
+        for (i, (response_id, text)) in picked.iter().enumerate() {
+            let spoken = callora_audio::library::with_tone(
+                b,
+                response_id,
+                callora_core::speech::prepare_for_tts(text, &b.config.language, &b.pronouncer),
+            );
+            let request = callora_audio::tts::TtsRequest {
+                text: spoken,
+                voice_id: voice_id.clone(),
+                model: model.clone(),
+                settings: *settings,
+                language: b.config.language.clone(),
+            };
+            let stream = synth.synthesize(request).await?;
+            let chunks: Vec<bytes::Bytes> = futures::TryStreamExt::try_collect(stream).await?;
+            let mut audio = chunks.concat();
+            if b.config.voice.tempo != 1.0 {
+                audio = callora_audio::tempo::stretch(&audio, b.config.voice.tempo);
+            }
+            callora_audio::mulaw::Limiter::new(SessionConfig::default().limiter_ceiling_dbfs).process(&mut audio, gain);
+            let file = format!("{name}-{i}.wav");
+            std::fs::write(out.join(&file), callora_audio::mulaw::to_wav(&audio))?;
+            html.push_str(&format!("<p>{text}<br><audio controls src=\"{file}\"></audio></p>"));
+        }
+    }
+    std::fs::write(out.join("index.html"), html)?;
+    println!("written to {} (open index.html)", out.join("index.html").display());
+    Ok(())
+}
+
+/// A number from the environment; unset or unparsable leaves the default.
+fn env_num<T: std::str::FromStr>(name: &str) -> Option<T> {
+    env(name).and_then(|v| v.parse().ok())
+}
+
+/// The call-voice settings that can be tuned without a rebuild (see docs/VOICE_TUNING.md).
+/// Every one has a default in `SessionConfig`; each setting below is only read when set.
+fn apply_voice_env(session: &mut SessionConfig) {
+    macro_rules! set {
+        ($name:literal, $field:expr) => {
+            if let Some(v) = env_num($name) {
+                $field = v;
+            }
+        };
+    }
+    // Loudness.
+    set!("TTS_GAIN_DB", session.tts_gain_db);
+    set!("TTS_GAIN_MAX_DB", session.tts_gain_max_db);
+    set!("TTS_LIMITER_CEILING_DBFS", session.limiter_ceiling_dbfs);
+    // Barge-in.
+    set!("BARGE_CONFIRM_MS", session.barge.confirm_ms);
+    set!("BARGE_CONFIRM_GREETING_MS", session.barge.confirm_greeting_ms);
+    set!("BARGE_CONFIRM_READBACK_MS", session.barge.confirm_read_back_ms);
+    set!("BARGE_MIN_VOICED_MS", session.barge.min_voiced_ms);
+    set!("BARGE_MIN_WORDS", session.barge.min_words);
+    set!("BARGE_SINGLE_WORD_MS", session.barge.single_word_ms);
+    set!("BARGE_STRONG_MS", session.barge.strong_ms);
+    set!("BARGE_STRONG_RMS_RATIO", session.barge.strong_rms_ratio);
+    set!("BARGE_FINAL_MIN_VOICED_MS", session.barge.final_min_voiced_ms);
+    // `BARGE_LEGACY=true`: words stop the agent the moment they are heard, as before.
+    if env("BARGE_LEGACY").is_some_and(|v| v == "true" || v == "1") {
+        let confirm = session.barge;
+        session.barge = callora_runtime::barge::BargeConfig {
+            confirm_ms: confirm.confirm_ms,
+            confirm_greeting_ms: confirm.confirm_greeting_ms,
+            confirm_read_back_ms: confirm.confirm_read_back_ms,
+            ..callora_runtime::barge::BargeConfig::legacy()
+        };
+    }
+    set!("SENTENCE_END_PROTECT_MS", session.sentence_end_protect_ms);
+    // Endpointing: equal to VAD_ENDPOINT_MS turns the adaptation off.
+    set!("VAD_ENDPOINT_SHORT_MS", session.endpoint_short_ms);
+    set!("VAD_ENDPOINT_LONG_MS", session.endpoint_long_ms);
+    // Playout seams.
+    set!("TTS_START_BUFFER_MS", session.tts_start_buffer_ms);
+    set!("TTS_CONTINUATION_BUFFER_MS", session.tts_continuation_buffer_ms);
+    set!("TTS_REBUFFER_MS", session.tts_rebuffer_ms);
+    if env("AUDIO_TRIM_SILENCE").is_some_and(|v| v == "false" || v == "0") {
+        session.trim_silence = None;
+    } else if let Some(t) = session.trim_silence.as_mut() {
+        set!("AUDIO_TRIM_THRESHOLD_RMS", t.threshold_rms);
+        set!("AUDIO_JOIN_PAD_MS", t.pad_ms);
+        set!("AUDIO_TRIM_TAIL_PAD_MS", t.tail_pad_ms);
+    }
+    set!("AUDIO_GAP_WARN_MS", session.audio_gap_warn_ms);
+    set!("AUDIO_GAP_IGNORE_MS", session.audio_gap_ignore_ms);
+}
+
 async fn voice_library(dir: &Path, command: LibraryCommand) -> anyhow::Result<()> {
     let reg = load_registry(dir)?;
     match command {
@@ -511,6 +693,10 @@ async fn voice_library(dir: &Path, command: LibraryCommand) -> anyhow::Result<()
                 std::process::exit(1);
             }
             Ok(())
+        }
+        LibraryCommand::Ab { business, out, model, presets, sentences, gain_db } => {
+            let b = reg.by_id(&business).context("unknown business")?;
+            voice_ab(&b, &out, model, &presets, sentences, gain_db).await
         }
         LibraryCommand::Status { dir } => {
             for b in reg.all() {
@@ -750,6 +936,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     if let Some(ms) = env("VAD_TRIGGER_MS").and_then(|v| v.parse().ok()) {
         session.vad.trigger_ms = ms;
     }
+    apply_voice_env(&mut session);
 
     let public_base_url = env("PUBLIC_BASE_URL").unwrap_or_default().trim_end_matches('/').to_string();
     let skip_signature_validation = env("TWILIO_SKIP_SIGNATURE_VALIDATION").is_some_and(|v| v == "true");

@@ -155,6 +155,12 @@ async fn start_server() -> Harness {
 }
 
 async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
+    // The tests tell clips apart by their bytes, so they play at 0 dB (bit-exact); the
+    // gain has its own tests below.
+    start_server_cfg(agent, SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() }).await
+}
+
+async fn start_server_cfg(agent: Option<Arc<dyn LanguageModel>>, session: SessionConfig) -> Harness {
     let env = |k: &str| {
         (k == "TAXI_PHONE_NUMBERS")
             .then(|| NUMBER.to_string())
@@ -200,7 +206,7 @@ async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
         web_dir: None,
         whatsapp: None,
     };
-    let state = AppState::new(registry, libraries, services, SessionConfig::default(), settings, None);
+    let state = AppState::new(registry, libraries, services, session, settings, None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
@@ -682,4 +688,221 @@ async fn words_begun_before_the_reply_are_sent_as_the_rest_of_the_previous_answe
     assert_eq!(requests.len(), 2);
     assert!(!requests[0].user.contains("OVERLAP"), "the first part is an answer of its own");
     assert!(requests[1].user.contains("OVERLAP"), "the rest of the name: {}", requests[1].user);
+}
+
+// ---------------------------------------------------------------------------------------
+// Voice experience: barge-in classification, sentence-end protection, gain, continuity.
+
+impl ScriptedStt {
+    async fn partial(&self, text: &str) {
+        let tx = self.events.lock().clone().expect("stt opened");
+        tx.send(SttEvent::Partial(text.into())).await.unwrap();
+    }
+}
+
+async fn open_call(h: &Harness, sid: &str) -> Ws {
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
+    let token = twilio::create_stream_token(TOKEN, sid, "taxi", 300, chrono_now());
+    ws.send(Message::Text(json!({ "event": "connected" }).to_string().into())).await.unwrap();
+    ws.send(Message::Text(json!({ "event": "start", "streamSid": "MZ1", "start": { "streamSid": "MZ1", "callSid": sid, "customParameters": { "token": token } } }).to_string().into())).await.unwrap();
+    ws
+}
+
+/// A call whose agent is reading the booking back (a second of live speech, bytes 0x33).
+async fn call_at_the_read_back(session: SessionConfig, sid: &str) -> (Harness, Ws) {
+    let h = start_server_cfg(None, session).await;
+    let mut ws = open_call(&h, sid).await;
+    collect(&mut ws, Duration::from_millis(300)).await;
+    h.stt.say("צריך מונית עכשיו מרבי עקיבא 12 לנתב\"ג, אנחנו ארבעה").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(250)).await;
+    assert!(frames.contains(&0x33), "the read-back is playing");
+    (h, ws)
+}
+
+async fn send_frames(ws: &mut Ws, loud: bool, n: usize) {
+    for _ in 0..n {
+        let f = if loud { loud_frame() } else { quiet_frame() };
+        ws.send(Message::Text(f.into())).await.unwrap();
+    }
+}
+
+/// What a live call looks like: the caller's voice begins, and a moment later the
+/// recognizer's first words for it arrive (the session must have seen the voice first).
+async fn voice_then_partial(h: &Harness, ws: &mut Ws, text: &str) {
+    send_frames(ws, true, 5).await;
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    h.stt.partial(text).await;
+    tokio::time::sleep(Duration::from_millis(60)).await;
+}
+
+fn no_gain() -> SessionConfig {
+    SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() }
+}
+
+#[tokio::test]
+async fn a_backchannel_over_the_agent_does_not_stop_it() {
+    let (h, mut ws) = call_at_the_read_back(no_gain(), "CA60").await;
+    // "כן" said clearly and loudly for half a second while the details are read back.
+    voice_then_partial(&h, &mut ws, "כן").await;
+    send_frames(&mut ws, true, 20).await;
+    let (frames, clears) = collect(&mut ws, Duration::from_millis(150)).await;
+    assert_eq!(clears, 0, "a listening sound does not clear the agent's audio");
+    assert!(!frames.is_empty(), "and the read-back goes on");
+    // The sound ends: counted as suppressed, not as a barge-in.
+    send_frames(&mut ws, false, 40).await;
+    collect(&mut ws, Duration::from_millis(100)).await;
+    assert_eq!(h.metrics.barge_ins_total.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(h.metrics.barge_in_suppressed.get("backchannel"), 1);
+}
+
+#[tokio::test]
+async fn short_background_words_do_not_stop_the_agent_but_a_real_interruption_does() {
+    let (h, mut ws) = call_at_the_read_back(no_gain(), "CA61").await;
+    // Words, but only a blink of voice: not yet.
+    voice_then_partial(&h, &mut ws, "לא רגע תעצור").await;
+    let (_, clears) = collect(&mut ws, Duration::from_millis(60)).await;
+    assert_eq!(clears, 0, "words in the first instants are not enough");
+    // The voice goes on: now the words count, and the agent stops without waiting a second.
+    send_frames(&mut ws, true, 18).await;
+    let (_, clears) = collect(&mut ws, Duration::from_millis(150)).await;
+    assert!(clears >= 1, "a real interruption clears the agent's audio");
+    let m = h.metrics.render();
+    assert!(m.contains("callora_barge_in_reason_total{reason=\"words\"} 1"), "{m}");
+}
+
+#[tokio::test]
+async fn a_loud_voice_that_goes_on_stops_the_agent_before_any_words() {
+    let (h, mut ws) = call_at_the_read_back(no_gain(), "CA62").await;
+    send_frames(&mut ws, true, 40).await;
+    let (_, clears) = collect(&mut ws, Duration::from_millis(150)).await;
+    assert!(clears >= 1);
+    assert!(h.metrics.render().contains("reason=\"loud_sustained\""));
+}
+
+#[tokio::test]
+async fn legacy_barge_in_stops_on_the_first_words_as_before() {
+    let session =
+        SessionConfig { barge: callora_runtime::barge::BargeConfig::legacy(), sentence_end_protect_ms: 0, ..no_gain() };
+    let (h, mut ws) = call_at_the_read_back(session, "CA63").await;
+    voice_then_partial(&h, &mut ws, "לא רגע").await;
+    send_frames(&mut ws, true, 1).await;
+    let (_, clears) = collect(&mut ws, Duration::from_millis(150)).await;
+    assert!(clears >= 1, "with the old rules a word is enough");
+}
+
+#[tokio::test]
+async fn an_interruption_near_the_end_of_a_sentence_lets_it_finish() {
+    // A generous window: the whole read-back counts as "nearly over".
+    let session = SessionConfig { sentence_end_protect_ms: 5_000, ..no_gain() };
+    let (h, mut ws) = call_at_the_read_back(session, "CA64").await;
+    send_frames(&mut ws, true, 40).await;
+    let (frames, clears) = collect(&mut ws, Duration::from_millis(1500)).await;
+    assert_eq!(clears, 0, "nothing was cut");
+    assert!(frames.iter().filter(|b| **b == 0x33).count() >= 5, "the sentence went on to its end");
+    let m = h.metrics.render();
+    assert!(m.contains("callora_sentence_end_protected_total 1"), "{m}");
+    assert!(m.contains("callora_barge_ins_total 1"), "{m}");
+}
+
+#[tokio::test]
+async fn gain_makes_the_agent_louder_and_stays_under_the_ceiling() {
+    use callora_audio::mulaw::decode;
+    let session = SessionConfig { tts_gain_db: 10.0, ..SessionConfig::default() };
+    let h = start_server_cfg(None, session).await;
+    let mut ws = open_call(&h, "CA65").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(300)).await;
+    assert!(!frames.is_empty());
+    let plain = i32::from(decode(0x55)).abs();
+    for b in &frames {
+        let level = i32::from(decode(*b)).abs();
+        assert!(level > plain * 2, "10 dB is about 3x: {level} vs {plain}");
+        assert!(level as f32 <= 32124.0 * 10f32.powf(-1.5 / 20.0) * 1.03, "under the ceiling");
+    }
+}
+
+#[tokio::test]
+async fn zero_gain_and_no_trim_leave_the_library_audio_untouched() {
+    let session = SessionConfig { tts_gain_db: 0.0, trim_silence: None, ..SessionConfig::default() };
+    let h = start_server_cfg(None, session).await;
+    let mut ws = open_call(&h, "CA67").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(300)).await;
+    assert_eq!(frames, vec![0x55; 3], "the 3-frame greeting arrives exactly as recorded");
+}
+
+#[tokio::test]
+async fn the_new_voice_metrics_are_exported() {
+    let h = start_server().await;
+    let text = h.metrics.render();
+    for name in [
+        "callora_agent_first_ms",
+        "callora_vad_endpoint_ms",
+        "callora_caller_speech_ms",
+        "callora_audio_gap_ms",
+        "callora_barge_in_remaining_ms",
+        "callora_barge_in_reason_total",
+        "callora_barge_in_suppressed_total",
+        "callora_audio_gaps_total",
+        "callora_sentence_end_protected_total",
+    ] {
+        assert!(text.contains(name), "{name} is exported");
+    }
+}
+
+/// Quiet frames sent one by one until the STT is asked to finalize: how many it took.
+async fn quiet_frames_until_finalize(h: &Harness, ws: &mut Ws, max: usize) -> Option<usize> {
+    let before = *h.stt.finalizes.lock();
+    for n in 1..=max {
+        send_frames(ws, false, 1).await;
+        tokio::time::sleep(Duration::from_millis(4)).await;
+        if *h.stt.finalizes.lock() > before {
+            return Some(n);
+        }
+    }
+    None
+}
+
+#[tokio::test]
+async fn a_finished_short_answer_ends_sooner_and_a_broken_sentence_later() {
+    // "כן" to the read-back: the caller is done; 350 ms of quiet are enough (18 frames).
+    let (h, mut ws) = call_at_the_read_back(no_gain(), "CA70").await;
+    voice_then_partial(&h, &mut ws, "כן").await;
+    send_frames(&mut ws, true, 5).await;
+    let short = quiet_frames_until_finalize(&h, &mut ws, 40).await.expect("it ends");
+    assert!((16..=19).contains(&short), "about 350 ms, got {} ms", short * 20);
+
+    // The same without the adaptation takes the full 500 ms.
+    let session = SessionConfig { endpoint_short_ms: 500, endpoint_long_ms: 500, ..no_gain() };
+    let (h, mut ws) = call_at_the_read_back(session, "CA71").await;
+    voice_then_partial(&h, &mut ws, "כן").await;
+    send_frames(&mut ws, true, 5).await;
+    let plain = quiet_frames_until_finalize(&h, &mut ws, 40).await.expect("it ends");
+    assert!((24..=26).contains(&plain), "500 ms, got {} ms", plain * 20);
+
+    // A sentence that breaks off waits longer for the rest of it.
+    let (h, mut ws) = call_at_the_read_back(no_gain(), "CA72").await;
+    voice_then_partial(&h, &mut ws, "אני צריך ל").await;
+    send_frames(&mut ws, true, 5).await;
+    let long = quiet_frames_until_finalize(&h, &mut ws, 60).await.expect("it ends");
+    assert!(long >= 34, "about 700 ms, got {} ms", long * 20);
+}
+
+#[tokio::test]
+async fn consecutive_segments_of_one_reply_play_back_to_back() {
+    // Two recordings and a live sentence in one reply: the frames never stop between them.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().push_back(
+        json!({ "action": "none", "say": "הכל טוב, תודה! מאיפה יוצאים?", "task": "book_ride", "fields": [] }),
+    );
+    let h = start_server_with(Some(agent)).await;
+    let mut ws = open_call(&h, "CA73").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    // The caller speaks (so the pause before the reply is a turn, not a hole in a reply).
+    send_frames(&mut ws, true, 10).await;
+    send_frames(&mut ws, false, 30).await;
+    h.stt.say("מה מצב? אני רוצה להזמין מונית").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(600)).await;
+    assert!(frames.len() >= 6 && frames.iter().all(|b| *b == 0x55));
+    let m = h.metrics.render();
+    assert!(!m.contains("callora_audio_gaps_total{"), "no silence over the warning size: {m}");
+    assert!(h.metrics.audio_gap.count() == 0 || m.contains("callora_audio_gap_ms_bucket"), "{m}");
 }

@@ -84,6 +84,67 @@ pub fn apply_gain(audio: &mut [u8], db: f32) {
     }
 }
 
+/// Gain with protection against clipping: a peak limiter that works across frames.
+///
+/// Plain gain clips the loudest samples (harsh distortion on a phone speaker). Here a sample
+/// that would pass the ceiling pulls the gain down at once (attack), and the gain then
+/// recovers over about 50 ms (release), so a loud syllable is turned down smoothly instead
+/// of being cut flat. One limiter per item played, so its state never leaks between items.
+/// Zero gain is a bit-exact pass-through: nothing recorded is touched unless asked.
+#[derive(Debug, Clone)]
+pub struct Limiter {
+    ceiling: f32,
+    release: f32,
+    /// Multiplier applied on top of the gain, 1.0 when nothing is being limited.
+    reduction: f32,
+}
+
+/// The loudest level μ-law can carry (see [`encode`]).
+const FULL_SCALE: f32 = 32124.0;
+
+impl Limiter {
+    /// `ceiling_dbfs` is the peak the output may not pass (relative to full scale, so -1.5).
+    pub fn new(ceiling_dbfs: f32) -> Self {
+        let ceiling = (FULL_SCALE * 10f32.powf(ceiling_dbfs.min(0.0) / 20.0)).max(1.0);
+        // 50 ms at 8 kHz.
+        let release = 1.0 - (-1.0f32 / 400.0).exp();
+        Self { ceiling, release, reduction: 1.0 }
+    }
+
+    /// Apply `db` of gain to a μ-law buffer without letting it pass the ceiling.
+    pub fn process(&mut self, audio: &mut [u8], db: f32) {
+        if db.abs() < 0.01 {
+            return;
+        }
+        let factor = 10f32.powf(db / 20.0);
+        for b in audio.iter_mut() {
+            let x = f32::from(decode(*b)) * factor;
+            let needed = if x.abs() > self.ceiling { self.ceiling / x.abs() } else { 1.0 };
+            if needed < self.reduction {
+                self.reduction = needed;
+            } else {
+                self.reduction += (1.0 - self.reduction) * self.release;
+            }
+            let y = (x * self.reduction.min(needed)).clamp(-FULL_SCALE, FULL_SCALE);
+            *b = encode(y as i16);
+        }
+    }
+}
+
+/// Where speech starts and ends in a μ-law buffer, as byte offsets: the first and the last
+/// 10 ms window louder than `threshold_rms`, widened by `head_pad_ms` before and `tail_pad_ms` after (word endings fade out, so the tail
+/// keeps more). `None` when
+/// nothing is louder (all silence).
+pub fn speech_bounds(audio: &[u8], threshold_rms: f32, head_pad_ms: u64, tail_pad_ms: u64) -> Option<(usize, usize)> {
+    const WINDOW: usize = 80; // 10 ms
+    let loud = |w: &[u8]| rms(w) >= threshold_rms;
+    let first = audio.chunks(WINDOW).position(loud)?;
+    let last = audio.chunks(WINDOW).rposition(loud)?;
+    let start = (first * WINDOW).saturating_sub(head_pad_ms as usize * 8);
+    let end = ((last + 1) * WINDOW + tail_pad_ms as usize * 8).min(audio.len());
+    Some((start, end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +174,41 @@ mod tests {
         let before = rms(&a);
         apply_gain(&mut a, 6.0);
         assert!(rms(&a) > before * 1.8);
+    }
+
+    #[test]
+    fn limiter_passes_zero_gain_untouched_and_never_passes_the_ceiling() {
+        let tone: Vec<u8> = (0..800).map(|i| encode(if (i / 4) % 2 == 0 { 12000 } else { -12000 })).collect();
+        let mut same = tone.clone();
+        Limiter::new(-1.5).process(&mut same, 0.0);
+        assert_eq!(same, tone, "0 dB is bit-exact");
+        let mut loud = tone.clone();
+        Limiter::new(-1.5).process(&mut loud, 12.0);
+        let ceiling = 32124.0 * 10f32.powf(-1.5 / 20.0);
+        let peak = loud.iter().map(|b| i32::from(decode(*b)).abs()).max().unwrap();
+        assert!(peak as f32 <= ceiling * 1.03, "peak {peak} over the ceiling {ceiling}");
+        assert!(rms(&loud) > rms(&tone), "still louder than the original");
+    }
+
+    #[test]
+    fn limiter_gain_recovers_after_a_peak_and_state_carries_across_frames() {
+        let mut lim = Limiter::new(-1.5);
+        let mut peak = vec![encode(30000); 160];
+        lim.process(&mut peak, 6.0);
+        let mut quiet = vec![encode(2000); 160];
+        let before = rms(&quiet);
+        lim.process(&mut quiet, 6.0);
+        assert!(rms(&quiet) > before, "recovers to a boost");
+        assert!(rms(&quiet) < before * 2.05, "never past the plain 6 dB");
+    }
+
+    #[test]
+    fn speech_bounds_trim_silence_and_keep_a_pad() {
+        let mut a = vec![SILENCE; 800];
+        a.extend(vec![encode(4000); 800]);
+        a.extend(vec![SILENCE; 800]);
+        let (s, e) = speech_bounds(&a, 100.0, 5, 10).unwrap();
+        assert_eq!((s, e), (800 - 40, 1600 + 80));
+        assert!(speech_bounds(&vec![SILENCE; 800], 100.0, 5, 10).is_none());
     }
 }

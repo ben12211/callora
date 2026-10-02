@@ -52,6 +52,9 @@ pub struct Vad {
     threshold: f32,
     speaking_ms: u64,
     loudness: f64,
+    peak: f32,
+    /// Silence that ends the utterance now (the configured one unless the runtime moved it).
+    endpoint_ms: u64,
 }
 
 impl Vad {
@@ -65,11 +68,47 @@ impl Vad {
             threshold: cfg.threshold_rms,
             speaking_ms: 0,
             loudness: 0.0,
+            peak: 0.0,
+            endpoint_ms: cfg.endpoint_ms,
         }
     }
 
     pub fn is_speaking(&self) -> bool {
         self.speaking
+    }
+
+    /// Move the silence that ends an utterance (the runtime shortens it when the caller has
+    /// plainly finished a short answer, and lengthens it when the sentence is unfinished).
+    pub fn set_endpoint_ms(&mut self, ms: u64) {
+        self.endpoint_ms = ms.max(60);
+    }
+
+    /// The silence that ended (or would end) the current utterance, in ms.
+    pub fn silence_ms(&self) -> u64 {
+        self.silence_ms
+    }
+
+    /// The utterance so far (or the last one): how long it was, and how loud (RMS, 16-bit
+    /// scale; the mean over its frames and the loudest frame).
+    pub fn speaking_ms(&self) -> u64 {
+        self.speaking_ms
+    }
+
+    pub fn mean_rms(&self) -> f32 {
+        if self.speaking_ms == 0 {
+            0.0
+        } else {
+            (self.loudness / self.speaking_ms as f64) as f32
+        }
+    }
+
+    pub fn peak_rms(&self) -> f32 {
+        self.peak
+    }
+
+    /// The level that counts as speech now.
+    pub fn threshold(&self) -> f32 {
+        self.threshold
     }
 
     /// Feed one inbound μ-law frame.
@@ -87,11 +126,13 @@ impl Vad {
             self.speaking = true;
             self.speaking_ms = 0;
             self.loudness = 0.0;
+            self.peak = 0.0;
             return Some(VadEvent::SpeechStarted);
         }
         if self.speaking {
             self.speaking_ms += frame_ms;
             self.loudness += f64::from(self.last_rms) * frame_ms as f64;
+            self.peak = self.peak.max(self.last_rms);
             if self.speaking_ms >= self.cfg.max_speech_ms {
                 let mean = (self.loudness / self.speaking_ms as f64) as f32;
                 self.threshold = self.threshold.max(mean * 1.2);
@@ -102,7 +143,7 @@ impl Vad {
                 return Some(VadEvent::SpeechEnded);
             }
         }
-        if self.speaking && self.silence_ms >= self.cfg.endpoint_ms {
+        if self.speaking && self.silence_ms >= self.endpoint_ms {
             self.speaking = false;
             self.speech_ms = 0;
             return Some(VadEvent::SpeechEnded);
@@ -147,6 +188,26 @@ mod tests {
             }
         }
         assert_eq!(ended_after, Some(500));
+    }
+
+    #[test]
+    fn the_endpoint_can_be_moved_and_the_utterance_is_measured() {
+        let mut vad = Vad::new(VadConfig::default());
+        let quiet = vec![SILENCE; FRAME_BYTES];
+        vad.set_endpoint_ms(300);
+        for _ in 0..10 {
+            vad.push(&loud());
+        }
+        assert!(vad.speaking_ms() >= 100 && vad.mean_rms() > 3000.0 && vad.peak_rms() >= vad.mean_rms());
+        let ended = (1..=40).find(|_| vad.push(&quiet) == Some(VadEvent::SpeechEnded)).map(|n| n * 20);
+        assert!(ended.is_some(), "ends");
+        let mut vad = Vad::new(VadConfig::default());
+        vad.set_endpoint_ms(300);
+        for _ in 0..10 {
+            vad.push(&loud());
+        }
+        let n = (1..=40).find(|_| vad.push(&quiet) == Some(VadEvent::SpeechEnded)).unwrap();
+        assert_eq!(vad.silence_ms(), 300, "after {n} frames");
     }
 
     #[test]

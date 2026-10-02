@@ -2498,9 +2498,13 @@ impl Engine {
     /// "כן", "אהה", "בסדר" said while the details are read back: the caller listening, not
     /// the answer. It neither stops the read-back nor sends the task before it was heard.
     pub fn is_backchannel(&self, text: &str) -> bool {
-        if !self.context().awaiting_confirmation {
-            return false;
-        }
+        self.context().awaiting_confirmation && self.is_listening_sound(text)
+    }
+
+    /// "כן", "אהה", "mm": the caller listening, whatever the call is waiting for. The same
+    /// test as [`Engine::is_backchannel`] without the read-back; used to tell an interruption
+    /// from a caller who is only showing they follow.
+    pub fn is_listening_sound(&self, text: &str) -> bool {
         let norm = crate::text::normalize(text);
         let rest = self.business.fillers.strip(&self.business.affirm.strip(&norm));
         !norm.trim().is_empty() && crate::text::tokens(&rest).iter().all(|t| crate::understanding::is_hesitation(t))

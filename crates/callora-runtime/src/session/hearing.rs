@@ -9,6 +9,9 @@ impl Session {
     // Caller audio
 
     pub(super) fn on_audio(&mut self, frame: Bytes) {
+        if self.vad.is_speaking() && self.vad.silence_ms() > 0 {
+            self.adapt_endpoint();
+        }
         let vad_event = self.vad.push(&frame);
         self.keep_audio(&frame, vad_event.as_ref());
         match vad_event {
@@ -22,6 +25,9 @@ impl Session {
                 self.speech_count += 1;
                 self.utterance_heard = false;
                 self.voiced_ms = 0;
+                self.barge_words = (0, false);
+                self.barge_hint = "noise";
+                self.vad.set_endpoint_ms(self.cfg.vad.endpoint_ms);
                 if self.pending_agent.as_ref().is_some_and(|p| p.speculative) {
                     // The caller went on talking: the guess was about half a sentence.
                     if let Some(p) = self.pending_agent.take() {
@@ -38,14 +44,40 @@ impl Session {
                 let now = Instant::now();
                 self.speech_ended_at = Some(now);
                 self.last_speech_end = Some(now);
-                self.barge_pending = false;
+                if std::mem::take(&mut self.barge_pending) {
+                    // The voice over the agent ended without ever being an interruption.
+                    self.services.metrics.barge_in_suppressed.inc(self.barge_hint);
+                    tracing::info!(
+                        call = %self.info.call_sid,
+                        reason = self.barge_hint,
+                        voiced_ms = self.voiced_ms,
+                        "voice over the agent was not an interruption"
+                    );
+                }
                 if !self.utterance_heard {
                     self.arm_no_words();
                 }
+                let waited = Duration::from_millis(self.vad.silence_ms());
+                let speech_ms = self.vad.speaking_ms().saturating_sub(self.vad.silence_ms());
+                self.services.metrics.vad_endpoint.observe(waited.as_millis() as u64);
+                self.services.metrics.caller_speech.observe(speech_ms);
+                tracing::debug!(
+                    call = %self.info.call_sid,
+                    speech_ms,
+                    endpoint_ms = waited.as_millis() as u64,
+                    rms_mean = self.vad.mean_rms(),
+                    rms_peak = self.vad.peak_rms(),
+                    "caller speech ended"
+                );
                 self.clock = Some(TurnClock {
                     speech_end: now,
+                    voice_end: now.checked_sub(waited).unwrap_or(now),
+                    speech_ms,
+                    rms_mean: self.vad.mean_rms(),
+                    rms_peak: self.vad.peak_rms(),
                     final_at: None,
                     agent_first: None,
+                    tts_first_byte: None,
                     speculative_hit: false,
                     audio: "",
                 });
@@ -140,43 +172,92 @@ impl Session {
         Some(terms)
     }
 
-    /// The caller's voice over the agent is a barge-in once it has words in it (and, during a
-    /// read-back, more than "כן", "אהה"), or once it has gone on long enough.
+    /// The silence that ends the caller's utterance, by what has been heard of it: shorter
+    /// when it is plainly a finished short answer (a "כן" to the read-back), longer when
+    /// the sentence sounds broken off. Everywhere else, the configured one.
+    fn adapt_endpoint(&mut self) {
+        let base = self.cfg.vad.endpoint_ms;
+        let partial = self.last_partial.trim();
+        let ms = if partial.is_empty() {
+            base
+        } else if is_unfinished(partial) {
+            self.cfg.endpoint_long_ms
+        } else if partial.split_whitespace().count() <= 3 && self.engine.takes_short_answer(partial) {
+            self.cfg.endpoint_short_ms
+        } else {
+            base
+        };
+        self.vad.set_endpoint_ms(ms);
+    }
+
+    /// The caller's voice over the agent is a barge-in once [`crate::barge::classify`] says
+    /// so: real words over enough voice, a voice that goes on, or a loud one. Noise and
+    /// listening sounds ("כן", "אהה") do not stop the agent.
     pub(super) fn confirm_barge_in(&mut self, partial: Option<&str>) {
-        if !self.agent_busy() {
+        if !self.agent_busy() || self.protecting {
             self.barge_pending = false;
             return;
         }
-        let reading_back = self.engine.context().awaiting_confirmation;
-        let words = partial.is_some_and(|text| {
+        if let Some(text) = partial {
+            let text = text.trim();
             let (u, _) = fast_path(&self.business, &self.engine.context(), text);
-            !u.noise && !self.engine.is_backchannel(text) && !self.engine.is_hello(text)
-        });
-        let enough = if reading_back {
-            BARGE_CONFIRM_READ_BACK
+            self.barge_words = if self.engine.is_listening_sound(text) {
+                (0, true)
+            } else if u.noise || self.engine.is_hello(text) {
+                (0, false)
+            } else {
+                (text.split_whitespace().count().max(1), false)
+            };
+        }
+        let (real_words, listening_only) = self.barge_words;
+        let phase = if self.engine.context().awaiting_confirmation {
+            Phase::ReadBack
         } else if self.engine.state.turns == 0 {
-            BARGE_CONFIRM_GREETING
+            Phase::Greeting
         } else {
-            BARGE_CONFIRM
+            Phase::Normal
         };
-        if words || Duration::from_millis(self.voiced_ms) >= enough {
-            self.barge_pending = false;
-            self.barge_in();
+        let input = BargeInput {
+            voiced_ms: self.voiced_ms,
+            real_words,
+            listening_only,
+            mean_rms: self.vad.mean_rms(),
+            threshold: self.vad.threshold(),
+            phase,
+        };
+        match classify(&self.cfg.barge, &input) {
+            Some(reason) => {
+                self.barge_pending = false;
+                self.barge_in(reason);
+            }
+            None => self.barge_hint = suppressed_label(listening_only, real_words),
         }
     }
 
-    pub(super) fn barge_in(&mut self) {
+    pub(super) fn barge_in(&mut self, reason: BargeReason) {
+        // A sentence already being let finish is not interrupted twice.
+        if self.protecting {
+            return;
+        }
         self.barge_in_started = Some(Instant::now());
         self.interrupted = true;
         self.cut_read_back = self.engine.context().awaiting_confirmation;
-        self.playout.cancel();
-        self.services.metrics.barge_ins_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.cfg.sentence_end_protect_ms {
+            0 => self.playout.cancel(),
+            ms => self.playout.cancel_soft(Duration::from_millis(ms)),
+        }
+        let m = &self.services.metrics;
+        m.barge_ins_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        m.barge_in_reasons.inc(reason.as_str());
         // Info: "it stops mid-sentence" is either this or the audio; the log tells which.
         tracing::info!(
             call = %self.info.call_sid,
+            reason = reason.as_str(),
             voiced_ms = self.voiced_ms,
             partial = %self.last_partial,
             rms = self.vad.last_rms,
+            rms_mean = self.vad.mean_rms(),
+            rms_peak = self.vad.peak_rms(),
             "barge-in: caller talked over the agent"
         );
     }
@@ -273,7 +354,7 @@ impl Session {
                 self.read_back_heard.is_some() && self.read_back_heard == self.engine.last_question_text();
             if self.agent_busy() && yes && heard_before {
                 tracing::info!(call = %self.info.call_sid, caller = %text, "a yes over a read-back heard before; the answer");
-                self.barge_in();
+                self.barge_in(BargeReason::Answer);
                 self.cut_read_back = false;
             } else if self.agent_busy() {
                 tracing::info!(call = %self.info.call_sid, caller = %text, "said over the read-back; not an answer");
@@ -290,6 +371,40 @@ impl Session {
                 return self.execute(d);
             }
         }
+        // A transcript that arrives while the agent talks is no interruption by itself: the
+        // same rules as for the voice decide, so a late result for background speech does
+        // not cut the agent. Then it is not answered either.
+        let mut final_barge = None;
+        if self.agent_busy() && !self.protecting && self.speech_count > 0 {
+            let listening = self.engine.is_listening_sound(&text);
+            // "כן" to a question the call is waiting on is an answer, not a listening sound.
+            let real_words = if listening && !self.engine.takes_short_answer(&text) {
+                0
+            } else {
+                text.split_whitespace().count().max(1)
+            };
+            let input = BargeInput {
+                voiced_ms: self.voiced_ms,
+                real_words,
+                listening_only: listening && real_words == 0,
+                mean_rms: self.vad.mean_rms(),
+                threshold: self.vad.threshold(),
+                phase: Phase::Normal,
+            };
+            match classify_final(&self.cfg.barge, &input) {
+                Some(reason) => final_barge = Some(reason),
+                None => {
+                    self.services.metrics.barge_in_suppressed.inc("late_final");
+                    tracing::info!(
+                        call = %self.info.call_sid,
+                        caller = %text,
+                        voiced_ms = self.voiced_ms,
+                        "transcript over the agent was not an interruption; ignored"
+                    );
+                    return;
+                }
+            }
+        }
         self.cut_read_back = false;
         self.yes_over_read_back = None;
         self.interrupted = false;
@@ -297,10 +412,12 @@ impl Session {
         if self.speech_ended_at.is_none() {
             self.speech_ended_at = Some(Instant::now());
         }
-        // Some recognizers only send finals: a transcript while the agent talks is also a
-        // barge-in (the VAD may have missed a quiet caller).
-        if self.agent_busy() {
-            self.barge_in();
+        // Some recognizers only send finals: a transcript with words while the agent talks is
+        // also a barge-in (the VAD may have missed a quiet caller, `speech_count == 0`).
+        if let Some(reason) = final_barge {
+            self.barge_in(reason);
+        } else if self.agent_busy() && !self.protecting {
+            self.barge_in(BargeReason::Final);
         }
         if let Some(c) = &mut self.clock {
             c.final_at.get_or_insert_with(Instant::now);

@@ -142,6 +142,18 @@ pub struct VoiceSettings {
     #[serde(default)]
     pub style: f32,
     pub speed: f32,
+    /// ElevenLabs' speaker boost (clearer, a little more like the original voice, a little
+    /// slower). Left out of the saved settings when true so existing libraries stay valid.
+    #[serde(default = "default_speaker_boost", skip_serializing_if = "is_true")]
+    pub speaker_boost: bool,
+}
+
+fn default_speaker_boost() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 /// Overrides applied on top of [`VoiceSettings`] for one delivery style.
