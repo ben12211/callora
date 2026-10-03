@@ -972,8 +972,12 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         }),
         web_dir: web_dir(),
         whatsapp: env("WHATSAPP_URL").zip(env("WHATSAPP_TOKEN").filter(|t| t.len() >= 16)),
+        library_dir: Some(library_dir.clone()),
+        library_model: env("ELEVENLABS_LIBRARY_MODEL"),
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
+    // A voice chosen on the settings page replaces the business's own.
+    state.apply_saved_voices();
     // Orders to WhatsApp, drained in the background at the accounts' pace.
     match (&state.db, &state.whatsapp) {
         (Some(pool), Some(service)) => {

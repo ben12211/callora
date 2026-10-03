@@ -3,6 +3,7 @@ import { Headphones, PhoneForwarded, PhoneIncoming, PhoneOutgoing, Plus, Trash2,
 import { type DeskSettings, type SettingsData, Unauthorized, useApi } from "../api";
 import { Badge, Button, Card, Field, FIELD, Input, PageHeader, Problem, Skeleton, cx, useToast } from "../ui";
 import { PriceBotCard } from "./PriceBot";
+import { VoiceCard } from "./VoiceCard";
 
 const MUSIC: Record<string, string> = {
   classical: "קלאסית",
@@ -20,10 +21,14 @@ const STEPS = [
 ];
 
 export function Settings() {
-  const settings = useApi<SettingsData>("/api/settings");
+  const [watching, setWatching] = useState(false);
+  // While a voice is being recorded, the page follows it until it is in use.
+  const settings = useApi<SettingsData>("/api/settings", watching ? 3000 : undefined);
+  const building = settings.data?.businesses.some((b) => b.voice.building && !b.voice.building.error) ?? false;
+  if (watching !== building && settings.data) setWatching(building);
   return (
     <>
-      <PageHeader title="הגדרות" subtitle="העברה למוקד, ומאיפה הסוכן יודע מחירים" />
+      <PageHeader title="הגדרות" subtitle="הקול של הסוכן, העברה למוקד, ומאיפה הסוכן יודע מחירים" />
       {settings.error && <Problem>{settings.error}</Problem>}
       {!settings.data && !settings.error ? (
         <div className="grid max-w-3xl gap-6">
@@ -49,6 +54,20 @@ export function Settings() {
               </li>
             ))}
           </ol>
+          {settings.data.businesses
+            .filter((b) => b.voice.choices.length > 0)
+            .map((b) => (
+              <VoiceCard
+                key={`voice-${b.id}`}
+                id={b.id}
+                voice={b.voice}
+                canSave={settings.data!.saving && settings.data!.voice_switching}
+                onChanged={() => {
+                  setWatching(true);
+                  settings.reload();
+                }}
+              />
+            ))}
           {settings.data.businesses.map((b) => (
             <DeskCard key={b.id} id={b.id} name={b.name} desk={b.desk} music={settings.data!.music} canSave={settings.data!.saving} />
           ))}

@@ -122,6 +122,24 @@ pub struct VoiceConfig {
     /// slower than eleven_v3 ("נורא איטי, נמרח"). The library and live speech alike.
     #[serde(default = "default_tempo")]
     pub tempo: f32,
+    /// Voices the owner may switch to from the settings page. The voice in use by default
+    /// is still `voice_id_env`'s; a switch builds the library in the chosen voice first.
+    #[serde(default)]
+    pub choices: Vec<VoiceChoice>,
+}
+
+/// A voice offered on the settings page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceChoice {
+    /// ElevenLabs voice id.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// A sample to listen to (https), when the voice has one.
+    #[serde(default)]
+    pub preview: Option<String>,
 }
 
 fn default_tempo() -> f32 {

@@ -139,7 +139,9 @@ impl Session {
             prepare_for_tts(&seg.text, &c.language, self.business.pronouncer_for(self.engine.state.address_form));
         Some(TtsRequest {
             text: callora_audio::library::with_tone(&self.business, &seg.response_id, spoken),
-            voice_id: self.business.voice_id.clone()?,
+            // The library's voice: a call that began with one voice keeps it, even when the
+            // owner switches voices in the middle of it.
+            voice_id: self.library.voice_id.clone().or_else(|| self.business.voice_id.clone())?,
             model: self.cfg.dynamic_model.clone().unwrap_or_else(|| c.voice.dynamic_model.clone()),
             settings: c.voice.settings_for(&seg.delivery),
             language: c.language.clone(),

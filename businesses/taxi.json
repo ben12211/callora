@@ -22,7 +22,14 @@
       "important": { "speed": 0.92 },
       "slow": { "speed": 0.85, "pregenerate": true }
     },
-    "dynamic_cover": "tts_cover"
+    "dynamic_cover": "tts_cover",
+    "choices": [
+      { "id": "JIxTgeeS5w0UQyBxEnrl", "name": "איתי", "description": "צעיר, מהיר ואנרגטי, קצב תל אביבי", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/JIxTgeeS5w0UQyBxEnrl/7za3GB1n0lALVe2bYQkU.mp3" },
+      { "id": "MYMo3evefjv7byQxnv3K", "name": "ליאם", "description": "הקול המשובט הקודם" },
+      { "id": "k77ZRVqAFg9Hd0ltAuON", "name": "עומר", "description": "עמוק ובטוח, קול של פרסומת", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/k77ZRVqAFg9Hd0ltAuON/XqZX8EK3EsTgG8ogXuKc.mp3" },
+      { "id": "yGpVFXFoImvRvaURKypy", "name": "תומר", "description": "רגוע ועמוק, קצב מדוד", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/yGpVFXFoImvRvaURKypy/8F4UV5JfF9FBLm9O842M.mp3" },
+      { "id": "uwHajH4FhtzVp6X17pr7", "name": "עמית", "description": "רגוע ולא ממהר, קריין", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/uwHajH4FhtzVp6X17pr7/uNnAXIfyJz5HoqUKjOEh.mp3" }
+    ]
   },
 
   "greeting": "greeting",
@@ -508,7 +515,8 @@
     "street_not_found_suggest": { "variants": ["לא מצאתי את {heard} ב{city}. התכוונת ל{suggestion}?"] },
     "street_not_found": { "variants": ["לא מצאתי את {heard} ב{city}. אולי זה בעיר אחרת?"] },
     "street_city_unknown": { "variants": ["{street} באיזו עיר?"] },
-    "ask_again_passengers": { "variants": ["רק כדי שלא תהיה טעות, כמה נוסעים? במונית עד עשרים."] },
+    "ask_again_passengers": { "variants": ["רק כדי שלא תהיה טעות, כמה נוסעים?"] },
+    "too_many_passengers": { "variants": ["זה יותר מדי לנסיעה אחת. כמה נוסעים בדיוק?"] },
     "ask_name": {"variants": ["על שם מי לרשום את ההזמנה?", "על איזה שם לרשום?"]},
     "ask_notes": {"variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?", "משהו שכדאי שהנהג ידע?"]},
     "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק.", "אממ, רגע."] },

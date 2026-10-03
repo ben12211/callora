@@ -577,8 +577,15 @@ impl Engine {
                     return self.finish(out);
                 }
                 if !spoken.trim_end().ends_with('?') {
-                    // "רק כדי שלא תהיה טעות, כמה נוסעים? במונית עד עשרים."
-                    let again = format!("ask_again_{slot}");
+                    // "רק כדי שלא תהיה טעות, כמה נוסעים?"; a number past the slot's maximum
+                    // ("מאה", "אלף") is told so first: a live call heard the question again,
+                    // twice, as if the answer had not been heard.
+                    let too_many = format!("too_many_{slot}");
+                    let again = if self.business.response(&too_many).is_some() && self.above_max(&slot, &fields) {
+                        too_many
+                    } else {
+                        format!("ask_again_{slot}")
+                    };
                     if self.business.response(&again).is_some() {
                         let ctx = self.render_ctx(None);
                         self.say(&mut out, &again, ctx, true);
@@ -1233,6 +1240,18 @@ impl Engine {
                 }
             })
             .collect()
+    }
+
+    /// A number given for `slot` that is more than the slot allows ("מאה" passengers).
+    fn above_max(&self, slot: &str, fields: &[(String, String)]) -> bool {
+        let Some(max) = self.business.config.slots.get(slot).and_then(|c| c.max) else { return false };
+        fields.iter().filter(|(s, _)| s == slot).any(|(_, v)| {
+            let norm = crate::text::normalize(v);
+            let toks = crate::text::tokens(&norm);
+            // Thousands are not read as numbers; they are past any maximum anyway.
+            toks.iter().any(|t| matches!(*t, "אלף" | "אלפיים" | "אלפים" | "מיליון"))
+                || crate::hebrew::find_numbers(&toks).first().is_some_and(|n| n.value > max)
+        })
     }
 
     fn apply_agent_fields(&mut self, fields: &[(String, String)]) -> (bool, Vec<String>) {

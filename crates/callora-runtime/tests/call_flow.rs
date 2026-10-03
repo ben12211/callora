@@ -210,6 +210,8 @@ async fn start_server_cfg(agent: Option<Arc<dyn LanguageModel>>, session: Sessio
         dashboard_password: "12345678".into(),
         web_dir: None,
         whatsapp: None,
+        library_dir: None,
+        library_model: None,
     };
     let state = AppState::new(registry, libraries, services, session, settings, None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

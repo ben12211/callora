@@ -3101,3 +3101,27 @@ fn a_price_question_is_one_whatever_the_agent_took_it_for() {
     // A booking's words are no price question.
     assert!(call.engine.decisive_intent("אני רוצה להזמין מונית מבני ברק").is_none());
 }
+
+#[test]
+fn a_number_of_passengers_past_the_limit_is_told_it_is_too_many() {
+    // A live call: a number too high for a ride, and the question came back as if unheard.
+    for n in ["שלושים", "מאה", "אלף"] {
+        let (mut call, _) = Call::new(business(&[]));
+        let mut turn = decide(
+            AgentAction::None,
+            "",
+            Some("book_ride"),
+            &[("pickup", "הרצל 10, רעננה"), ("destination", "דיזנגוף 50, תל אביב")],
+        );
+        turn.asks = vec!["passengers".into()];
+        call.engine.on_agent_turn("מהרצל 10 ברעננה לדיזנגוף 50 בתל אביב", turn, "");
+        let d = call.engine.on_agent_turn(
+            &format!("{n}."),
+            decide(AgentAction::None, "", Some("book_ride"), &[("passengers", n)]),
+            "",
+        );
+        let said = spoken(&d);
+        assert!(said.contains("יותר מדי") && said.contains("כמה נוסעים"), "{n}: {said}");
+        assert!(action(&d).is_none(), "nothing booked");
+    }
+}

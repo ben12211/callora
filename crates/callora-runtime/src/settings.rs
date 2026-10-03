@@ -106,6 +106,8 @@ pub struct PriceBotSettings {
 pub struct SettingsStore {
     desks: RwLock<HashMap<String, DeskSettings>>,
     price_bots: RwLock<HashMap<String, PriceBotSettings>>,
+    /// The voice chosen on the settings page (an ElevenLabs voice id).
+    voices: RwLock<HashMap<String, String>>,
 }
 
 impl SettingsStore {
@@ -115,8 +117,12 @@ impl SettingsStore {
             sqlx::query("SELECT business_id, settings FROM callora_v2.business_settings").fetch_all(pool).await?;
         let mut desks = HashMap::new();
         let mut price_bots = HashMap::new();
+        let mut voices = HashMap::new();
         for r in rows {
             let settings: serde_json::Value = r.get("settings");
+            if let Some(voice) = settings["voice"].as_str().filter(|v| !v.is_empty()) {
+                voices.insert(r.get::<String, _>("business_id"), voice.to_string());
+            }
             if let Ok(bot) = serde_json::from_value::<PriceBotSettings>(settings["price_bot"].clone()) {
                 price_bots.insert(r.get::<String, _>("business_id"), bot);
             }
@@ -127,7 +133,7 @@ impl SettingsStore {
                 Err(e) => tracing::warn!(error = %e, "unreadable saved settings; ignored"),
             }
         }
-        Ok(Self { desks: RwLock::new(desks), price_bots: RwLock::new(price_bots) })
+        Ok(Self { desks: RwLock::new(desks), price_bots: RwLock::new(price_bots), voices: RwLock::new(voices) })
     }
 
     /// The desk a call of this business hands off to: the saved settings, else the
@@ -137,6 +143,28 @@ impl SettingsStore {
             return d.clone();
         }
         DeskSettings { numbers: business.handoff_number.iter().cloned().collect(), ..DeskSettings::default() }
+    }
+
+    /// The voice the owner chose, if any.
+    pub fn voice(&self, business_id: &str) -> Option<String> {
+        self.voices.read().get(business_id).cloned()
+    }
+
+    /// `None` goes back to the business's own voice.
+    pub async fn save_voice(&self, pool: &PgPool, business_id: &str, voice: Option<String>) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO callora_v2.business_settings (business_id, settings) VALUES ($1, jsonb_build_object('voice', $2::jsonb))
+             ON CONFLICT (business_id) DO UPDATE SET settings = callora_v2.business_settings.settings || jsonb_build_object('voice', $2::jsonb), updated_at = now()",
+        )
+        .bind(business_id)
+        .bind(serde_json::to_value(&voice).unwrap_or_default())
+        .execute(pool)
+        .await?;
+        match voice {
+            Some(v) => self.voices.write().insert(business_id.to_string(), v),
+            None => self.voices.write().remove(business_id),
+        };
+        Ok(())
     }
 
     pub fn price_bot(&self, business_id: &str) -> Option<PriceBotSettings> {

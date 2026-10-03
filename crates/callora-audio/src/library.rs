@@ -33,6 +33,17 @@ pub fn with_tone(b: &Business, response_id: &str, spoken: String) -> String {
     }
 }
 
+/// Where a voice's library lives: the business's own voice (the one the deployment builds) in
+/// `root`, any other voice chosen on the settings page in `root/voices/<voice id>`, so that
+/// switching back and forth never rebuilds what was built once.
+pub fn voice_root(root: &Path, voice: &str, default_voice: Option<&str>) -> PathBuf {
+    if Some(voice) == default_voice {
+        root.to_path_buf()
+    } else {
+        root.join("voices").join(voice)
+    }
+}
+
 pub fn clip_key(delivery: &str, text: &str) -> String {
     let mut h = Sha256::new();
     h.update(delivery.as_bytes());
@@ -126,6 +137,11 @@ impl VoiceLibrary {
     /// Load `<root>/<business>/`. A missing library is not an error (every response then
     /// goes through dynamic TTS); a library for another voice is ignored.
     pub fn load(root: &Path, business: &Business) -> anyhow::Result<Self> {
+        Self::load_for(root, business, business.voice_id.as_deref())
+    }
+
+    /// The library of `voice` under `root` (see [`voice_root`]).
+    pub fn load_for(root: &Path, business: &Business, voice: Option<&str>) -> anyhow::Result<Self> {
         let dir = root.join(&business.config.id);
         let manifest_path = dir.join("manifest.json");
         if !manifest_path.exists() {
@@ -133,8 +149,8 @@ impl VoiceLibrary {
             return Ok(Self::empty());
         }
         let manifest: Manifest = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
-        if let Some(voice) = &business.voice_id {
-            if &manifest.voice_id != voice {
+        if let Some(voice) = voice {
+            if manifest.voice_id != voice {
                 tracing::error!(business = %business.config.id, "voice library was generated for a different voice; ignoring it (rebuild with `callora voice-library build`)");
                 return Ok(Self::empty());
             }
@@ -288,5 +304,48 @@ mod tone_tests {
         let b = Business::from_json(&text, "taxi.json", &|_| None).expect("taxi");
         assert_eq!(with_tone(&b, "greeting", "אהלן".into()), "[warmly] אהלן");
         assert_eq!(with_tone(&b, "ask_route", "מאיפה לאן?".into()), "מאיפה לאן?", "no tone, no tag");
+    }
+}
+
+#[cfg(test)]
+mod voice_tests {
+    use super::*;
+
+    #[test]
+    fn each_voice_has_its_own_library_and_the_business_voice_keeps_the_root() {
+        let root = Path::new("/lib");
+        assert_eq!(voice_root(root, "itai", Some("itai")), PathBuf::from("/lib"));
+        assert_eq!(voice_root(root, "omer", Some("itai")), Path::new("/lib").join("voices").join("omer"));
+    }
+
+    #[test]
+    fn a_library_of_another_voice_is_not_loaded_for_this_one() {
+        let b =
+            Business::from_json(include_str!("../../../businesses/taxi.json"), "taxi.json", &|_| None).expect("taxi");
+        let dir = std::env::temp_dir().join(format!("callora-voice-test-{}", std::process::id()));
+        let business_dir = dir.join(&b.config.id);
+        std::fs::create_dir_all(&business_dir).unwrap();
+        std::fs::write(business_dir.join("a.ulaw"), [0x55u8; 160]).unwrap();
+        let manifest = Manifest {
+            business_id: b.config.id.clone(),
+            voice_id: "omer".into(),
+            model: "m".into(),
+            format: "ulaw_8000".into(),
+            entries: vec![ManifestEntry {
+                key: clip_key("normal", "סבבה."),
+                response_id: "ack".into(),
+                delivery: "normal".into(),
+                text: "סבבה.".into(),
+                spoken: "סבבה.".into(),
+                settings: None,
+                file: "a.ulaw".into(),
+                bytes: 160,
+            }],
+        };
+        std::fs::write(business_dir.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let lib = VoiceLibrary::load_for(&dir, &b, Some("omer")).unwrap();
+        assert_eq!((lib.len(), lib.voice_id.as_deref()), (1, Some("omer")));
+        assert!(VoiceLibrary::load_for(&dir, &b, Some("itai")).unwrap().is_empty(), "never another voice's clips");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

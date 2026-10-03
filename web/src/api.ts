@@ -108,12 +108,26 @@ export type DeskSettings = { numbers: string[]; caller_id?: string | null; hold_
 
 export type PriceBotSettings = { account: string; chat_id: string; chat_name: string };
 
+export type VoiceChoice = { id: string; name: string; description: string; preview?: string | null };
+
+export type VoiceSettings = {
+  /** The voice calls start with now. */
+  active: string | null;
+  /** The voice the owner chose (it becomes active once recorded). */
+  chosen: string | null;
+  default: string | null;
+  choices: VoiceChoice[];
+  building: { voice: string; error: string | null } | null;
+  clips: number;
+};
+
 export type SettingsData = {
-  businesses: { id: string; name: string; desk: DeskSettings; price_bot: PriceBotSettings | null }[];
+  businesses: { id: string; name: string; desk: DeskSettings; price_bot: PriceBotSettings | null; voice: VoiceSettings }[];
   music: string[];
   saving: boolean;
   transfers: boolean;
   whatsapp: boolean;
+  voice_switching: boolean;
 };
 
 export type Session = { businesses: { id: string; name: string }[]; database: boolean };

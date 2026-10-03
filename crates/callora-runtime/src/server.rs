@@ -48,11 +48,26 @@ pub struct ServerSettings {
     pub web_dir: Option<std::path::PathBuf>,
     /// The WhatsApp service (`WHATSAPP_URL`, `WHATSAPP_TOKEN`); none, no WhatsApp page.
     pub whatsapp: Option<(String, String)>,
+    /// Where voice libraries live (`AUDIO_LIBRARY_DIR`); none, no voice switching.
+    pub library_dir: Option<std::path::PathBuf>,
+    /// The model libraries are made with, when not the business's (`ELEVENLABS_LIBRARY_MODEL`).
+    pub library_model: Option<String>,
+}
+
+/// A voice library being built in a voice the owner chose.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VoiceBuild {
+    pub voice: String,
+    /// Empty while it runs; the reason it failed otherwise.
+    pub error: Option<String>,
 }
 
 pub struct AppState {
     pub registry: BusinessRegistry,
-    pub libraries: HashMap<String, Arc<VoiceLibrary>>,
+    /// Each business's voice library. Swapped whole when the owner switches voices: a call
+    /// keeps the library (and so the voice) it started with.
+    libraries: parking_lot::RwLock<HashMap<String, Arc<VoiceLibrary>>>,
+    voice_builds: Mutex<HashMap<String, VoiceBuild>>,
     pub services: Services,
     pub session: SessionConfig,
     pub settings: ServerSettings,
@@ -88,7 +103,8 @@ impl AppState {
         }
         Arc::new(Self {
             registry,
-            libraries,
+            libraries: parking_lot::RwLock::new(libraries),
+            voice_builds: Mutex::new(HashMap::new()),
             services,
             session,
             settings,
@@ -98,6 +114,106 @@ impl AppState {
             sessions,
             whatsapp,
         })
+    }
+}
+
+impl AppState {
+    /// The business's voice library now.
+    pub fn library(&self, business_id: &str) -> Arc<VoiceLibrary> {
+        self.libraries.read().get(business_id).cloned().unwrap_or_else(|| Arc::new(VoiceLibrary::empty()))
+    }
+
+    /// The voice of the library in use (the business's own voice when there is none).
+    pub fn active_voice(&self, business: &callora_core::business::Business) -> Option<String> {
+        self.library(&business.config.id).voice_id.clone().or_else(|| business.voice_id.clone())
+    }
+
+    pub fn voice_build(&self, business_id: &str) -> Option<VoiceBuild> {
+        self.voice_builds.lock().get(business_id).cloned()
+    }
+
+    /// Start using `voice`: its library is built (only what is missing), then swapped in.
+    /// Until then calls keep the voice they have, so no call mixes two voices. Returns
+    /// false when a build for this business is already running.
+    pub fn switch_voice(self: &Arc<Self>, business_id: &str, voice: String) -> bool {
+        {
+            let mut builds = self.voice_builds.lock();
+            if builds.get(business_id).is_some_and(|b| b.error.is_none()) {
+                return false;
+            }
+            builds.insert(business_id.to_string(), VoiceBuild { voice: voice.clone(), error: None });
+        }
+        let state = self.clone();
+        let id = business_id.to_string();
+        tokio::spawn(async move {
+            let result = state.build_voice(&id, &voice).await;
+            let mut builds = state.voice_builds.lock();
+            match result {
+                Ok(()) => {
+                    builds.remove(&id);
+                }
+                Err(e) => {
+                    tracing::error!(business = %id, voice = %voice, error = %format!("{e:#}"), "switching voices failed; the voice in use stays");
+                    builds.insert(id, VoiceBuild { voice, error: Some(format!("{e:#}")) });
+                }
+            }
+        });
+        true
+    }
+
+    async fn build_voice(&self, business_id: &str, voice: &str) -> anyhow::Result<()> {
+        let business = self.registry.by_id(business_id).ok_or_else(|| anyhow::anyhow!("unknown business"))?;
+        let root = self.settings.library_dir.clone().ok_or_else(|| anyhow::anyhow!("AUDIO_LIBRARY_DIR is not set"))?;
+        let tts = self.services.tts.clone().ok_or_else(|| anyhow::anyhow!("no text-to-speech configured"))?;
+        let root = callora_audio::library::voice_root(&root, voice, business.voice_id.as_deref());
+        let model = self.settings.library_model.clone().unwrap_or_else(|| business.config.voice.library_model.clone());
+        tracing::info!(business = %business_id, %voice, path = %root.display(), "building the voice library for the chosen voice");
+        let report = callora_audio::library::LibraryBuilder {
+            business: &business,
+            synthesizer: tts,
+            voice_id: voice.to_string(),
+            model,
+            root: root.clone(),
+            concurrency: 4,
+        }
+        .build()
+        .await?;
+        tracing::info!(
+            business = %business_id,
+            %voice,
+            generated = report.generated,
+            reused = report.reused,
+            failed = report.failed.len(),
+            "voice library built"
+        );
+        let library = VoiceLibrary::load_for(&root, &business, Some(voice))?;
+        // Most of it missing would play almost everything through live TTS: keep the old voice.
+        if library.len() * 10 < report.total * 9 {
+            anyhow::bail!("only {} of {} sentences were recorded", library.len(), report.total);
+        }
+        self.libraries.write().insert(business_id.to_string(), Arc::new(library));
+        tracing::info!(business = %business_id, %voice, "the new voice is in use for new calls");
+        Ok(())
+    }
+
+    /// At start: each business's chosen voice, when it is not the one loaded. Its library is
+    /// used at once if it was built before, and completed in the background.
+    pub fn apply_saved_voices(self: &Arc<Self>) {
+        let Some(root) = self.settings.library_dir.clone() else { return };
+        for b in self.registry.all() {
+            let Some(voice) = self.services.settings.voice(&b.config.id) else { continue };
+            if self.active_voice(b).as_deref() == Some(voice.as_str()) {
+                continue;
+            }
+            let dir = callora_audio::library::voice_root(&root, &voice, b.voice_id.as_deref());
+            if let Ok(lib) = VoiceLibrary::load_for(&dir, b, Some(&voice)) {
+                if !lib.is_empty() {
+                    tracing::info!(business = %b.config.id, %voice, clips = lib.len(), "the chosen voice is in use");
+                    self.libraries.write().insert(b.config.id.clone(), Arc::new(lib));
+                }
+            }
+            self.switch_voice(&b.config.id, voice);
+        }
     }
 }
 
@@ -149,6 +265,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/settings", get(api_settings))
         .route("/api/settings/{business}", axum::routing::put(api_save_settings))
         .route("/api/settings/{business}/price-bot", axum::routing::put(api_save_price_bot))
+        .route("/api/settings/{business}/voice", axum::routing::put(api_save_voice))
         .route("/api/settings/{business}/price-bot/test", post(api_test_price_bot))
         .route("/api/businesses", get(api_businesses))
         .route("/api/calls", get(api_calls))
@@ -349,7 +466,7 @@ async fn media_socket(s: Arc<AppState>, socket: WebSocket) {
         return;
     }
     let Some(business) = s.registry.by_id(&claims.business_id) else { return };
-    let library = s.libraries.get(&business.config.id).cloned().unwrap_or_else(|| Arc::new(VoiceLibrary::empty()));
+    let library = s.library(&business.config.id);
     let pending = s.pending.lock().remove(&start.call_sid);
     let (from, to, customer) = match pending {
         Some(p) => (p.from, p.to, p.customer),
@@ -591,7 +708,7 @@ async fn api_businesses(State(s): State<Arc<AppState>>, headers: HeaderMap) -> R
         .registry
         .all()
         .map(|b| {
-            let lib = s.libraries.get(&b.config.id).map_or(0, |l| l.len());
+            let lib = s.library(&b.config.id).len();
             json!({
                 "id": b.config.id,
                 "name": b.config.name,
@@ -662,6 +779,14 @@ async fn api_settings(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Res
                 "name": b.config.name,
                 "desk": s.services.settings.desk(b),
                 "price_bot": s.services.settings.price_bot(&b.config.id),
+                "voice": {
+                    "active": s.active_voice(b),
+                    "chosen": s.services.settings.voice(&b.config.id).or_else(|| b.voice_id.clone()),
+                    "default": b.voice_id,
+                    "choices": b.config.voice.choices,
+                    "building": s.voice_build(&b.config.id),
+                    "clips": s.library(&b.config.id).len(),
+                },
             })
         })
         .collect();
@@ -671,8 +796,51 @@ async fn api_settings(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Res
         "saving": s.db.is_some(),
         "transfers": s.services.desk.is_some(),
         "whatsapp": s.whatsapp.is_some(),
+        "voice_switching": s.settings.library_dir.is_some() && s.services.tts.is_some(),
     }))
     .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct VoiceChange {
+    voice_id: String,
+}
+
+/// Switch a business to another voice from its list: saved, then built and swapped in.
+async fn api_save_voice(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(business): Path<String>,
+    Json(change): Json<VoiceChange>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(b) = s.registry.by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
+    let voice = change.voice_id.trim().to_string();
+    let known = b.config.voice.choices.iter().any(|c| c.id == voice) || b.voice_id.as_deref() == Some(voice.as_str());
+    if !known {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "problems": ["הקול לא ברשימה"] }))).into_response();
+    }
+    if s.settings.library_dir.is_none() || s.services.tts.is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "problems": ["החלפת קול לא זמינה בשרת הזה"] })))
+            .into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    if s.voice_build(&business).is_some_and(|v| v.error.is_none()) {
+        return (StatusCode::CONFLICT, Json(json!({ "problems": ["כבר מכינים קול אחר; אפשר לנסות שוב בעוד דקה"] })))
+            .into_response();
+    }
+    // The business's own voice is saved as "no choice", so a new default reaches it.
+    let saved = (b.voice_id.as_deref() != Some(voice.as_str())).then(|| voice.clone());
+    if let Err(e) = s.services.settings.save_voice(pool, &business, saved).await {
+        tracing::error!(error = %e, "saving the voice failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    if s.active_voice(&b).as_deref() != Some(voice.as_str()) {
+        s.switch_voice(&business, voice.clone());
+    }
+    Json(json!({ "chosen": voice, "building": s.voice_build(&business) })).into_response()
 }
 
 async fn api_save_price_bot(
