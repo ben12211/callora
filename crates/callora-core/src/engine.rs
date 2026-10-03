@@ -2936,8 +2936,27 @@ impl Engine {
                 }
                 self.render_plan(&response, &ctx)
             }
-            _ => self.render_response(id),
+            _ => match self.said_before(id).then(|| self.business.response(id).and_then(|r| r.again.clone())).flatten()
+            {
+                Some(again) => {
+                    tracing::info!(phrase = id, instead = %again, "the phrase was said already in this call");
+                    self.render_response(&again).or_else(|| self.render_response(id))
+                }
+                None => self.render_response(id),
+            },
         }
+    }
+
+    /// One of the response's sentences was said earlier in this call.
+    fn said_before(&self, id: &str) -> bool {
+        let Some(r) = self.business.response(id) else { return false };
+        let norm: Vec<String> = r.variants.iter().map(|v| crate::text::normalize(v)).collect();
+        self.state.history.iter().any(|t| {
+            t.speaker == Speaker::Agent && {
+                let said = crate::text::normalize(&t.text);
+                norm.iter().any(|v| !v.is_empty() && said.contains(v.as_str()))
+            }
+        })
     }
 
     fn ask(&mut self, out: &mut Out, slot: &str, acknowledge: bool) {

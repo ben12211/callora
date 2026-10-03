@@ -3145,3 +3145,21 @@ fn a_refusal_is_not_said_when_the_agent_decided_a_business_task() {
     let said = spoken(&d);
     assert!(said.contains("מוניות"), "{said}");
 }
+
+#[test]
+fn small_talk_asked_again_gets_another_answer_that_moves_to_the_ride() {
+    // A live call: "מה נשמע?", "איך אתה?", "איך אתה?", "איך אתה?" each got "X, תודה! במה
+    // אפשר לעזור?".
+    let (mut call, _) = Call::new(business(&[]));
+    let mut said = Vec::new();
+    for words in ["היי, מה נשמע?", "איך אתה?", "איך אתה?"] {
+        let mut turn = decide(AgentAction::None, "", Some("small_talk"), &[]);
+        turn.phrase = Some("small_talk_answer".into());
+        said.push(spoken(&call.engine.on_agent_turn(words, turn, "")));
+    }
+    assert!(said[0].contains("לעזור"), "the first is the usual answer: {}", said[0]);
+    for again in &said[1..] {
+        assert!(!again.contains("במה אפשר לעזור") && !again.contains("איך אפשר לעזור"), "{again}");
+        assert!(again.contains("לאן"), "it moves to the ride: {again}");
+    }
+}

@@ -614,6 +614,10 @@ pub struct ResponseConfig {
     /// of a question off the business must not be followed by the answer).
     #[serde(default)]
     pub alone: bool,
+    /// Said once in a call: asked for again, this other response is said instead ("מה
+    /// נשמע?" three times got "הכל טוב, תודה! במה אפשר לעזור?" three times).
+    #[serde(default)]
+    pub again: Option<ResponseId>,
     /// Delivery style name (see `voice.deliveries`). Defaults to `normal`.
     #[serde(default)]
     pub delivery: Option<String>,
