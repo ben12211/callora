@@ -473,6 +473,17 @@ impl Engine {
             turn.say.clear();
             turn.task = Some(intent);
         }
+        // The same refusal when the caller's words were too garbled to show the task, but the
+        // agent's own decision is one of the business's tasks, or has its details: a live call
+        // heard "את זה אני לא יודע, אני פה רק בשביל מוניות" and then the price it asked for.
+        let refusal = turn.phrase.as_deref().is_some_and(|p| self.business.response(p).is_some_and(|r| r.alone));
+        let business_task =
+            turn.task.as_deref().and_then(|t| self.business.intent(t)).is_some_and(|i| i.pipeline.is_some());
+        if refusal && (business_task || !turn.fields.is_empty()) {
+            tracing::info!(transcript, phrase = ?turn.phrase, task = ?turn.task, "a refusal with a business task; not said");
+            turn.phrase = None;
+            turn.say.clear();
+        }
         // Words that decide the task (a price question) over the agent's choice: its words were
         // for the other task, the task's own next step is said instead.
         let mut decided = false;

@@ -323,10 +323,11 @@ impl Session {
             p.held_phrase = Some(id);
             return;
         }
-        // A refusal of what the business does ("רק במוניות" to "כמה זה יוצא לי?"): the engine
-        // takes the business's task instead.
-        if self.engine.refused_wrongly(&p.transcript, &id).is_some() {
-            tracing::info!(call = %self.info.call_sid, phrase = %id, "a refusal of the business's own task; held");
+        // A refusal ("רק במוניות") waits for the whole decision: to "כמה זה יוצא לי?" the engine
+        // takes the business's task instead, and the agent's own task may show it is one (the
+        // caller's words garbled, the decision a price question). The engine says it otherwise.
+        if self.business.response(&id).is_some_and(|r| r.alone) {
+            tracing::info!(call = %self.info.call_sid, phrase = %id, "a refusal; held for the decision");
             if let Some(p) = self.pending_agent.as_mut() {
                 p.hold_say = true;
             }

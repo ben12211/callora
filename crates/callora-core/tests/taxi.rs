@@ -3125,3 +3125,23 @@ fn a_number_of_passengers_past_the_limit_is_told_it_is_too_many() {
         assert!(action(&d).is_none(), "nothing booked");
     }
 }
+
+#[test]
+fn a_refusal_is_not_said_when_the_agent_decided_a_business_task() {
+    // A live call: "אני לא. ... מבני ברק לירושלים." The model named the off-topic refusal and
+    // also the price question with both cities; the caller heard the refusal, then the price.
+    let refusal = "אני פה רק בשביל מוניות";
+    let (mut call, _) = Call::new(business(&[]));
+    let mut turn =
+        decide(AgentAction::Submit, "", Some("price_question"), &[("price_from", "בני ברק"), ("price_to", "ירושלים")]);
+    turn.phrase = Some("off_topic".into());
+    let d = call.engine.on_agent_turn("אני לא. ... מבני ברק לירושלים.", turn, "");
+    assert!(!spoken(&d).contains(refusal), "{}", spoken(&d));
+    // A real off-topic question still gets it.
+    let (mut call, _) = Call::new(business(&[]));
+    let mut turn = decide(AgentAction::None, "", None, &[]);
+    turn.phrase = Some("off_topic".into());
+    let d = call.engine.on_agent_turn("מי היה ראש הממשלה הראשון?", turn, "");
+    let said = spoken(&d);
+    assert!(said.contains("מוניות"), "{said}");
+}
