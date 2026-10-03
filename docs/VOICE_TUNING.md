@@ -31,6 +31,7 @@ A voice stops the agent when `barge::classify` says so (see the module doc). Lis
 | `BARGE_SINGLE_WORD_MS` | `500` | Voice needed before a single word counts. |
 | `BARGE_STRONG_MS` | `500` | A loud voice this long stops the agent without words. `0` turns the rule off. |
 | `BARGE_STRONG_RMS_RATIO` | `2.5` | "Loud" = utterance mean level over this multiple of the VAD threshold. |
+| `BARGE_STRONG_MIN_RMS` | `2250` | ...and never below this level, whatever the VAD threshold. The loud rule never applies over the greeting. |
 | `BARGE_FINAL_MIN_VOICED_MS` | `200` | A final transcript that arrives while the agent talks stops it only with real words and this much voice; otherwise it does not cut the agent, but is still answered once the agent has finished (words are never dropped). `0`: any final stops it. |
 | `BARGE_LEGACY` | off | `true`: any words stop the agent at once, no loud rule (the old behaviour). |
 

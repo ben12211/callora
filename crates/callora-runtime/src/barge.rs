@@ -16,7 +16,9 @@
 //!    `min_words` of them, or one word once the voice lasted `single_word_ms`
 //!    ([`BargeReason::Words`]).
 //! 3. A loud voice, well above the line's threshold, that goes on for `strong_ms` is the
-//!    caller talking over the agent, words or not ([`BargeReason::Loud`]).
+//!    caller talking over the agent, words or not ([`BargeReason::Loud`]). Never over the
+//!    greeting: callers start talking ("הלו", "כן?") as the line opens, and a live call lost
+//!    its greeting in its first half second.
 //!
 //! Listening sounds alone ("כן", "אהה", "mm") only count under rule 1.
 //!
@@ -40,8 +42,12 @@ pub struct BargeConfig {
     pub single_word_ms: u64,
     /// A loud voice this long stops the agent. 0 turns the rule off.
     pub strong_ms: u64,
-    /// "Loud": the utterance's mean level over the VAD threshold.
+    /// "Loud": the utterance's mean level over the VAD threshold...
     pub strong_rms_ratio: f32,
+    /// ...and never under this level (RMS, 16-bit scale). The VAD threshold went down from
+    /// 900 to 600 to hear quiet callers; without this floor "loud" went down with it, and a
+    /// normal voice (1800) cut the greeting.
+    pub strong_min_rms: f32,
     /// A final transcript that arrives while the agent talks stops it only when it has real
     /// words and the caller's voice lasted this long; shorter is background speech or a
     /// late result for a blip; it is then still answered, after the agent finishes. `0`: any
@@ -60,6 +66,7 @@ impl Default for BargeConfig {
             single_word_ms: 500,
             strong_ms: 500,
             strong_rms_ratio: 2.5,
+            strong_min_rms: 2250.0,
             final_min_voiced_ms: 200,
         }
     }
@@ -147,7 +154,8 @@ pub fn classify(cfg: &BargeConfig, i: &BargeInput) -> Option<BargeReason> {
     if i.real_words >= 1 && i.voiced_ms >= cfg.single_word_ms {
         return Some(BargeReason::Words);
     }
-    if cfg.strong_ms > 0 && i.voiced_ms >= cfg.strong_ms && i.mean_rms >= i.threshold * cfg.strong_rms_ratio {
+    let loud = i.mean_rms >= (i.threshold * cfg.strong_rms_ratio).max(cfg.strong_min_rms);
+    if cfg.strong_ms > 0 && i.phase != Phase::Greeting && i.voiced_ms >= cfg.strong_ms && loud {
         return Some(BargeReason::Loud);
     }
     None
@@ -258,5 +266,27 @@ mod tests {
         assert_eq!(suppressed_label(true, 0), "backchannel");
         assert_eq!(suppressed_label(false, 0), "noise");
         assert_eq!(suppressed_label(false, 2), "short");
+    }
+
+    #[test]
+    fn loud_is_measured_against_the_old_level_and_never_cuts_the_greeting() {
+        let cfg = BargeConfig::default();
+        // The live call: a normal voice at 1800 over a 600 threshold is not "loud".
+        let mut i = BargeInput {
+            voiced_ms: 500,
+            real_words: 0,
+            listening_only: false,
+            mean_rms: 1800.0,
+            threshold: 600.0,
+            phase: Phase::Normal,
+        };
+        assert_eq!(classify(&cfg, &i), None);
+        i.mean_rms = 3000.0;
+        assert_eq!(classify(&cfg, &i), Some(BargeReason::Loud));
+        // Over the greeting only words or a long voice stop it.
+        i.phase = Phase::Greeting;
+        assert_eq!(classify(&cfg, &i), None);
+        i.voiced_ms = 1500;
+        assert_eq!(classify(&cfg, &i), Some(BargeReason::Voiced));
     }
 }

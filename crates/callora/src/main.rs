@@ -612,6 +612,7 @@ fn apply_voice_env(session: &mut SessionConfig) {
     set!("BARGE_SINGLE_WORD_MS", session.barge.single_word_ms);
     set!("BARGE_STRONG_MS", session.barge.strong_ms);
     set!("BARGE_STRONG_RMS_RATIO", session.barge.strong_rms_ratio);
+    set!("BARGE_STRONG_MIN_RMS", session.barge.strong_min_rms);
     set!("BARGE_FINAL_MIN_VOICED_MS", session.barge.final_min_voiced_ms);
     // `BARGE_LEGACY=true`: words stop the agent the moment they are heard, as before.
     if env("BARGE_LEGACY").is_some_and(|v| v == "true" || v == "1") {
