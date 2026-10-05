@@ -1,6 +1,7 @@
 //! The Callora phone runtime.
 
 pub mod actions;
+pub mod agent_model;
 pub mod barge;
 pub mod dashboard;
 pub mod desk;

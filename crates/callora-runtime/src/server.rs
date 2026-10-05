@@ -266,6 +266,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/settings/{business}", axum::routing::put(api_save_settings))
         .route("/api/settings/{business}/price-bot", axum::routing::put(api_save_price_bot))
         .route("/api/settings/{business}/voice", axum::routing::put(api_save_voice))
+        .route("/api/settings/agent-model", axum::routing::put(api_save_agent_model))
         .route("/api/settings/{business}/price-bot/test", post(api_test_price_bot))
         .route("/api/businesses", get(api_businesses))
         .route("/api/calls", get(api_calls))
@@ -797,8 +798,38 @@ async fn api_settings(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Res
         "transfers": s.services.desk.is_some(),
         "whatsapp": s.whatsapp.is_some(),
         "voice_switching": s.settings.library_dir.is_some() && s.services.tts.is_some(),
+        "agent": s.services.settings.agent_control().map(|c| c.view()),
     }))
     .into_response()
+}
+
+/// Change the agent's model: tried with a small request, then used for the calls' next turns and
+/// saved, so it is still in use after a restart. `null` goes back to the environment's model.
+async fn api_save_agent_model(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(change): Json<Option<crate::agent_model::AgentModelSettings>>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(control) = s.services.settings.agent_control() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "problems": ["אין בשרת מפתח למודל של הסוכן"] })))
+            .into_response();
+    };
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    let change = change.map(crate::agent_model::AgentModelSettings::normalized);
+    let wanted = change.clone().unwrap_or_else(|| control.defaults().clone());
+    if let Err(problems) = control.switch(wanted).await {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "problems": problems }))).into_response();
+    }
+    // A choice equal to the default is no choice: a new default then reaches it.
+    let saved = change.filter(|c| c != control.defaults());
+    if let Err(e) = s.services.settings.save_agent_model(pool, saved).await {
+        tracing::error!(error = %e, "saving the agent's model failed; it is in use until the next restart");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    Json(control.view()).into_response()
 }
 
 #[derive(serde::Deserialize)]

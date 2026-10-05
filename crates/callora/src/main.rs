@@ -25,6 +25,9 @@ use callora_providers::{
     twilio_rest::TwilioRest,
 };
 use callora_runtime::actions::ConfiguredActions;
+use callora_runtime::agent_model::{
+    AgentControl, AgentModelSettings, AssembledModel, NamedModel, Providers, SwitchableModel, NO_BACKUP,
+};
 use callora_runtime::metrics::Metrics;
 use callora_runtime::ports::{
     ActionRunner, CallInfo, CallStore, LanguageModel, NoWhisper, NullStore, SpeechToText, SttSession, Telephony,
@@ -223,26 +226,37 @@ fn agent_model_named(http: reqwest::Client, model: &str, effort: Option<String>)
     Some(Arc::new(OpenAi::agent(http, key, env("TEXT_LLM_BASE_URL"), Some(model.into()), effort)))
 }
 
-/// The conversation agent: AGENT_MODEL (default gemini-3.8-flash), hedged after
-/// AGENT_HEDGE_MS (default 1200) by AGENT_BACKUP_MODEL (default gpt-6-luna) when that
-/// provider's key is set; when both fail, AGENT_FALLBACK_MODEL, by default a model of the
+/// What the environment says about the agent's model (AGENT_MODEL, AGENT_BACKUP_MODEL,
+/// AGENT_REASONING_EFFORT), with the defaults for what it leaves out.
+fn agent_model_env() -> AgentModelSettings {
+    AgentModelSettings {
+        primary: env("AGENT_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_MODEL.into()),
+        backup: env("AGENT_BACKUP_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_BACKUP_MODEL.into()),
+        effort: env("AGENT_REASONING_EFFORT"),
+    }
+}
+
+/// The conversation agent: the primary model (default gemini-3.8-flash), hedged after
+/// AGENT_HEDGE_MS (default 1200) by the backup (default gpt-6-luna, `none` for no hedge) when
+/// that provider's key is set; when both fail, AGENT_FALLBACK_MODEL, by default a model of the
 /// other provider (an outage of one provider must not end the calls). Run `callora eval
 /// --model <a> --model <b>` to compare models on the recorded conversations before changing
 /// any.
-fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
-    let primary = env("AGENT_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_MODEL.into());
-    let backup = env("AGENT_BACKUP_MODEL").unwrap_or_else(|| callora_providers::openai::AGENT_BACKUP_MODEL.into());
+fn agent_model_with(http: reqwest::Client, models: &AgentModelSettings) -> Option<Arc<dyn LanguageModel>> {
+    let (primary, backup) = (models.primary.as_str(), models.backup.as_str());
     let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(1200));
-    let primary_model = agent_model_named(http.clone(), &primary, None)?;
-    let agent: Arc<dyn LanguageModel> = match agent_model_named(http.clone(), &backup, None) {
-        Some(backup_model) => Arc::new(Hedged::new(primary_model, backup_model, hedge)),
-        None => {
+    let primary_model = agent_model_named(http.clone(), primary, models.effort.clone())?;
+    let backup_model = (backup != NO_BACKUP).then(|| agent_model_named(http.clone(), backup, models.effort.clone()));
+    let agent: Arc<dyn LanguageModel> = match backup_model {
+        Some(Some(backup_model)) => Arc::new(Hedged::new(primary_model, backup_model, hedge)),
+        Some(None) => {
             tracing::warn!(%backup, "no key for the agent's backup model; the agent runs unhedged");
             primary_model
         }
+        None => primary_model,
     };
-    let on_gemini = primary.starts_with("gemini") && backup.starts_with("gemini");
-    let on_openai = !primary.starts_with("gemini") && !backup.starts_with("gemini");
+    let on_gemini = primary.starts_with("gemini") && (backup == NO_BACKUP || backup.starts_with("gemini"));
+    let on_openai = !primary.starts_with("gemini") && (backup == NO_BACKUP || !backup.starts_with("gemini"));
     let fallback = env("AGENT_FALLBACK_MODEL").or_else(|| {
         if on_openai {
             Some("gemini-3.8-flash".into())
@@ -259,6 +273,54 @@ fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
         }
         None => agent,
     })
+}
+
+/// The agent as the environment configures it.
+fn agent_model(http: reqwest::Client) -> Option<Arc<dyn LanguageModel>> {
+    agent_model_with(http, &agent_model_env())
+}
+
+/// The agent's model, switchable from the settings page: the model saved there when it can be
+/// built, else the environment's. `None` without a key for any of them.
+fn switchable_agent(
+    http: reqwest::Client,
+    settings: &callora_runtime::settings::SettingsStore,
+) -> Option<Arc<AgentControl>> {
+    let defaults = agent_model_env();
+    let saved = settings.agent_model();
+    let built = saved
+        .as_ref()
+        .and_then(|m| agent_model_with(http.clone(), m).map(|a| (a, m.clone())))
+        .or_else(|| agent_model_with(http.clone(), &defaults).map(|a| (a, defaults.clone())));
+    let (agent, active) = built?;
+    if saved.as_ref().is_some_and(|m| *m != active) {
+        tracing::warn!(
+            "the agent's model chosen on the settings page cannot be built (no key?); using the environment's"
+        );
+    }
+    let named: NamedModel = {
+        let http = http.clone();
+        Arc::new(move |model: &str, effort: Option<String>| agent_model_named(http.clone(), model, effort))
+    };
+    let assemble: AssembledModel =
+        Arc::new(move |models: &AgentModelSettings| agent_model_with(http.clone(), models));
+    let providers = Providers { gemini: env("GEMINI_API_KEY").is_some(), openai: env("OPENAI_API_KEY").is_some() };
+    let catalog = [
+        callora_providers::openai::AGENT_MODEL,
+        callora_providers::openai::OPENAI_AGENT_MODEL,
+        callora_providers::openai::AGENT_BACKUP_MODEL,
+    ]
+    .map(String::from)
+    .to_vec();
+    Some(Arc::new(AgentControl::new(
+        Arc::new(SwitchableModel::new(agent)),
+        active,
+        defaults,
+        named,
+        assemble,
+        providers,
+        catalog,
+    )))
 }
 
 /// Israel's localities and streets (`STREETS_FILE`, gzipped TSV; default
@@ -880,10 +942,6 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     }
 
     let gazetteer = load_gazetteer();
-    let agent = agent_model(client.clone());
-    if agent.is_none() && registry.all().any(|b| b.config.agent.is_some()) {
-        tracing::warn!("no key for AGENT_MODEL's provider: businesses with an agent fall back to the rules");
-    }
     // The second hearing uses the same ElevenLabs key as the stream. Off unless
     // SECOND_HEARING=1: with a city's streets as hints it made names up on live calls
     // ("44, 45" heard "בן זכריה ארבעים וחמש"), so it waits for measured results.
@@ -903,6 +961,14 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         }),
         None => Default::default(),
     });
+    // The agent's model, switchable from the settings page.
+    let agent_control = switchable_agent(client.clone(), &settings_store);
+    let agent = agent_control.as_ref().map(|c| c.model());
+    if let Some(control) = agent_control {
+        settings_store.attach_agent_control(control);
+    } else if registry.all().any(|b| b.config.agent.is_some()) {
+        tracing::warn!("no key for AGENT_MODEL's provider: businesses with an agent fall back to the rules");
+    }
     let mut actions = ConfiguredActions::new(client.clone(), env_snapshot());
     if let Some((url, token)) = env("WHATSAPP_URL").zip(env("WHATSAPP_TOKEN").filter(|t| t.len() >= 16)) {
         actions = actions.with_chat_bot(Arc::new(callora_runtime::whatsapp::WhatsAppChatBot::new(

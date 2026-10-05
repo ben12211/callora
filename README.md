@@ -83,6 +83,10 @@ fail before producing output (`none` disables it). With both models on one provi
 default fallback uses the other provider only when its existing key is available. A healthy
 primary response never invokes it.
 
+The agent's model and its hedge can also be changed on the dashboard's settings page, without a
+deployment: each chosen model answers a small request first, and calls use the new one from their
+next turn. The choice is saved and wins over `AGENT_MODEL`/`AGENT_BACKUP_MODEL` until reset.
+
 The agent's behaviour depends on its prompt (`crates/callora-core/src/agent.rs`), the
 business's rules and examples (`businesses/taxi.json` → `agent`) and the model. Unit tests
 cannot tell whether a model will still behave, so run the eval before and after:

@@ -121,6 +121,19 @@ export type VoiceSettings = {
   clips: number;
 };
 
+export type AgentModelChoice = { primary: string; backup: string; effort: string | null };
+
+/** The model that runs the agent, as the settings page shows it. */
+export type AgentModelData = {
+  active: AgentModelChoice;
+  /** What the server's environment says: where "back to default" goes. */
+  defaults: AgentModelChoice;
+  custom: boolean;
+  /** Which providers the server has a key for. */
+  providers: { gemini: boolean; openai: boolean };
+  models: { id: string; provider: "gemini" | "openai" }[];
+};
+
 export type SettingsData = {
   businesses: { id: string; name: string; desk: DeskSettings; price_bot: PriceBotSettings | null; voice: VoiceSettings }[];
   music: string[];
@@ -128,6 +141,8 @@ export type SettingsData = {
   transfers: boolean;
   whatsapp: boolean;
   voice_switching: boolean;
+  /** None when the server has no key for the agent's model. */
+  agent: AgentModelData | null;
 };
 
 export type Session = { businesses: { id: string; name: string }[]; database: boolean };

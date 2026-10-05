@@ -43,7 +43,7 @@ secrets already configured in GitHub keep working.
 | `PUBLIC_BASE_URL` | yes for a fresh VM | `https://<hostname>` Twilio calls, no trailing slash. Written into the VM's `.env` only when absent there (never overwritten). The hostname's DNS A record must point at the VM. |
 | `ELEVENLABS_VOICE_ID` | yes for audio | Preferred place for the voice id (not sensitive). |
 | `ELEVENLABS_DYNAMIC_MODEL` | optional | Overrides the business's dynamic TTS model. |
-| `AGENT_MODEL` | optional | The agent's model (default `gemini-3.8-flash`, needs `GEMINI_API_KEY`; a non-`gemini-*` name goes to OpenAI). Sent by the pipeline: unset here means the default, even if the VM's `.env` said otherwise. Run the eval before changing it. |
+| `AGENT_MODEL` | optional | The agent's model (default `gemini-3.8-flash`, needs `GEMINI_API_KEY`; a non-`gemini-*` name goes to OpenAI). Sent by the pipeline: unset here means the default, even if the VM's `.env` said otherwise. Run the eval before changing it. A model chosen on the dashboard's settings page (stored in `callora_v2.app_settings`) wins over this until "back to default" is pressed there. |
 | `AGENT_BACKUP_MODEL` | optional | The hedge: asked when the agent's model has said nothing after `AGENT_HEDGE_MS` (default `gpt-6-luna`). |
 | `AGENT_REASONING_EFFORT` | optional | How much a reasoning model thinks before its first word: `none` (default), `low`, `medium`. Each step up is slower on the phone. |
 | `AGENT_PRICES` | optional | Dollars per million tokens as `model=input/cached/output`, comma separated (`gpt-6-sol=2/0.2/10,gpt-6-luna=0.1/0.01/0.5`), for the cost per call on `/calls` and in the eval. Without it cost is shown as unknown. |

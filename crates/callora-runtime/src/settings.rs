@@ -4,6 +4,7 @@
 //! settings uses its `handoff.phone_number_env` number, as before.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,8 @@ use sqlx::postgres::PgPool;
 use sqlx::Row;
 
 use callora_core::business::{is_e164, Business};
+
+use crate::agent_model::{AgentControl, AgentModelSettings};
 
 /// Hold music Twilio hosts, by name; anything else must be an `https://` audio URL.
 const MUSIC: [(&str, &str); 6] = [
@@ -108,6 +111,10 @@ pub struct SettingsStore {
     price_bots: RwLock<HashMap<String, PriceBotSettings>>,
     /// The voice chosen on the settings page (an ElevenLabs voice id).
     voices: RwLock<HashMap<String, String>>,
+    /// The agent's model chosen on the settings page; none, the environment's.
+    agent_model: RwLock<Option<AgentModelSettings>>,
+    /// What changes the agent's model while calls run; set once the server has built it.
+    agent_control: RwLock<Option<Arc<AgentControl>>>,
 }
 
 impl SettingsStore {
@@ -133,7 +140,21 @@ impl SettingsStore {
                 Err(e) => tracing::warn!(error = %e, "unreadable saved settings; ignored"),
             }
         }
-        Ok(Self { desks: RwLock::new(desks), price_bots: RwLock::new(price_bots), voices: RwLock::new(voices) })
+        // Tolerant: a database from before this setting has no such table yet.
+        let agent_model = sqlx::query("SELECT value FROM callora_v2.app_settings WHERE key = 'agent_model'")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| serde_json::from_value::<AgentModelSettings>(r.get("value")).ok())
+            .filter(|m| m.problems().is_empty());
+        Ok(Self {
+            desks: RwLock::new(desks),
+            price_bots: RwLock::new(price_bots),
+            voices: RwLock::new(voices),
+            agent_model: RwLock::new(agent_model),
+            agent_control: RwLock::new(None),
+        })
     }
 
     /// The desk a call of this business hands off to: the saved settings, else the
@@ -165,6 +186,41 @@ impl SettingsStore {
             None => self.voices.write().remove(business_id),
         };
         Ok(())
+    }
+
+    /// The agent's model the owner chose, if any.
+    pub fn agent_model(&self) -> Option<AgentModelSettings> {
+        self.agent_model.read().clone()
+    }
+
+    /// `None` goes back to the environment's model.
+    pub async fn save_agent_model(&self, pool: &PgPool, model: Option<AgentModelSettings>) -> sqlx::Result<()> {
+        match &model {
+            Some(m) => {
+                sqlx::query(
+                    "INSERT INTO callora_v2.app_settings (key, value) VALUES ('agent_model', $1)
+                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+                )
+                .bind(serde_json::to_value(m).unwrap_or_default())
+                .execute(pool)
+                .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM callora_v2.app_settings WHERE key = 'agent_model'").execute(pool).await?;
+            }
+        }
+        *self.agent_model.write() = model;
+        Ok(())
+    }
+
+    /// Called once by the server, when it has built the agent's model.
+    pub fn attach_agent_control(&self, control: Arc<AgentControl>) {
+        *self.agent_control.write() = Some(control);
+    }
+
+    /// The agent's model, switchable; none when the server has no model for the agent.
+    pub fn agent_control(&self) -> Option<Arc<AgentControl>> {
+        self.agent_control.read().clone()
     }
 
     pub fn price_bot(&self, business_id: &str) -> Option<PriceBotSettings> {

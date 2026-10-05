@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Headphones, PhoneForwarded, PhoneIncoming, PhoneOutgoing, Plus, Trash2, UserRoundCheck } from "lucide-react";
 import { type DeskSettings, type SettingsData, Unauthorized, useApi } from "../api";
 import { Badge, Button, Card, Field, FIELD, Input, PageHeader, Problem, Skeleton, cx, useToast } from "../ui";
+import { AgentModelCard } from "./AgentModelCard";
 import { PriceBotCard } from "./PriceBot";
 import { VoiceCard } from "./VoiceCard";
 
@@ -28,7 +29,7 @@ export function Settings() {
   if (watching !== building && settings.data) setWatching(building);
   return (
     <>
-      <PageHeader title="הגדרות" subtitle="הקול של הסוכן, העברה למוקד, ומאיפה הסוכן יודע מחירים" />
+      <PageHeader title="הגדרות" subtitle="המודל והקול של הסוכן, העברה למוקד, ומאיפה הסוכן יודע מחירים" />
       {settings.error && <Problem>{settings.error}</Problem>}
       {!settings.data && !settings.error ? (
         <div className="grid max-w-3xl gap-6">
@@ -54,6 +55,14 @@ export function Settings() {
               </li>
             ))}
           </ol>
+          {settings.data.agent && (
+            <AgentModelCard
+              key={JSON.stringify(settings.data.agent.active)}
+              agent={settings.data.agent}
+              canSave={settings.data.saving}
+              onChanged={settings.reload}
+            />
+          )}
           {settings.data.businesses
             .filter((b) => b.voice.choices.length > 0)
             .map((b) => (
