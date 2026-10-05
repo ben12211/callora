@@ -1,6 +1,7 @@
 // Telegram accounts (teleproto, a maintained fork of GramJS: Telegram's own protocol, no
 // browser), signed in as a person, by scanning a QR code from the Telegram app like WhatsApp
-// Web's. They ask bots (the price-list bot, which answers on Telegram only) and nothing else.
+// Web's. They ask bots (the price-list bot, which answers on Telegram only) and send orders to
+// the groups and contacts picked on the dashboard, as WhatsApp accounts do.
 //
 // The list of accounts lives in /data/telegram/accounts.json, each one's login (a session
 // string) in /data/telegram/<id>.session, so a restart needs no new scan. Ids start with
@@ -33,6 +34,18 @@ const CHECK_EVERY_MS = 60_000;
 function loginGone(e: unknown): boolean {
   const m = e instanceof Error ? `${e.name} ${e.message}` : String(e);
   return /AUTH_KEY_UNREGISTERED|AuthKeyUnregistered|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|AUTH_KEY_DUPLICATED/i.test(m);
+}
+
+/** The account may not write in this chat: it left or was removed, was banned, or the chat is a
+ * channel only its admins post in. */
+function cannotWrite(e: string): boolean {
+  return /CHAT_WRITE_FORBIDDEN|ChatWriteForbidden|USER_BANNED_IN_CHANNEL|UserBannedInChannel|CHAT_ADMIN_REQUIRED|ChatAdminRequired|CHANNEL_PRIVATE|ChannelPrivate|CHAT_SEND_PLAIN_FORBIDDEN|ChatSendPlainForbidden|USER_IS_BLOCKED|UserIsBlocked|PEER_ID_INVALID|PeerIdInvalid/i.test(e);
+}
+
+/** A chat id as Telegram's client takes it: a group's or a person's number (negative for
+ * groups and channels) is a number, "@name" stays as it is. */
+function peerOf(chatId: string): string | number {
+  return /^-?\d+$/.test(chatId) ? Number(chatId) : chatId;
 }
 
 /** Whether the server has the API id and hash Telegram requires (my.telegram.org). */
@@ -341,10 +354,12 @@ export class TelegramAccounts {
     return { groups: groups.sort(byName), contacts };
   }
 
+  /** Sends one message to a group, channel, person or bot. Orders go out through this, to the
+   * groups an account picked on the dashboard. */
   async send(id: string, chatId: string, text: string, typingMs: number) {
     const account = this.get(id);
     const client = account.ready();
-    const peer = await client.getInputEntity(chatId).catch(async (e: unknown) => {
+    const peer = await client.getInputEntity(peerOf(chatId)).catch(async (e: unknown) => {
       if (loginGone(e)) return account.failed(e);
       throw new NotAllowed("not_a_contact");
     });
@@ -359,7 +374,15 @@ export class TelegramAccounts {
       return { id: String(m.id) };
     } catch (e) {
       if (loginGone(e)) return account.failed(e);
-      log(id, "send outcome unknown", e instanceof Error ? e.message : String(e));
+      const why = e instanceof Error ? `${e.name} ${e.message}` : String(e);
+      // Telegram said no, so nothing was sent: not retried, and the dashboard says why.
+      if (cannotWrite(why)) throw new NotAllowed("not_allowed_to_write");
+      // Too many messages at once: nothing was sent either, and a later try may pass.
+      if (/FLOOD_WAIT|FloodWait|SLOWMODE_WAIT|SlowModeWait/i.test(why)) {
+        log(id, "send delayed by Telegram", why);
+        throw new Error("flood_wait");
+      }
+      log(id, "send outcome unknown", why);
       throw new OutcomeUnknown("outcome_unknown");
     }
   }
@@ -385,7 +408,7 @@ export class TelegramAccounts {
   ): Promise<{ replies: string[] }> {
     const account = this.get(id);
     const client = account.ready();
-    const entity = await client.getEntity(a.chatId).catch(async (e: unknown) => {
+    const entity = await client.getEntity(peerOf(a.chatId)).catch(async (e: unknown) => {
       if (loginGone(e)) return account.failed(e);
       throw new NotAllowed("not_a_contact");
     });

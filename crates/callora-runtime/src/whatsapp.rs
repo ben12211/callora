@@ -1,5 +1,6 @@
-//! Orders to WhatsApp. Accounts are signed in on the WhatsApp service (`whatsapp/`, one QR
-//! scan each); each account sends to its own list of groups and saved contacts. Every new
+//! Orders to WhatsApp and Telegram. Accounts are signed in on the WhatsApp service (`whatsapp/`,
+//! one QR scan each; a Telegram account's id starts with "tg-"); each account sends to its own
+//! list of groups and saved contacts. Every new
 //! order becomes one message per target that wants it, queued in Postgres and sent one at a
 //! time per account at a human pace (a random wait between messages, "typing…" first,
 //! hourly and daily limits, quiet hours, half the limits while a new number warms up), so a
@@ -104,6 +105,29 @@ impl Service {
         Ok((list, v["max"].as_u64().unwrap_or(5)))
     }
 
+    /// The Telegram accounts, in the same shape. Empty when Telegram is not set up on the service
+    /// (or the service predates it): orders then go out on WhatsApp alone.
+    pub async fn telegram_sessions(&self) -> Result<Vec<Session>, ServiceError> {
+        match self.call(reqwest::Method::GET, "/telegram/sessions", None).await {
+            Ok(v) => {
+                serde_json::from_value(v["sessions"].clone()).map_err(|e| ServiceError::Unavailable(e.to_string()))
+            }
+            Err(ServiceError::NotFound) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Every account orders may go out from: WhatsApp's, and Telegram's. A Telegram service that
+    /// does not answer never holds up WhatsApp's messages.
+    pub async fn all_sessions(&self) -> Result<Vec<Session>, ServiceError> {
+        let (mut sessions, _) = self.sessions().await?;
+        match self.telegram_sessions().await {
+            Ok(tg) => sessions.extend(tg),
+            Err(e) => tracing::debug!(error = ?e, "the telegram accounts were not listed"),
+        }
+        Ok(sessions)
+    }
+
     pub async fn chats(&self, id: &str) -> Result<Value, ServiceError> {
         self.call(reqwest::Method::GET, &format!("{}/{}/chats", root(id), enc(id)), None).await
     }
@@ -137,8 +161,9 @@ impl Service {
     }
 }
 
-/// Where an account's calls go in the service: a Telegram account's id starts with "tg-"
-/// (the price-list bot answers on Telegram only), any other is WhatsApp's.
+/// Where an account's calls go in the service: a Telegram account's id starts with "tg-" (it
+/// sends orders like a WhatsApp account, and asks the price-list bot, which answers on Telegram
+/// only), any other is WhatsApp's.
 fn root(id: &str) -> &'static str {
     if id.starts_with("tg-") {
         "/telegram/sessions"
@@ -551,7 +576,7 @@ pub async fn run_sender(pool: PgPool, service: Arc<Service>) {
     let mut next_allowed: HashMap<String, Instant> = HashMap::new();
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let Ok((sessions, _)) = service.sessions().await else { continue };
+        let Ok(sessions) = service.all_sessions().await else { continue };
         for s in sessions.iter().filter(|s| s.status == "ready") {
             if next_allowed.get(&s.id).is_some_and(|t| Instant::now() < *t) {
                 continue;
@@ -606,7 +631,7 @@ pub async fn run_sender(pool: PgPool, service: Arc<Service>) {
                         ServiceError::NotReady => "החשבון לא מחובר".to_string(),
                         ServiceError::NotFound => "החשבון לא נמצא".to_string(),
                         ServiceError::Unavailable(m) | ServiceError::Refused(m) | ServiceError::OutcomeUnknown(m) => {
-                            format!("שירות הוואטסאפ לא זמין ({m})")
+                            format!("שירות ההודעות לא זמין ({m})")
                         }
                     })
                     .bind(failed)
@@ -629,8 +654,10 @@ pub async fn run_sender(pool: PgPool, service: Arc<Service>) {
 
 fn refusal(code: &str) -> String {
     match code {
-        "not_a_contact" => "היעד כבר לא איש קשר שמור".into(),
+        "not_a_contact" => "היעד כבר לא קבוצה או איש קשר של החשבון".into(),
         "not_a_member" => "החשבון כבר לא חבר בקבוצה".into(),
+        // Telegram: the account was removed or banned, or only admins write in the chat.
+        "not_allowed_to_write" => "לחשבון אין הרשאה לכתוב בצ'אט (הוסר, נחסם, או שרק מנהלים כותבים בו)".into(),
         other => format!("נדחה ({other})"),
     }
 }
@@ -713,59 +740,75 @@ async fn overview(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Respons
     let now = Utc::now();
     let mut accounts = Vec::new();
     for sess in sessions {
-        let pace = pace_of(pool, &sess.id).await;
-        let warming = pace.warming(sess.first_ready_at, now);
-        let (per_hour, per_day) = pace.limits(warming);
-        let (hour, day) = sent_counts(pool, &sess.id, now).await.unwrap_or((0, 0));
-        let queue = sqlx::query(
-            "SELECT count(*) AS pending, extract(epoch FROM now() - min(created_at))::float8 / 60 AS oldest
-             FROM callora_v2.whatsapp_outbox WHERE account_id = $1 AND status = 'pending'",
-        )
-        .bind(&sess.id)
-        .fetch_one(pool)
-        .await;
-        let (pending, oldest): (i64, Option<f64>) =
-            queue.map(|r| (r.get("pending"), r.get("oldest"))).unwrap_or((0, None));
-        let targets = sqlx::query(
-            "SELECT chat_id, chat_name, kind, events FROM callora_v2.whatsapp_targets WHERE account_id = $1 ORDER BY id",
-        )
-        .bind(&sess.id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(|r| {
-            json!({
-                "chat_id": r.get::<String, _>("chat_id"),
-                "chat_name": r.get::<String, _>("chat_name"),
-                "kind": r.get::<String, _>("kind"),
-                "events": r.get::<Vec<String>, _>("events"),
-            })
-        })
-        .collect::<Vec<_>>();
-        let quiet_now = pace.quiet_at(now.with_timezone(&ISRAEL).time());
-        accounts.push(json!({
-            "id": sess.id,
-            "name": sess.name,
-            "status": sess.status,
-            "me": sess.me,
-            "error": sess.error,
-            "first_ready_at": sess.first_ready_at,
-            "settings": pace,
-            "warming_up": warming,
-            "targets": targets,
-            "queue": {
-                "pending": pending,
-                "oldest_pending_minutes": oldest,
-                "sent_hour": hour,
-                "sent_today": day,
-                "limit_hour": per_hour,
-                "limit_day": per_day,
-                "quiet_now": quiet_now,
-            },
-        }));
+        let mut account = serde_json::Map::new();
+        account.insert("id".into(), json!(sess.id));
+        account.insert("name".into(), json!(sess.name));
+        account.insert("status".into(), json!(sess.status));
+        account.insert("me".into(), json!(sess.me));
+        account.insert("error".into(), json!(sess.error));
+        account.insert("first_ready_at".into(), json!(sess.first_ready_at));
+        account.extend(account_extras(pool, &sess.id, sess.first_ready_at, now).await);
+        accounts.push(Value::Object(account));
     }
     Json(json!({ "configured": true, "reachable": true, "max": max, "accounts": accounts })).into_response()
+}
+
+/// What the dashboard shows of an account besides its connection, for WhatsApp and Telegram
+/// alike: its pace, the groups and contacts it sends to, and its queue.
+async fn account_extras(
+    pool: &PgPool,
+    id: &str,
+    first_ready_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> serde_json::Map<String, Value> {
+    let pace = pace_of(pool, id).await;
+    let warming = pace.warming(first_ready_at, now);
+    let (per_hour, per_day) = pace.limits(warming);
+    let (hour, day) = sent_counts(pool, id, now).await.unwrap_or((0, 0));
+    let queue = sqlx::query(
+        "SELECT count(*) AS pending, extract(epoch FROM now() - min(created_at))::float8 / 60 AS oldest
+         FROM callora_v2.whatsapp_outbox WHERE account_id = $1 AND status = 'pending'",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await;
+    let (pending, oldest): (i64, Option<f64>) =
+        queue.map(|r| (r.get("pending"), r.get("oldest"))).unwrap_or((0, None));
+    let targets = sqlx::query(
+        "SELECT chat_id, chat_name, kind, events FROM callora_v2.whatsapp_targets WHERE account_id = $1 ORDER BY id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .iter()
+    .map(|r| {
+        json!({
+            "chat_id": r.get::<String, _>("chat_id"),
+            "chat_name": r.get::<String, _>("chat_name"),
+            "kind": r.get::<String, _>("kind"),
+            "events": r.get::<Vec<String>, _>("events"),
+        })
+    })
+    .collect::<Vec<_>>();
+    let quiet_now = pace.quiet_at(now.with_timezone(&ISRAEL).time());
+    let mut extras = serde_json::Map::new();
+    extras.insert("settings".into(), json!(pace));
+    extras.insert("warming_up".into(), json!(warming));
+    extras.insert("targets".into(), json!(targets));
+    extras.insert(
+        "queue".into(),
+        json!({
+            "pending": pending,
+            "oldest_pending_minutes": oldest,
+            "sent_hour": hour,
+            "sent_today": day,
+            "limit_hour": per_hour,
+            "limit_day": per_day,
+            "quiet_now": quiet_now,
+        }),
+    );
+    extras
 }
 
 #[derive(Deserialize)]
@@ -782,14 +825,29 @@ async fn telegram_overview(State(s): State<Arc<AppState>>, headers: HeaderMap) -
     }
     let Some(service) = s.whatsapp.as_deref() else { return Json(json!({ "service": false })).into_response() };
     match service.call(reqwest::Method::GET, "/telegram/sessions", None).await {
-        Ok(v) => Json(json!({
-            "service": true,
-            "reachable": true,
-            "configured": v["configured"],
-            "max": v["max"],
-            "accounts": v["sessions"],
-        }))
-        .into_response(),
+        Ok(v) => {
+            // The same pace, targets and queue as a WhatsApp account's (without a database,
+            // the accounts are listed as the service gives them).
+            let now = Utc::now();
+            let mut accounts = v["sessions"].as_array().cloned().unwrap_or_default();
+            if let Some(pool) = &s.db {
+                for a in &mut accounts {
+                    let id = a["id"].as_str().unwrap_or_default().to_string();
+                    let ready = a["first_ready_at"].as_str().and_then(|t| t.parse::<DateTime<Utc>>().ok());
+                    if let Some(obj) = a.as_object_mut() {
+                        obj.extend(account_extras(pool, &id, ready, now).await);
+                    }
+                }
+            }
+            Json(json!({
+                "service": true,
+                "reachable": true,
+                "configured": v["configured"],
+                "max": v["max"],
+                "accounts": accounts,
+            }))
+            .into_response()
+        }
         Err(_) => Json(json!({ "service": true, "reachable": false, "accounts": [] })).into_response(),
     }
 }
@@ -807,14 +865,30 @@ async fn telegram_add(State(s): State<Arc<AppState>>, headers: HeaderMap, Json(b
 }
 
 async fn telegram_remove(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
-    let (service, _) = match check(&s, &headers) {
+    let (service, pool) = match check(&s, &headers) {
         Ok(v) => v,
         Err(r) => return *r,
     };
     match service.call(reqwest::Method::DELETE, &format!("/telegram/sessions/{}", enc(&id)), None).await {
-        Ok(_) | Err(ServiceError::NotFound) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) | Err(ServiceError::NotFound) => match forget_account(pool, &id).await {
+            Ok(_) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => db_error(e),
+        },
         Err(e) => service_error(e),
     }
+}
+
+/// An account that was removed: its targets and pace go, and what still waited for it fails.
+async fn forget_account(pool: &PgPool, id: &str) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM callora_v2.whatsapp_targets WHERE account_id = $1").bind(id).execute(pool).await?;
+    sqlx::query("DELETE FROM callora_v2.whatsapp_accounts WHERE id = $1").bind(id).execute(pool).await?;
+    sqlx::query(
+        "UPDATE callora_v2.whatsapp_outbox SET status = 'failed', last_error = 'החשבון נמחק' WHERE account_id = $1 AND status = 'pending'",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 async fn telegram_restart(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
@@ -884,18 +958,8 @@ async fn remove_account(State(s): State<Arc<AppState>>, headers: HeaderMap, Path
             return service_error(e);
         }
     }
-    let cleanup = async {
-        sqlx::query("DELETE FROM callora_v2.whatsapp_targets WHERE account_id = $1").bind(&id).execute(pool).await?;
-        sqlx::query("DELETE FROM callora_v2.whatsapp_accounts WHERE id = $1").bind(&id).execute(pool).await?;
-        sqlx::query(
-            "UPDATE callora_v2.whatsapp_outbox SET status = 'failed', last_error = 'החשבון נמחק' WHERE account_id = $1 AND status = 'pending'",
-        )
-        .bind(&id)
-        .execute(pool)
-        .await
-    };
-    match cleanup.await {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+    match forget_account(pool, &id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => db_error(e),
     }
 }
@@ -1064,6 +1128,8 @@ async fn test_message(
 #[derive(Deserialize)]
 struct OutboxQuery {
     limit: Option<i64>,
+    /// "telegram" or "whatsapp": only that app's messages. Without it, all of them.
+    app: Option<String>,
 }
 
 async fn outbox(State(s): State<Arc<AppState>>, headers: HeaderMap, Query(q): Query<OutboxQuery>) -> Response {
@@ -1073,9 +1139,12 @@ async fn outbox(State(s): State<Arc<AppState>>, headers: HeaderMap, Query(q): Qu
     };
     let rows = sqlx::query(
         "SELECT id, account_id, chat_name, event, text, status, attempts, last_error, created_at, sent_at, next_attempt_at
-         FROM callora_v2.whatsapp_outbox ORDER BY id DESC LIMIT $1",
+         FROM callora_v2.whatsapp_outbox
+         WHERE $2::text IS NULL OR (account_id LIKE 'tg-%') = ($2 = 'telegram')
+         ORDER BY id DESC LIMIT $1",
     )
     .bind(q.limit.unwrap_or(100).clamp(1, 500))
+    .bind(q.app.filter(|a| matches!(a.as_str(), "telegram" | "whatsapp")))
     .fetch_all(pool)
     .await;
     match rows {
@@ -1156,6 +1225,25 @@ mod tests {
     fn a_telegram_account_is_asked_through_telegram() {
         assert_eq!(root("tg-1a2b3c4d"), "/telegram/sessions");
         assert_eq!(root("2bc61787"), "/sessions");
+    }
+
+    #[test]
+    fn a_telegram_account_listed_by_the_service_is_a_session() {
+        let listed = json!({
+            "id": "tg-1a2b3c4d", "name": "טלגרם", "status": "ready", "created_at": "2026-10-05T10:00:00.000Z",
+            "first_ready_at": "2026-10-05T10:01:00.000Z", "hint": null, "error": null,
+            "me": { "number": "972501234567", "name": "דן", "username": "dan" }
+        });
+        let s: Session = serde_json::from_value(listed).unwrap();
+        assert_eq!((s.id.as_str(), s.status.as_str()), ("tg-1a2b3c4d", "ready"));
+        assert!(s.first_ready_at.is_some() && s.me.is_some());
+    }
+
+    #[test]
+    fn a_refusal_says_why_in_words() {
+        assert!(refusal("not_allowed_to_write").contains("הרשאה"));
+        assert!(refusal("not_a_contact").contains("קבוצה"));
+        assert_eq!(refusal("weird"), "נדחה (weird)");
     }
 
     #[test]

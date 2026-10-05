@@ -1,6 +1,7 @@
 // Telegram accounts: signed in by scanning a QR code from the Telegram app (and the two-step
 // password, when the account has one), like WhatsApp's. They ask the price-list bot, which
-// answers on Telegram only; orders still go out on WhatsApp.
+// answers on Telegram only, and, like WhatsApp accounts, send every new order to the groups and
+// contacts picked here, at a human pace.
 
 import { useEffect, useMemo, useState } from "react";
 import { KeyRound, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
@@ -8,6 +9,7 @@ import { Link } from "react-router-dom";
 import { api, Unauthorized, useApi } from "../api";
 import { phone } from "../format";
 import { Badge, Button, Card, Empty, Input, Loading, PageHeader, Problem } from "../ui";
+import { Broadcast, type BroadcastAccount, Log, QueueSummary } from "./broadcast";
 
 export type TgAccount = {
   id: string;
@@ -17,7 +19,7 @@ export type TgAccount = {
   hint: string | null;
   error: string | null;
   first_ready_at: string | null;
-};
+} & Partial<Pick<BroadcastAccount, "settings" | "warming_up" | "targets" | "queue">>;
 export type TgOverview = { service: boolean; reachable?: boolean; configured?: boolean; max?: number; accounts?: TgAccount[] };
 
 const STATUS: Record<string, { label: string; tone: "good" | "warn" | "bad" | "neutral" | "brand" }> = {
@@ -28,6 +30,11 @@ const STATUS: Record<string, { label: string; tone: "good" | "warn" | "bad" | "n
   disconnected: { label: "מנותק", tone: "warn" },
   failed: { label: "שגיאה", tone: "bad" },
 };
+
+/** The server sent the account's targets, pace and queue (it has a database). */
+function isBroadcast(a: TgAccount): a is TgAccount & BroadcastAccount {
+  return Boolean(a.settings && a.targets && a.queue);
+}
 
 /** "+972 52-…" or "@name", whichever the account has. */
 export function tgWho(me: TgAccount["me"]): string {
@@ -67,7 +74,7 @@ export function Telegram() {
     <>
       <PageHeader
         title="טלגרם"
-        subtitle="חשבון טלגרם ששואל את בוט המחירון. ההזמנות ממשיכות לצאת בוואטסאפ."
+        subtitle="כל הזמנה נשלחת לקבוצות ולאנשי הקשר שבחרתם, בקצב של אדם. החשבון גם שואל את בוט המחירון."
         action={
           ready ? (
             <Button variant="primary" onClick={() => setAdding(true)} disabled={full} title={full ? `עד ${o?.max} חשבונות` : undefined}>
@@ -134,6 +141,7 @@ export function Telegram() {
               ))}
             </div>
           )}
+          {accounts.some((a) => a.status === "ready") && <Log app="telegram" accounts={accounts.filter(isBroadcast)} />}
         </>
       )}
     </>
@@ -195,6 +203,7 @@ function AccountCard({ account: a, onChange }: { account: TgAccount; onChange: (
           </div>
         </div>
         <div className="ms-auto flex items-center gap-2">
+          {a.status === "ready" && isBroadcast(a) && <QueueSummary account={a} />}
           <Button variant="ghost" onClick={restart} title="חבר מחדש">
             <RefreshCw className="size-4" aria-hidden />
           </Button>
@@ -217,13 +226,20 @@ function AccountCard({ account: a, onChange }: { account: TgAccount; onChange: (
 
       <div className="p-5">
         {a.status === "ready" ? (
-          <p className="text-sm text-slate-600 dark:text-slate-300">
-            מחובר. בחרו את בוט המחירון ב
-            <Link to="/settings" className="font-medium text-brand-700 underline-offset-2 hover:underline dark:text-brand-300">
-              הגדרות ← בוט מחירים
-            </Link>
-            .
-          </p>
+          <>
+            {isBroadcast(a) ? (
+              <Broadcast account={a} onChange={onChange} />
+            ) : (
+              <Problem>התפוצה לא נטענה (אין מסד נתונים בשרת).</Problem>
+            )}
+            <p className="mt-5 border-t border-slate-100 pt-4 text-sm text-slate-600 dark:border-slate-800 dark:text-slate-300">
+              בוט המחירון נבחר ב
+              <Link to="/settings" className="font-medium text-brand-700 underline-offset-2 hover:underline dark:text-brand-300">
+                הגדרות ← בוט מחירים
+              </Link>
+              .
+            </p>
+          </>
         ) : (
           <Connect account={a} onRestart={restart} />
         )}

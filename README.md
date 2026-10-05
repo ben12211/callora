@@ -123,6 +123,12 @@ list of groups it is in and saved contacts, at a human pace: a random wait betwe
 warms up. Messages queue in Postgres (`whatsapp_outbox`) and are retried until sent, so a
 disconnected account loses nothing. It is unofficial: connect a separate number.
 
+Telegram accounts (teleproto, signed in by QR on the dashboard's WhatsApp page, "טלגרם" tab;
+`TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from my.telegram.org) work the same way: each picks
+its groups, channels and contacts, gets the same pace settings, and every new order, order to
+check and handoff goes out to them through the same queue and log. A chat the account may not
+write in (removed, banned, an admins-only channel) fails with the reason instead of retrying.
+
 ## Endpoints
 
 | Method | Path | |
