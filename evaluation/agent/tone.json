@@ -1,0 +1,227 @@
+[
+  {
+    "id": "tone_frustration_is_not_small_talk",
+    "note": "the owner: \"מה נשמע, כמה פעמים אני צריך להגיד לך?\" is a complaint; \"הכל בסדר, כיצד אוכל לעזור?\" is the wrong answer",
+    "turns": [
+      {
+        "caller": "צריך מונית מבני ברק לירושלים, שלושה נוסעים",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "בני ברק"
+            },
+            {
+              "slot": "destination",
+              "value": "ירושלים"
+            },
+            {
+              "slot": "passengers",
+              "value": "3"
+            }
+          ],
+          "say": "איפה בבני ברק לאסוף?",
+          "asks": [
+            "pickup"
+          ]
+        }
+      },
+      {
+        "caller": "מה נשמע, כמה פעמים אני צריך להגיד לך?",
+        "expect": {
+          "says_any": [
+            "סליחה|צודק|מצטער"
+          ],
+          "says_none": [
+            "הכל טוב|הכל בסדר|במה אפשר לעזור|איך אפשר לעזור|כיצד|הבנתי|כמובן|בשמחה|בהחלט"
+          ],
+          "ended": false,
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "tone_repeating_is_owned_and_taken",
+    "note": "a caller who says it again gets a short sorry and the detail is taken, not asked for again",
+    "turns": [
+      {
+        "caller": "צריך מונית מבני ברק לירושלים",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "מאיפה לאסוף?",
+          "asks": [
+            "pickup"
+          ]
+        }
+      },
+      {
+        "caller": "אמרתי לך כבר, מבני ברק לירושלים",
+        "expect": {
+          "says_any": [
+            "סליחה|צודק"
+          ],
+          "says_none": [
+            "מאיזו עיר|הבנתי|כמובן"
+          ],
+          "cities": {
+            "pickup": "בני ברק"
+          },
+          "ended": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "tone_sarcasm_gets_no_thanks",
+    "note": "sarcasm is not a compliment: no thanks, no cheer",
+    "turns": [
+      {
+        "caller": "צריך מונית מאלעד לבני ברק",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "אלעד"
+            },
+            {
+              "slot": "destination",
+              "value": "בני ברק"
+            }
+          ],
+          "say": "כמה נוסעים?",
+          "asks": [
+            "passengers"
+          ]
+        }
+      },
+      {
+        "caller": "וואו, ממש מהיר אתה, כבר חיכיתי שנה",
+        "expect": {
+          "says_none": [
+            "תודה רבה|בשמחה|כמובן|הבנתי|שמח"
+          ],
+          "ended": false,
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "tone_a_joke_gets_a_smile_and_the_ride",
+    "turns": [
+      {
+        "caller": "צריך מונית מאלעד לבני ברק",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "אלעד"
+            },
+            {
+              "slot": "destination",
+              "value": "בני ברק"
+            }
+          ],
+          "say": "כמה נוסעים?",
+          "asks": [
+            "passengers"
+          ]
+        }
+      },
+      {
+        "caller": "אתה בטח רובוט, נכון? חחח",
+        "expect": {
+          "says_none": [
+            "הבנתי|כמובן|בשמחה|בהחלט|אין בעיה|מובן"
+          ],
+          "ended": false,
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "tone_a_short_answer_gets_no_opening_word",
+    "note": "a word from the caller is not met with \"הבנתי\", \"כמובן\" or a speech",
+    "turns": [
+      {
+        "caller": "צריך מונית מאלעד לבני ברק",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "אלעד"
+            },
+            {
+              "slot": "destination",
+              "value": "בני ברק"
+            }
+          ],
+          "say": "כמה נוסעים?",
+          "asks": [
+            "passengers"
+          ]
+        }
+      },
+      {
+        "caller": "שלושה",
+        "expect": {
+          "says_none": [
+            "הבנתי|כמובן|בשמחה|בהחלט|אין בעיה|מובן"
+          ],
+          "slots": {
+            "passengers": "3"
+          },
+          "ended": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "tone_impatience_gets_the_fewest_words",
+    "turns": [
+      {
+        "caller": "צריך מונית מאלעד לבני ברק",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "אלעד"
+            },
+            {
+              "slot": "destination",
+              "value": "בני ברק"
+            }
+          ],
+          "say": "כמה נוסעים?",
+          "asks": [
+            "passengers"
+          ]
+        }
+      },
+      {
+        "caller": "יאללה תזדרז, אין לי זמן",
+        "expect": {
+          "says_none": [
+            "הבנתי|כמובן|בשמחה|בהחלט|אין בעיה|מובן|הכל טוב|במה אפשר לעזור"
+          ],
+          "ended": false,
+          "handoff": false
+        }
+      }
+    ]
+  }
+]

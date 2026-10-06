@@ -151,6 +151,17 @@ function Fact({ label, value, sub, tone, small }: { label: string; value: React.
   );
 }
 
+/** The caller's tone as the agent read it; a neutral one is not worth a pill. */
+const TONES: Record<string, { label: string; className: string }> = {
+  friendly: { label: "ידידותי", className: "bg-emerald-50 text-emerald-800 ring-emerald-200 dark:bg-emerald-400/10 dark:text-emerald-200 dark:ring-emerald-400/20" },
+  joking: { label: "בצחוק", className: "bg-sky-50 text-sky-800 ring-sky-200 dark:bg-sky-400/10 dark:text-sky-200 dark:ring-sky-400/20" },
+  rushed: { label: "ממהר", className: "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-400/10 dark:text-amber-200 dark:ring-amber-400/20" },
+  frustrated: { label: "מתוסכל", className: "bg-rose-50 text-rose-800 ring-rose-200 dark:bg-rose-400/10 dark:text-rose-200 dark:ring-rose-400/20" },
+  sarcastic: { label: "ציני", className: "bg-rose-50 text-rose-800 ring-rose-200 dark:bg-rose-400/10 dark:text-rose-200 dark:ring-rose-400/20" },
+  confused: { label: "מבולבל", className: "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-400/10 dark:text-amber-200 dark:ring-amber-400/20" },
+  rude: { label: "גס", className: "bg-rose-50 text-rose-800 ring-rose-200 dark:bg-rose-400/10 dark:text-rose-200 dark:ring-rose-400/20" },
+};
+
 function Pill({ children, className, icon }: { children: React.ReactNode; className?: string; icon?: React.ReactNode }) {
   return (
     <span className={cx("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset", className ?? "bg-slate-50 text-slate-600 ring-slate-200 dark:bg-white/[0.05] dark:text-slate-300 dark:ring-white/10")}>
@@ -200,6 +211,7 @@ function TurnView({ turn }: { turn: Turn }) {
                   </Pill>
                 )}
                 {r.action && ACTIONS[r.action] && <Pill className="bg-brand-50 text-brand-700 ring-brand-200 dark:bg-brand-400/10 dark:text-brand-200 dark:ring-brand-400/20">{ACTIONS[r.action]}</Pill>}
+                {r.tone && TONES[r.tone] && <Pill className={TONES[r.tone].className}>טון · {TONES[r.tone].label}</Pill>}
                 {r.phrase && <Pill>הקלטה · {r.phrase}</Pill>}
                 {fields.map((f) => (
                   <Pill key={f.slot + f.value} className="bg-emerald-50 text-emerald-800 ring-emerald-200 dark:bg-emerald-400/10 dark:text-emerald-200 dark:ring-emerald-400/20">
@@ -210,6 +222,11 @@ function TurnView({ turn }: { turn: Turn }) {
             ) : (
               <Pill icon={<Cpu className="size-3" aria-hidden />}>נענה בחוקים, בלי הסוכן</Pill>
             )}
+          </div>
+        )}
+        {!agent && r?.read && (
+          <div className="max-w-full text-[11px] italic text-slate-500 dark:text-slate-400" dir="ltr">
+            read: {r.read}
           </div>
         )}
         {d.second_hearing && <div className="text-[11px] text-slate-500 dark:text-slate-400">שמיעה שנייה: {d.second_hearing}</div>}

@@ -82,8 +82,20 @@ streams in:
 | `fields` | Values the caller gave, in their words. Checked against the parsers *before* a word plays: a value that will be rejected silences the reply, and the engine asks for it again. |
 | `asks` | The details the turn's question asks for. A required detail asked for earlier and still missing stays open: a reply whose question asks only for other details is held before a word plays, and the engine asks for the open one again. |
 | `phrase` | The id of a recorded phrase (`agent.phrases`), or null. It plays the moment the id is complete: no Hebrew text to generate, no TTS. |
+| `read` | The agent's read of the caller, first in the reply and never spoken: `""` when the words mean what they say (most turns, about two tokens), else one terse English line (what they really mean, how they sound). The reply is then decided on it. |
+| `tone` | neutral, friendly, joking, rushed, frustrated, sarcastic, confused or rude. Kept for the last six turns (`CallState.moods`) and told back to the agent ("CALLER'S TONE on their last turns"), so the mood of the call is remembered, not only that of one sentence. |
 | `say` | Anything else to say, spoken sentence by sentence as it streams (a sentence that is a recording plays as its clip). Usually empty with a phrase. |
 | `task` | The task the caller is on. |
+
+**Listening.** The prompt's "HOW TO LISTEN AND ANSWER" is generic (meaning over words, use the whole
+call, match the caller's tone and length, spoken language, no opening acknowledgements); the business
+adds its own rules and examples (`agent.rules`). Beside the model's own read, the engine adds one
+deterministic signal: when the caller's words nearly repeat an earlier turn of theirs
+(`agent::repeats_earlier`, word overlap without Hebrew prefixes) the turn carries a REPEAT note, so the
+agent owns the repetition and does not ask again. The cost is the `read` and `tone` keys: about two
+tokens on a plain turn, up to ~25 when the agent has something to read. `agent.reading: false` in the
+business file removes them. Measure first-words latency with `callora eval` (and `turn timing` on live
+calls) before and after.
 
 **The engine enforces** (`Engine::on_agent_turn`): values go through the same typed
 parsers and the places list as everything else; a place the caller never said is refused;

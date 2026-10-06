@@ -51,6 +51,9 @@ export type AgentReply = {
   asks?: string[];
   phrase?: string | null;
   say?: string;
+  /** How the agent read the caller (never said to them): empty when their words meant what they said. */
+  read?: string;
+  tone?: string;
 };
 
 export type TurnDetail = {

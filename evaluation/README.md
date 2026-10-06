@@ -33,6 +33,10 @@ Before changing the agent's prompt (`crates/callora-core/src/agent.rs`), its rul
 (`businesses/taxi.json` → `agent`) or the model, run the eval before and after. A change
 that fixes one case and breaks two others shows up here instead of on a caller.
 
+`agent/tone.json` holds the cases for tone and context: a complaint inside small talk, a caller
+repeating themselves, sarcasm, a joke, impatience, and no opening "הבנתי"/"כמובן". Their expectations were
+written without a model run: run them, and loosen a pattern that fails on a good answer.
+
 ## Adding a case
 
 Every conversation that goes wrong on a live call becomes a case. Open the call on the

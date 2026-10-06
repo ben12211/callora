@@ -680,8 +680,8 @@ fn the_agent_prompt_carries_the_business_and_its_instant_phrases() {
     let order: Vec<&str> = request.schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(
         order,
-        ["action", "fields", "asks", "phrase", "say", "task"],
-        "the action, the fields and what the question asks, then the words: all are checked before a word plays"
+        ["read", "tone", "action", "fields", "asks", "phrase", "say", "task"],
+        "the read of the caller, then the action, the fields and what the question asks, then the words: all are checked before a word plays"
     );
     // Phrases are offered by id, with their wording, and only those with nothing to fill in.
     assert!(system.contains("- ask_destination: \"לאן נוסעים?\""), "{system}");

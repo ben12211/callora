@@ -807,6 +807,15 @@ pub struct AgentConfig {
     /// The business's own words for the generic instructions (examples, the role).
     #[serde(default)]
     pub prompt: AgentPrompt,
+    /// The agent reads the caller before it answers: each reply opens with `read` (what they
+    /// mean, empty when they mean what they say) and `tone`. A few tokens a turn; off, the reply
+    /// starts with its action as before.
+    #[serde(default = "default_true")]
+    pub reading: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// What the generic agent prompt cannot know about a business: its examples, in its own

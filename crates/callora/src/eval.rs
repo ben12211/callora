@@ -330,6 +330,7 @@ impl Runner {
                             turn.decision_ms = Some(asked.decision_ms);
                             turn.usage = asked.usage;
                             let d = agent::parse(&b, &asked.reply);
+                            engine.state.remember_mood(agent::tone(&asked.reply));
                             turn.reply = Some(asked.reply);
                             decision = Some(d.clone());
                             engine.on_agent_turn(&t.caller, d, "")

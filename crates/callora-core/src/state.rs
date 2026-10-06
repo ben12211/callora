@@ -118,6 +118,42 @@ pub enum Phase {
     Ending,
 }
 
+/// How the caller sounds, as the agent reads it (never said to them). It shapes the reply, and
+/// the last few are kept so the agent remembers the mood of the call, not only of one sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tone {
+    Neutral,
+    Friendly,
+    Joking,
+    Rushed,
+    Frustrated,
+    Sarcastic,
+    Confused,
+    Rude,
+}
+
+impl Tone {
+    pub const ALL: [(&'static str, Tone); 8] = [
+        ("neutral", Tone::Neutral),
+        ("friendly", Tone::Friendly),
+        ("joking", Tone::Joking),
+        ("rushed", Tone::Rushed),
+        ("frustrated", Tone::Frustrated),
+        ("sarcastic", Tone::Sarcastic),
+        ("confused", Tone::Confused),
+        ("rude", Tone::Rude),
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        Self::ALL.iter().find(|(_, t)| *t == self).map_or("neutral", |(name, _)| *name)
+    }
+
+    pub fn parse(s: &str) -> Option<Tone> {
+        Self::ALL.iter().find(|(name, _)| *name == s).map(|(_, t)| *t)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Turn {
     pub speaker: Speaker,
@@ -249,9 +285,14 @@ pub struct CallState {
     /// not every time noise cuts in.
     #[serde(default)]
     pub noise_apology_turn: Option<u32>,
+    /// How the caller sounded on their last turns with the agent, oldest first.
+    #[serde(default)]
+    pub moods: Vec<Tone>,
 }
 
 pub const HISTORY_LIMIT: usize = 24;
+/// How many of the caller's tones are kept.
+pub const MOODS_KEPT: usize = 6;
 
 impl CallState {
     pub fn new(business_id: &str) -> Self {
@@ -295,6 +336,16 @@ impl CallState {
             offered_streets: Vec::new(),
             asked_slots: BTreeSet::new(),
             noise_apology_turn: None,
+            moods: Vec::new(),
+        }
+    }
+
+    /// The tone the agent read in the caller's last words.
+    pub fn remember_mood(&mut self, tone: Tone) {
+        self.moods.push(tone);
+        if self.moods.len() > MOODS_KEPT {
+            let excess = self.moods.len() - MOODS_KEPT;
+            self.moods.drain(..excess);
         }
     }
 

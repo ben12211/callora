@@ -443,7 +443,11 @@ impl Session {
                     self.say_now(&tail);
                 }
                 let decision = agent::parse(&self.business, &reply);
-                tracing::info!(call = %self.info.call_sid, action = ?decision.action, task = ?decision.task, fields = ?decision.fields, "agent decision");
+                // How the agent read the caller: the next turn is told, so the mood of the call
+                // is remembered and not only that of the last sentence.
+                let tone = agent::tone(&reply);
+                self.engine.state.remember_mood(tone);
+                tracing::info!(call = %self.info.call_sid, action = ?decision.action, task = ?decision.task, fields = ?decision.fields, tone = tone.as_str(), "agent decision");
                 let directives = self.engine.on_agent_turn(&p.transcript, decision, &p.spoken.join(" "));
                 self.execute(directives);
             }

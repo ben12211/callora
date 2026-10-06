@@ -20,7 +20,7 @@ use crate::address_form::AddressForm;
 use crate::business::Business;
 use crate::config::SlotKind;
 use crate::llm::LlmRequest;
-use crate::state::{CallState, Speaker, Step};
+use crate::state::{CallState, Speaker, Step, Tone};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentAction {
@@ -180,8 +180,36 @@ pub fn system_prompt(b: &Business) -> String {
         ));
     }
 
+    let reading = agent.is_none_or(|a| a.reading);
+    s.push_str(&format!(
+        "\nHOW TO LISTEN AND ANSWER (this is a phone call, not a form: take in the whole call, not only the last \
+         sentence):\n\
+         - Hear what the caller means, not only the words. A question inside a complaint is a complaint; sarcasm, \
+         impatience, a joke, a correction and a remark to someone else are things a person hears at once, and so do \
+         you.\n\
+         - Use the call: what was said, asked and answered earlier is known to both of you. Never ask again for what \
+         the caller already gave, never repeat what they know, never explain what they did not ask about.\n\
+         - Match the caller. Frustrated or sarcastic: own it in a few words, no defence and no cheerfulness, then go \
+         straight to what is still needed. A joke: at most a half-smile, then on. In a hurry: the fewest words. \
+         Confused: one plain sentence. Short words get short answers: if two to six words do it, never twenty.\n\
+         - Sound spoken, not written: everyday spoken {}, never formal and never like a form. Never start with a bare \
+         acknowledgement (\"understood\", \"of course\", \"gladly\", \"certainly\", in the caller's language); vary how \
+         you start; not every reply needs a closing line or a question.\n\
+         - Ask only when you need the answer to go on; otherwise just go on.\n",
+        c.language
+    ));
+
     let instant = phrase_ids(b);
-    s.push_str("\nREPLY with JSON, every turn:\n");
+    s.push_str("\nREPLY with JSON, every turn, the keys in this order:\n");
+    if reading {
+        s.push_str(
+            "- read: \"\" when the caller's words mean just what they say (most turns: then think no further). \
+             Otherwise ONE terse line in English, 12 words at most: what they really mean or want, and how they sound, \
+             using the earlier call. It is never said or shown to anyone.\n\
+             - tone: how the caller sounds in these words: neutral, friendly, joking, rushed, frustrated, sarcastic, \
+             confused or rude.\n",
+        );
+    }
     s.push_str(
         "- action: \"none\"; \"read_back\" when every required detail of the task is known and the caller has \
          nothing to add: the system then reads the details back and asks to confirm, so add no question of your \
@@ -222,10 +250,12 @@ pub fn system_prompt(b: &Business) -> String {
         );
     }
     s.push_str(&format!(
-        "- say: what you say {}: at most ONE short, natural sentence in the caller's language, like a real \
-         {role}. Never repeat the greeting, never list options unless the caller is lost, never say you did not \
-         understand and then ask something else in the same turn. Unless the caller is saying goodbye, the turn \
-         moves the call on: after taking a detail it asks the next question{}, never just an acknowledgement.\n",
+        "- say: what you say {}: one or two short, natural sentences in the caller's language, like a real \
+         {role}, as short as the caller's own words allow. Never repeat the greeting, never list options unless the \
+         caller is lost, never say you did not understand and then ask something else in the same turn. Unless the \
+         caller is saying goodbye, the turn moves the call on: after taking a detail it asks the next question{}, \
+         never just an acknowledgement. When the caller is frustrated or sarcastic, the first words answer that \
+         (a few words), then the turn moves on.\n",
         if instant.is_empty() {
             "now"
         } else {
@@ -240,7 +270,8 @@ pub fn system_prompt(b: &Business) -> String {
         "\nRULES:\n\
          - Speech recognition makes mistakes. Act on what you did understand{}; if nothing makes sense, ask again. \
          Never guess a value{}, never end the call because of it.\n\
-         - Greetings and small talk get a short friendly answer, then offer help.\n\
+         - A real greeting or small talk gets a short friendly answer, then offer help. A \"how are you\" inside a \
+         complaint or sarcasm is not small talk: answer the complaint.\n\
          - Prices, arrival times and availability come only from the system. Never promise them yourself.\n\
          - Ask only for what is still missing, the most important first; one short question may ask for two \
          missing details that go together.\n\
@@ -319,6 +350,19 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
     for t in &state.history {
         let who = if t.speaker == Speaker::Agent { "Agent" } else { "Caller" };
         u.push_str(&format!("{who}: {}\n", t.text));
+    }
+    if state.moods.iter().any(|t| *t != Tone::Neutral) {
+        let seen: Vec<&str> = state.moods.iter().map(|t| t.as_str()).collect();
+        u.push_str(&format!(
+            "\nCALLER'S TONE on their last turns (your own reads, oldest first): {}.\n",
+            seen.join(", ")
+        ));
+    }
+    if let Some(earlier) = repeats_earlier(state, transcript) {
+        u.push_str(&format!(
+            "\nREPEAT: the caller said nearly this before: \"{earlier}\". They may be tired of saying it again: use \
+             what they gave, never ask for it again, and if it slipped past you, own that in a few words.\n"
+        ));
     }
     if let Some(forms) = words.and_then(|w| w.address_forms.as_ref()) {
         let (form, how) = match state.address_form {
@@ -462,6 +506,13 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
     // whether it moves on past an unanswered question, before any words arrive; a phrase
     // plays as soon as its id is complete, and `say` is spoken while it is still generated.
     let mut properties = serde_json::Map::new();
+    // The agent's read of the caller comes first, empty on most turns (a couple of tokens): the
+    // rest of the reply is decided on it, and it never reaches the caller.
+    if c.agent.as_ref().is_none_or(|a| a.reading) {
+        let tones: Vec<&str> = Tone::ALL.iter().map(|(name, _)| *name).collect();
+        properties.insert("read".into(), json!({ "type": "string" }));
+        properties.insert("tone".into(), json!({ "type": "string", "enum": tones }));
+    }
     properties.insert("action".into(), json!({ "type": "string", "enum": actions }));
     properties.insert(
         "fields".into(),
@@ -494,6 +545,38 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
         "properties": properties,
     });
     LlmRequest { system: system_prompt(b), user: turn_message(b, state, transcript), schema }
+}
+
+/// How the agent read the caller's tone this turn (neutral when it did not say).
+pub fn tone(reply: &Value) -> Tone {
+    reply.get("tone").and_then(Value::as_str).and_then(Tone::parse).unwrap_or(Tone::Neutral)
+}
+
+/// An earlier turn of the caller that the words just said nearly repeat ("אמרתי לך כבר ..."):
+/// being made to repeat oneself is what a person notices first, and what the agent should own.
+pub fn repeats_earlier(state: &CallState, transcript: &str) -> Option<String> {
+    // Words of three letters or more, without the one-letter prefixes Hebrew glues on (מבני, בבני).
+    let content = |text: &str| -> Vec<String> {
+        crate::text::normalize(text)
+            .split_whitespace()
+            .filter(|w| w.chars().count() >= 3)
+            .map(|w| match w.chars().next() {
+                Some(first) if w.chars().count() >= 4 && crate::text::HEBREW_PREFIXES.contains(first) => {
+                    w.chars().skip(1).collect()
+                }
+                _ => w.to_string(),
+            })
+            .collect()
+    };
+    let now = content(transcript);
+    if now.len() < 2 {
+        return None;
+    }
+    state.history.iter().rev().filter(|t| t.speaker == Speaker::Caller).find_map(|t| {
+        let before = content(&t.text);
+        let common = now.iter().filter(|w| before.contains(w)).count();
+        (before.len() >= 2 && common >= 2 && common * 10 >= 6 * now.len().min(before.len())).then(|| t.text.clone())
+    })
 }
 
 /// Read the model's JSON. Unknown tasks and slots are dropped here; values are validated by
@@ -731,6 +814,76 @@ mod tests {
         assert!(say_after_phrase(&b, "ack", "מאיזו עיר לאסוף?"), "an acknowledgement, then the question");
         assert!(say_after_phrase(&b, "small_talk_short", "צריך מונית?"), "no question in the phrase");
         assert!(!say_after_phrase(&b, "ack", "סגור."), "the acknowledgement twice");
+    }
+
+    #[test]
+    fn the_read_of_the_caller_never_reaches_the_speech() {
+        // `read` is free text, and it comes first: whatever it says (quotes, the names of the other
+        // keys) must not be taken for them.
+        let mut s = SayStream::default();
+        let mut said = Vec::new();
+        for chunk in [
+            "{\"read\": \"caller says \\\"say\\\" and \\\"action\\\": annoyed, not asking how I am\", \"tone\": \"sarcastic\", ",
+            "\"action\": \"none\", \"fields\": [], \"asks\": [], \"phrase\": null, ",
+            "\"say\": \"סליחה, צודק. מאיפה?\", \"task\": null}",
+        ] {
+            said.extend(s.push(chunk));
+        }
+        assert_eq!(said, vec!["סליחה, צודק.", "מאיפה?"]);
+        assert_eq!(s.action(), Some(AgentAction::None));
+        assert_eq!(s.fields(), Some(Vec::new()));
+        assert_eq!(s.phrase(), None);
+        assert_eq!(s.rest(), None, "the last sentence had its mark");
+    }
+
+    #[test]
+    fn the_tone_is_read_from_the_reply_and_defaults_to_neutral() {
+        assert_eq!(tone(&json!({ "tone": "sarcastic" })), Tone::Sarcastic);
+        assert_eq!(tone(&json!({ "tone": "furious" })), Tone::Neutral, "an unknown tone is no tone");
+        assert_eq!(tone(&json!({ "say": "היי" })), Tone::Neutral);
+    }
+
+    #[test]
+    fn a_caller_who_repeats_themselves_is_noticed() {
+        let mut state = CallState::new("taxi");
+        state.remember(Speaker::Caller, "צריך מונית מבני ברק לירושלים");
+        state.remember(Speaker::Agent, "איפה בבני ברק לאסוף?");
+        let earlier = repeats_earlier(&state, "אמרתי לך כבר, בבני ברק לירושלים");
+        assert_eq!(earlier.as_deref(), Some("צריך מונית מבני ברק לירושלים"), "prefixes do not hide the words");
+        assert_eq!(repeats_earlier(&state, "שלושה נוסעים"), None, "a new detail is no repeat");
+        assert_eq!(repeats_earlier(&state, "כן"), None, "too short to be one");
+        assert_eq!(repeats_earlier(&CallState::new("taxi"), "אמרתי לך כבר, בבני ברק לירושלים"), None, "nothing before");
+    }
+
+    #[test]
+    fn the_turn_carries_the_mood_of_the_call_and_a_repeat() {
+        let b = Business::from_json(include_str!("../../../businesses/taxi.json"), "taxi.json", &|_| None).unwrap();
+        let mut state = CallState::new("taxi");
+        assert!(!turn_message(&b, &state, "היי").contains("TONE"), "nothing to say about a neutral call");
+        state.remember_mood(Tone::Neutral);
+        state.remember_mood(Tone::Frustrated);
+        state.remember(Speaker::Caller, "צריך מונית מבני ברק לירושלים");
+        let user = turn_message(&b, &state, "אמרתי לך כבר, מבני ברק לירושלים");
+        let tone_line = "TONE on their last turns (your own reads, oldest first): neutral, frustrated.";
+        assert!(user.contains(tone_line), "{user}");
+        let repeat_line = "REPEAT: the caller said nearly this before: \"צריך מונית מבני ברק לירושלים\"";
+        assert!(user.contains(repeat_line), "{user}");
+        assert!(user.ends_with("CALLER NOW: \"אמרתי לך כבר, מבני ברק לירושלים\""), "the words stay last");
+    }
+
+    #[test]
+    fn the_read_can_be_turned_off_per_business() {
+        let mut v: Value = serde_json::from_str(include_str!("../../../businesses/taxi.json")).unwrap();
+        v["agent"]["reading"] = json!(false);
+        let b = Business::from_json(&v.to_string(), "taxi.json", &|_| None).unwrap();
+        let request = build_request(&b, &CallState::new("taxi"), "היי");
+        let keys: Vec<&str> = request.schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["action", "fields", "asks", "phrase", "say", "task"]);
+        assert!(!request.system.contains("- read:"), "{}", request.system);
+        // On, the prompt says how to read and answer, and the schema asks for the read first.
+        let on = Business::from_json(include_str!("../../../businesses/taxi.json"), "taxi.json", &|_| None).unwrap();
+        let system = system_prompt(&on);
+        assert!(system.contains("HOW TO LISTEN AND ANSWER") && system.contains("- read:"), "{system}");
     }
 
     #[test]
