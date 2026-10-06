@@ -22,7 +22,6 @@
       "important": { "speed": 0.92 },
       "slow": { "speed": 0.85, "pregenerate": true }
     },
-    "dynamic_cover": "tts_cover",
     "choices": [
       { "id": "JIxTgeeS5w0UQyBxEnrl", "name": "איתי", "description": "צעיר, מהיר ואנרגטי, קצב תל אביבי", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/JIxTgeeS5w0UQyBxEnrl/7za3GB1n0lALVe2bYQkU.mp3" },
       { "id": "MYMo3evefjv7byQxnv3K", "name": "ליאם", "description": "הקול המשובט הקודם" },
@@ -258,7 +257,7 @@
   },
 
   "agent": {
-    "persona": "אתה המוקדן של מוניות קלורה: צעיר, ישראלי, חם וחברי, עם חיוך בקול. מדבר כמו בן אדם ולא כמו טופס: עברית מדוברת, קצרה וזורמת, בלי שפה רשמית ובלי חזרות. מקשיב באמת ומגיב למה שנאמר: מתאים את עצמו למתקשר: עם מי שמדבר בסלנג בסלנג, עם מבוגר בנימוס. כל עוד לא ידוע אם המתקשר גבר או אישה, מדברים בניסוח ניטרלי (\"לאן נוסעים?\", \"לשלוח עכשיו?\"); צורת הפנייה מופיעה בכל תור (ADDRESS FORM). אף פעם לא שואלים אם המתקשר גבר או אישה. לא פותחים ב\"הבנתי\", \"כמובן\" או \"בשמחה\", ולא מסבירים מה שהמתקשר כבר יודע.",
+    "persona": "אתה המוקדן של מוניות קלורה: צעיר, ישראלי, חם וחברי, עם חיוך בקול. מדבר כמו בן אדם ולא כמו טופס: עברית מדוברת, קצרה וזורמת, בלי שפה רשמית ובלי חזרות. מקשיב באמת ומגיב למה שנאמר: מתאים את עצמו למתקשר: עם מי שמדבר בסלנג בסלנג, עם מבוגר בנימוס. כל עוד לא ידוע אם המתקשר גבר או אישה, מדברים בניסוח ניטרלי (\"לאן נוסעים?\", \"לשלוח עכשיו?\"); צורת הפנייה מופיעה בכל תור (ADDRESS FORM). אף פעם לא שואלים אם המתקשר גבר או אישה. לא פותחים ב\"הבנתי\", \"כמובן\" או \"בשמחה\", ולא מסבירים מה שהמתקשר כבר יודע. מדבר שפת רחוב ישראלית, כמו בחור צעיר בטלפון: מילים של יום-יום וסלנג, לא עברית גבוהה, ובלי אממ ואהה.",
     "rules": [
       "Service area: all of Israel. Any Israeli city, street or landmark is a valid place.",
       "For a ride you need pickup, destination and the number of passengers; pickup time is now unless the caller says otherwise.",
@@ -286,6 +285,7 @@
       "Rudeness, jokes or questions about you get one short calm answer that goes back to the ride (\"הכל טוב! צריך מונית?\" only while the ride has not begun). Never end the call unless the caller says goodbye.",
       "A remark of frustration or sarcasm about the call itself (\"כמה פעמים אני צריך להגיד לך?\", \"אתה לא מקשיב?\", \"מה לא ברור?\", \"וואו, ממש מהיר\") is about what was said, never small talk: do not answer its words (never \"הכל טוב\" to \"מה נשמע, כמה פעמים אני צריך להגיד לך?\"). Own it in two to four words (\"סליחה, צודק.\", \"אוי, סליחה.\"), then in the same reply ask only for the first thing still missing, or read_back if nothing is, using everything already said in the call. Never ask again for a detail that is under CURRENT TASK or in CONVERSATION.",
       "Answer as short as the caller spoke: a word or two from them is two to six words from you (\"סבבה.\", \"אוקיי, ולאן?\"). Spoken Israeli Hebrew as on the phone, never written or formal: not \"כיצד אוכל לסייע\", \"אשמח לעזור\", \"ללא ספק\". Never open with \"הבנתי\", \"כמובן\", \"בשמחה\", \"בהחלט\", \"אין בעיה\" or \"מובן\": a reply may start straight with the question.",
+      "Talk like a young Israeli on the street, not like a dispatcher reading a script: everyday words and slang (\"וואלה\", \"תכלס\", \"סבבה\", \"אחלה\", \"יאללה\"), the way people really say it on the phone, and a \"כאילו\" or a \"נו\" only where a person would, at most one in a reply. Never high or written words (\"כיצד\", \"אשמח\", \"ניתן\", \"אנא\", \"מיידית\", \"לצורך\", \"בהקדם\", \"הזמנתך\"), and never hesitation sounds (\"אממ\", \"אהה\", \"מממ\"): you answer, you do not hum. Do not overdo the slang: a polite older caller gets plain, friendly Hebrew.",
       "When the caller asks whether you hear them (\"אתה שומע?\", \"הלו?\"), say phrase i_hear_you and ask your last question again. \"הלו, שומעים אותי?\" is only for a caller who is silent, never your answer.",
       "Pass every detail the caller gave in the turn, even when another detail of the same sentence was not made out: \"בלד לירושלים\" still passes destination \"ירושלים\".",
       "Every detail goes into fields in the turn it is said, never later. A landmark, building or business answers the street question: caller \"זה ליד התחנה המרכזית, לא זוכר את הרחוב\" → fields destination \"התחנה המרכזית, ירושלים\", then the next question. Only places the caller said.",
@@ -311,8 +311,6 @@
         "feminine": "When a sentence needs it, address her in feminine (\"את רוצה שאשלח עכשיו?\", \"מאיפה תרצי שאאסוף אותך?\")."
       }
     },
-    "thinking_filler": "filler_hmm",
-    "filler_after_ms": 700,
     "phrases": [
       "ack", "anything_else", "goodbye", "ask_change", "go_back", "i_hear_you",
       "ask_route", "ask_pickup", "ask_destination", "ask_passengers", "ask_item", "ask_ride_time", "small_talk_answer",
@@ -505,8 +503,6 @@
       "alone": true
     },
     "small_talk_answer": {"again": "small_talk_again", "variants": ["הכל טוב, תודה! איך אפשר לעזור?", "סבבה לגמרי. במה אפשר לעזור?", "אחלה, תודה! במה אפשר לעזור?"]},
-    "filler_hmm": {"variants": ["אממ...", "אהה...", "מממ..."]},
-    "tts_cover": { "variants": ["אהה, אוקיי.", "אממ, רגע."], "delivery": "quick" },
     "small_talk_again": { "variants": ["אני מעולה, תודה ששאלת! לאן נוסעים?", "הכל טוב אצלי, תודה. אז לאן נוסעים?", "מעולה, תודה! לאן צריך להגיע?"] },
     "small_talk_short": { "variants": ["הכל טוב, תודה!", "הכל טוב!"] },
     "ask_pickup_city": { "variants": ["סבבה, מאיזו עיר לאסוף?", "מאיזו עיר לאסוף?"] },
@@ -522,7 +518,7 @@
     "too_many_passengers": { "variants": ["זה יותר מדי לנסיעה אחת. כמה נוסעים בדיוק?"] },
     "ask_name": {"variants": ["על שם מי לרשום את ההזמנה?", "על איזה שם לרשום?"]},
     "ask_notes": {"variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?", "משהו שכדאי שהנהג ידע?"]},
-    "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק.", "אממ, רגע."] },
+    "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק."] },
     "ride_booked": {"variants": ["סגור, ההזמנה יצאה. נהג יתקשר ממש בקרוב.", "מעולה, זה אצלנו. נהג יחזור בדקות הקרובות.", "יאללה, סגרנו. נהג יתקשר בדקות הקרובות."], "delivery": "important"},
     "ride_failed": { "variants": ["אוי, כרגע אין נהג פנוי באזור."], "delivery": "calm" },
     "ride_unconfirmed": { "variants": ["רגע, אני מעביר למוקדן שיוודא שההזמנה נקלטה."], "delivery": "calm" },

@@ -155,7 +155,8 @@ and merges its answer with the rules'.
   `callora voice-library build`, loaded into memory.
 - **Dynamic TTS** (ElevenLabs, `ulaw_8000`) streams into playout; a long sentence is split
   into short pieces synthesized side by side; finished syntheses go into an LRU cache. A
-  reply that opens with live TTS starts with a recorded cover ("אממ, כן.").
+  reply that opens with live TTS may start with a recorded cover (`voice.dynamic_cover`); the
+  taxi business has none, so no hesitation sound plays before a spoken reply.
 - **Speech recognition**: Deepgram Nova-3 in Hebrew (`STT_PROVIDER=scribe` for ElevenLabs
   Scribe, `cartesia` for Cartesia), with the runtime's VAD deciding when an utterance
   ends (`endpointing=false`, then `Finalize`). Its
@@ -167,8 +168,9 @@ and merges its answer with the rules'.
   hinted transcription (`SECOND_HEARING=1`) is off until measured.
 - **Playout** sends 20 ms frames about 60 ms ahead of real time. Cancel drops everything
   and sends Twilio `clear`. Barge-in: energy VAD on the caller's track after ~100 ms.
-- **Fillers**: the agent's thinking filler ("אממ...") if its first words are late, never
-  on two turns in a row; a pipeline's own filler when its action starts.
+- **Fillers**: a pipeline's own filler when its action starts ("רגע, בודק."). The agent's thinking
+  filler (`agent.thinking_filler`, "אממ...") exists for a business that wants one; the taxi
+  business has none: a caller who waits hears nothing, not a hum.
 
 ## 7. Latency budget
 
