@@ -10,15 +10,15 @@
   "voice": {
     "provider": "elevenlabs",
     "voice_id_env": "ELEVENLABS_VOICE_ID",
-    "library_model": "eleven_v4_turbo",
+    "library_model": "eleven_v4",
     "dynamic_model": "eleven_v4_turbo",
     "personality": ["צעיר", "ישראלי", "חברי", "מהיר", "ישיר", "לא פורמלי מדי", "רגוע", "יעיל"],
-    "settings": {"stability": 0.9, "similarity_boost": 0.75, "style": 0.0, "speed": 1.0},
-    "tempo": 1.25,
+    "settings": {"stability": 0.7, "similarity_boost": 0.75, "style": 0.0, "speed": 1.0},
+    "tempo": 1.1,
     "deliveries": {
       "normal": {},
       "quick": { "speed": 1.08 },
-      "calm": { "speed": 0.93, "stability": 1.0 },
+      "calm": { "speed": 0.93, "stability": 0.8 },
       "important": { "speed": 0.92 },
       "slow": { "speed": 0.85, "pregenerate": true }
     },
