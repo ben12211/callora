@@ -772,8 +772,7 @@ async fn account_extras(
     .bind(id)
     .fetch_one(pool)
     .await;
-    let (pending, oldest): (i64, Option<f64>) =
-        queue.map(|r| (r.get("pending"), r.get("oldest"))).unwrap_or((0, None));
+    let (pending, oldest): (i64, Option<f64>) = queue.map(|r| (r.get("pending"), r.get("oldest"))).unwrap_or((0, None));
     let targets = sqlx::query(
         "SELECT chat_id, chat_name, kind, events FROM callora_v2.whatsapp_targets WHERE account_id = $1 ORDER BY id",
     )

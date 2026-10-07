@@ -3163,3 +3163,31 @@ fn small_talk_asked_again_gets_another_answer_that_moves_to_the_ride() {
         assert!(again.contains("לאן"), "it moves to the ride: {again}");
     }
 }
+
+#[test]
+fn without_the_agent_a_city_alone_still_gets_its_street_asked() {
+    // A live call whose agent timed out on every turn: "מודיעין עילית." was taken as "ודיעין
+    // עילית" (its "מ" read as "from") and, with "בני ברק", read back with no street at all.
+    let mut tsv = String::new();
+    for (code, city) in [("3797", "מודיעין עילית"), ("1309", "אלעד"), ("6100", "בני ברק")] {
+        for i in 1..20 {
+            tsv.push_str(&format!(
+                "{code}	{city}	{}	רחוב {i}	official
+",
+                100 + i
+            ));
+        }
+    }
+    tsv.push_str("3797	מודיעין עילית	200	הרב קוק	official
+");
+    let g = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(&tsv));
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(g));
+    let d = call.say("מודיעין עילית.");
+    let said = spoken(&d);
+    assert!(said.contains("במודיעין עילית"), "the street there is asked: {said}");
+    assert!(call.slot("pickup").is_none(), "a city alone is no pickup address");
+    let d = call.say("הרב קוק 5.");
+    assert!(place(call.slot("pickup")).contains("מודיעין עילית"), "{:?}", call.slot("pickup"));
+    assert!(spoken(&d).contains("לאן") || spoken(&d).contains("עיר"), "then the destination: {}", spoken(&d));
+}

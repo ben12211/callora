@@ -302,8 +302,7 @@ fn switchable_agent(
         let http = http.clone();
         Arc::new(move |model: &str, effort: Option<String>| agent_model_named(http.clone(), model, effort))
     };
-    let assemble: AssembledModel =
-        Arc::new(move |models: &AgentModelSettings| agent_model_with(http.clone(), models));
+    let assemble: AssembledModel = Arc::new(move |models: &AgentModelSettings| agent_model_with(http.clone(), models));
     let providers = Providers { gemini: env("GEMINI_API_KEY").is_some(), openai: env("OPENAI_API_KEY").is_some() };
     let catalog = [
         callora_providers::openai::AGENT_MODEL,

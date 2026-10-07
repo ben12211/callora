@@ -1552,6 +1552,16 @@ impl Engine {
         let explicit = raw.rsplit_once(',').and_then(|(street, city)| g.resolve_within(street, city.trim()));
         let explicit_given = explicit.is_some();
         let mut lookup = explicit.or(in_city_before).unwrap_or_else(|| g.resolve(spoken));
+        // "מודיעין עילית" said alone lost its "מ" as if it were "from" ("ודיעין עילית"): with
+        // no such place, the place with the letter back.
+        if matches!(lookup, Lookup::NoCity { .. }) {
+            let prefixes = self.business.config.slots.get(slot).map(|c| c.strip_prefixes.clone()).unwrap_or_default();
+            if let Some(found) =
+                prefixes.iter().map(|p| g.resolve(&format!("{p}{spoken}"))).find(|l| matches!(l, Lookup::Found(_)))
+            {
+                lookup = found;
+            }
+        }
         // The street as the caller said it: this answer's, or the one given before when this
         // answer is only its city.
         let mut said = raw.to_string();
@@ -2075,7 +2085,36 @@ impl Engine {
             return self.fallback(out);
         }
 
-        let applied = self.apply_fills(&u.slots);
+        // Places as the agent's turns check them: a city alone for a place that needs its
+        // street is noted and its street asked next ("איפה באלעד לאסוף?"), never taken as the
+        // address. When the agent timed out a live call took "מודיעין עילית" and "בני ברק" as
+        // they were and read back a ride with no street.
+        let mut fills = Vec::with_capacity(u.slots.len());
+        let (mut notes, mut rejected) = (Vec::new(), Vec::new());
+        for fill in u.slots.iter().cloned() {
+            // Only what would be taken: a guess the rules discard notes no city either.
+            let accepted =
+                self.business.config.slots.get(&fill.slot).is_some_and(|c| fill.confidence >= c.reject_below)
+                    && self
+                        .state
+                        .run
+                        .as_ref()
+                        .is_some_and(|r| self.pipeline_of(r).slots.iter().any(|p| p.slot == fill.slot));
+            let SlotValue::Place { spoken, .. } = &fill.value else {
+                fills.push(fill);
+                continue;
+            };
+            if !accepted {
+                fills.push(fill);
+                continue;
+            }
+            let raw = spoken.clone();
+            match self.check_place(&fill.slot, fill.value.clone(), &raw, &mut notes, &mut rejected) {
+                Some(value) => fills.push(SlotFill { value, ..fill }),
+                None => progressed = true,
+            }
+        }
+        let applied = self.apply_fills(&fills);
         if applied == 0 && !progressed {
             return self.fallback(out);
         }

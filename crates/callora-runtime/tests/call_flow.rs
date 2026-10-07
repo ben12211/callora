@@ -510,7 +510,7 @@ fn chrono_now() -> i64 {
 }
 
 #[tokio::test]
-async fn a_reply_that_starts_with_live_tts_opens_with_a_recorded_cover() {
+async fn a_reply_that_starts_with_live_tts_plays_it() {
     let h = start_server().await;
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}{}", h.addr, twilio::MEDIA_PATH)).await.unwrap();
     let token = twilio::create_stream_token(TOKEN, "CA43", "taxi", 300, chrono_now());
@@ -523,8 +523,8 @@ async fn a_reply_that_starts_with_live_tts_opens_with_a_recorded_cover() {
     // A one-word pickup is doubtful, so it is read back: "<value>, נכון?" needs live TTS.
     h.stt.say("מזרחי").await;
     let (frames, _) = collect(&mut ws, Duration::from_millis(400)).await;
-    assert_eq!(frames.first(), Some(&0x55), "the recorded cover plays at once: {:?}", &frames[..frames.len().min(5)]);
-    assert!(frames.contains(&0x33), "then the live read-back");
+    // No recorded opener before it any more ("אהה, אוקיי." was dropped from the business).
+    assert!(frames.contains(&0x33), "the live read-back plays: {:?}", &frames[..frames.len().min(5)]);
 }
 
 #[tokio::test]
