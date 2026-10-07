@@ -3178,8 +3178,10 @@ fn without_the_agent_a_city_alone_still_gets_its_street_asked() {
             ));
         }
     }
-    tsv.push_str("3797	מודיעין עילית	200	הרב קוק	official
-");
+    tsv.push_str(
+        "3797	מודיעין עילית	200	הרב קוק	official
+",
+    );
     let g = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(&tsv));
     let (mut call, _) = Call::new(business(&[]));
     call.engine.set_gazetteer(Some(g));

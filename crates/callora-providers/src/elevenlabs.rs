@@ -47,9 +47,11 @@ fn stability_for(model: &str, stability: f32) -> f32 {
     }
 }
 
-/// Only the v2.5 models accept `language_code`; the others reject the request if it is set.
+/// `language_code` pins the language (names and loanwords stay Hebrew). The v2.5 and v4
+/// models take it (checked on the account for `eleven_v4_turbo`); the others reject it.
 fn language_code(model: &str, language: &str) -> Option<String> {
-    model.ends_with("v2_5").then(|| language.split('-').next().unwrap_or(language).to_string())
+    (model.ends_with("v2_5") || model.starts_with("eleven_v4"))
+        .then(|| language.split('-').next().unwrap_or(language).to_string())
 }
 
 pub fn request_body(req: &TtsRequest) -> serde_json::Value {
@@ -67,6 +69,9 @@ pub fn request_body(req: &TtsRequest) -> serde_json::Value {
     });
     if let Some(code) = language_code(&req.model, &req.language) {
         body["language_code"] = serde_json::json!(code);
+    }
+    if let Some(previous) = req.previous_text.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        body["previous_text"] = serde_json::json!(previous);
     }
     body
 }
@@ -118,6 +123,7 @@ mod tests {
                 speaker_boost: true,
             },
             language: "he-IL".into(),
+            previous_text: None,
         }
     }
 
@@ -156,5 +162,15 @@ mod tests {
             serde_json::from_str(r#"{"stability":0.9,"similarity_boost":0.75,"speed":1.0}"#).unwrap();
         assert!(s.speaker_boost);
         assert!(!serde_json::to_string(&s).unwrap().contains("speaker_boost"), "the library manifest is unchanged");
+    }
+
+    #[test]
+    fn v4_pins_hebrew_and_carries_the_sentence_before() {
+        let mut r = req("eleven_v4_turbo");
+        assert_eq!(request_body(&r)["language_code"], "he");
+        assert!(request_body(&r).get("previous_text").is_none(), "nothing before: none sent");
+        r.previous_text = Some("סגור.".into());
+        assert_eq!(request_body(&r)["previous_text"], "סגור.");
+        assert!(request_body(&req("eleven_v3")).get("language_code").is_none(), "v3 rejects it");
     }
 }

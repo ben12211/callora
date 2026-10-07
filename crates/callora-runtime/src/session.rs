@@ -421,6 +421,8 @@ pub struct Session {
     /// The read-back the caller has heard to its end, word for word.
     read_back_heard: Option<String>,
     clock: Option<TurnClock>,
+    /// The last sentence queued to play, the context of the next one of the same reply.
+    last_segment_text: Option<String>,
     /// The caller turn the live-TTS cover last played on (never two turns in a row).
     cover_turn: Option<u32>,
     /// The agent's recorded phrases, as words (see [`Session::agent_sentence`]).
@@ -526,6 +528,7 @@ impl Session {
             yes_over_read_back: None,
             read_back_heard: None,
             clock: None,
+            last_segment_text: None,
             cover_turn: None,
             phrase_words: Vec::new(),
             unfinished: None,

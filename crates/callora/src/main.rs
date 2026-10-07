@@ -626,6 +626,7 @@ async fn voice_ab(
                 model: model.clone(),
                 settings: *settings,
                 language: b.config.language.clone(),
+                previous_text: None,
             };
             let stream = synth.synthesize(request).await?;
             let chunks: Vec<bytes::Bytes> = futures::TryStreamExt::try_collect(stream).await?;

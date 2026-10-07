@@ -237,6 +237,7 @@ impl LibraryBuilder<'_> {
                     model: self.model.clone(),
                     settings: b.config.voice.settings_for(&e.delivery),
                     language: b.config.language.clone(),
+                    previous_text: None,
                 };
                 async move {
                     let audio = async {

@@ -22,6 +22,10 @@ pub struct TtsRequest {
     pub settings: VoiceSettings,
     /// BCP-47 locale of the business.
     pub language: String,
+    /// The sentence said just before this one in the same reply, so the voice goes on from
+    /// it instead of starting over (ElevenLabs `previous_text`). Not part of the cache key:
+    /// the same words are the same audio, whatever came before.
+    pub previous_text: Option<String>,
 }
 
 impl TtsRequest {

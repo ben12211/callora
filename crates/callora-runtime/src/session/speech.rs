@@ -105,6 +105,14 @@ impl Session {
             for seg in &pieces {
                 let id = self.next_item;
                 self.next_item += 1;
+                // What plays just before this sentence, when the reply is still going on: the
+                // voice continues from it rather than starting each sentence afresh.
+                let previous = if self.agent_busy() {
+                    self.last_segment_text.replace(seg.text.clone())
+                } else {
+                    self.last_segment_text = Some(seg.text.clone());
+                    None
+                };
                 if let Some(clip) = self.library.get_loose(&seg.delivery, &seg.text) {
                     self.services.metrics.segment(if seg.origin == SegmentOrigin::Template {
                         "template"
@@ -114,7 +122,7 @@ impl Session {
                     self.enqueue(PlayItem { id, source: Source::Clip(clip), gain_db: plan.gain_db });
                     continue;
                 }
-                let (Some(tts), Some(request)) = (self.services.tts.clone(), self.tts_request(seg)) else {
+                let (Some(tts), Some(request)) = (self.services.tts.clone(), self.tts_request(seg, previous)) else {
                     tracing::error!(call = %self.info.call_sid, text = %seg.text, "not in the voice library and no TTS configured; segment skipped");
                     continue;
                 };
@@ -133,7 +141,7 @@ impl Session {
         }
     }
 
-    pub(super) fn tts_request(&self, seg: &SpeechSegment) -> Option<TtsRequest> {
+    pub(super) fn tts_request(&self, seg: &SpeechSegment, previous_text: Option<String>) -> Option<TtsRequest> {
         let c = &self.business.config;
         let spoken =
             prepare_for_tts(&seg.text, &c.language, self.business.pronouncer_for(self.engine.state.address_form));
@@ -145,6 +153,7 @@ impl Session {
             model: self.cfg.dynamic_model.clone().unwrap_or_else(|| c.voice.dynamic_model.clone()),
             settings: c.voice.settings_for(&seg.delivery),
             language: c.language.clone(),
+            previous_text,
         })
     }
 
@@ -152,7 +161,7 @@ impl Session {
     pub(super) fn needs_live_tts(&self, seg: &SpeechSegment) -> bool {
         self.services.tts.is_some()
             && self.library.get_loose(&seg.delivery, &seg.text).is_none()
-            && self.tts_request(seg).is_some_and(|r| self.services.tts_cache.get(&r.cache_key()).is_none())
+            && self.tts_request(seg, None).is_some_and(|r| self.services.tts_cache.get(&r.cache_key()).is_none())
     }
 
     /// The business's short opener, from the library only (it must never need TTS itself).
@@ -492,6 +501,7 @@ mod tests {
                 speaker_boost: true,
             },
             language: "he-IL".into(),
+            previous_text: None,
         };
         let cache = callora_audio::tts::TtsCache::new(4);
         super::spawn_tts(std::sync::Arc::new(Stalls), request, "k".into(), tx, cache.clone(), events, 1.0);
