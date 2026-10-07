@@ -3193,3 +3193,14 @@ fn without_the_agent_a_city_alone_still_gets_its_street_asked() {
     assert!(place(call.slot("pickup")).contains("מודיעין עילית"), "{:?}", call.slot("pickup"));
     assert!(spoken(&d).contains("לאן") || spoken(&d).contains("עיר"), "then the destination: {}", spoken(&d));
 }
+
+#[test]
+fn where_to_is_vocalized_for_the_voice_so_no_pause_follows_it() {
+    // Unvocalized, "לאן בירושלים?" came out as "לאן, בירושלים?": a 120-190 ms pause after
+    // "לאן" every time, measured; vocalized, none. Only the voice gets the niqqud.
+    let b = business(&[]);
+    let spoken = callora_core::speech::prepare_for_tts("לאן בירושלים?", "he-IL", &b.pronouncer);
+    assert_eq!(spoken, "לְאָן בירושלים?");
+    let other = callora_core::speech::prepare_for_tts("ולאן נוסעים?", "he-IL", &b.pronouncer);
+    assert_eq!(other, "ולאן נוסעים?", "whole words only");
+}
