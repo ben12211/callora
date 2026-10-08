@@ -356,7 +356,7 @@ async fn get_price(s: &AppState, business: &Business, body: &Value) -> Value {
     }
 }
 
-/// The business's own answer to the quote, in words: "זה מאה עשרים שקלים."
+/// The business's own answer to the quote, in words: "זה מאה עשרים שקל."
 fn price_sentence(b: &Business, quote: &Value) -> Option<String> {
     let id = quote["response"].as_str().unwrap_or("price_answer");
     let mut out = b.config.responses.get(id)?.variants.first()?.clone();

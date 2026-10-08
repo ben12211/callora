@@ -126,6 +126,12 @@ impl Out {
         self.flush(false);
         self.directives.push(d);
     }
+
+    /// Something is already said in this turn.
+    fn has_speech(&self) -> bool {
+        self.pending.as_ref().is_some_and(|p| !p.is_empty())
+            || self.directives.iter().any(|d| matches!(d, Directive::Speak { plan, .. } if !plan.is_empty()))
+    }
 }
 
 fn prompt(response: &str, values: &[(&str, String)]) -> Prompt {
@@ -2321,7 +2327,9 @@ impl Engine {
                 run.step = Step::Executing { action_run: run_id };
                 run.attempts = 1;
             }
-            if let Some(filler) = &pipeline.filler {
+            // The action's "שנייה, אני בודק." covers its wait, unless the turn already said
+            // something: "סגור, בודק לך את המחיר. שנייה, אני בודק." was said twice over.
+            if let Some(filler) = pipeline.filler.as_ref().filter(|_| !out.has_speech()) {
                 let ctx = self.render_ctx(None);
                 if let Some(plan) = self.render_plan(filler, &ctx) {
                     out.speak(plan, false);
@@ -2714,6 +2722,15 @@ impl Engine {
             return Vec::new();
         }
         self.state.waiting = false;
+        // The ride is sent and "משהו נוסף?" got no answer: the caller is done, not gone. A live
+        // call heard "הלו? אני פה. אפשר לעזור במשהו נוסף?" here; a goodbye ends it.
+        if self.offered_more
+            && self.state.run.is_none()
+            && self.state.completed.last().is_some_and(|c| c.outcome == "success")
+        {
+            self.goodbye(&mut out);
+            return self.finish(out);
+        }
         self.state.silence_reprompts += 1;
         let silence = self.business.config.silence.clone();
         // Details already given: a few patient reprompts more before hanging up on them.

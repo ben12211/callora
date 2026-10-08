@@ -346,10 +346,18 @@ impl Gazetteer {
                 (s, "") => Some(s.to_string()),
                 (s, n) => Some(format!("{s} {n}")),
             };
+            // A locality's name is no name of a place in it: the list gives "ירושלים" as a name
+            // of מרכז רפואי ירושלים and "תל-אביב" of אוניברסיטת ת"א, and a price asked "from
+            // ירושלים to תל אביב" went to the hospital and the university.
+            let keys: Vec<String> = std::iter::once(name)
+                .chain(aliases.split('|'))
+                .map(norm)
+                .filter(|k| !k.is_empty() && !self.city_keys.contains_key(k))
+                .collect();
             let c = &mut self.cities[ci];
             let pi = c.places.len();
             c.places.push(Place { name: name.to_string(), address, point: format!("{lat},{lon}") });
-            for key in std::iter::once(name).chain(aliases.split('|')).map(norm).filter(|k| !k.is_empty()) {
+            for key in keys {
                 // A street of the same name wins: "הרצל" is the street, not a school on it.
                 if !c.street_keys.contains_key(&key) {
                     c.place_keys.entry(key).or_insert(pi);
@@ -805,10 +813,16 @@ impl Gazetteer {
                 place: None,
             })
         };
-        if street_words.is_empty() {
+        // The city's own name is the city, not a street called after it ("ירושלים" in ירושלים
+        // is also a name of רחוב פררה אברהם): "ירושלים, ירושלים" is the city, and a price from
+        // ירושלים is from the city.
+        let own = |key: &str| self.city_keys.get(key).is_some_and(|(c, _)| *c == ci);
+        let named = street_words.join(" ");
+        if street_words.is_empty() || own(&named) || (street_words.len() == 1 && strip_prefix(&named).is_some_and(own))
+        {
             return found(None);
         }
-        let heard = street_words.join(" ");
+        let heard = named;
         let mut candidates = vec![heard.clone()];
         if let Some(stripped) = strip_prefix(street_words[0]) {
             candidates

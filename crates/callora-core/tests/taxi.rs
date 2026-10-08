@@ -923,6 +923,54 @@ fn a_price_asked_during_a_booking_goes_back_to_the_booking() {
 }
 
 #[test]
+fn a_turn_that_already_said_it_checks_gets_no_second_filler() {
+    // The call of 14:55: "סגור, בודק לך את המחיר." and then "שנייה, אני בודק.".
+    let ask = |say: &str| {
+        let (mut call, _) = Call::new(with_desk());
+        call.engine.set_gazetteer(Some(elad()));
+        let d = call.engine.on_agent_turn(
+            "כמה זה עולה מאלעד לירושלים?",
+            decide(
+                AgentAction::Submit,
+                say,
+                Some("price_question"),
+                &[("price_from", "אלעד"), ("price_to", "ירושלים")],
+            ),
+            "",
+        );
+        assert!(action(&d).is_some(), "the price is asked");
+        spoken(&d)
+    };
+    let said = ask("בודק לך את המחיר.");
+    assert_eq!(said.matches("בודק").count(), 1, "{said}");
+    let said = ask("");
+    assert!(said.contains("בודק") || said.contains("מסתכל"), "with nothing said, the action's filler: {said}");
+}
+
+#[test]
+fn a_city_alone_is_the_city_not_a_place_named_after_it() {
+    // The list names מרכז רפואי ירושלים "ירושלים" too, and a price from ירושלים went there.
+    let mut g = callora_core::gazetteer::Gazetteer::from_tsv(
+        "3000\tירושלים\t1\tהנביאים\tofficial\n3000\tירושלים\t2\tפררה אברהם\tofficial\n3000\tירושלים\t2\tירושלים\tsynonym\n",
+    );
+    g.add_places("ירושלים\tמרכז רפואי ירושלים\tמרכז רפואי|ירושלים\t\t\t31.77\t35.20\n");
+    for said in ["ירושלים", "ירושלים, ירושלים"] {
+        match g.resolve(said) {
+            callora_core::gazetteer::Lookup::Found(a) => assert_eq!((a.street, a.place), (None, None), "{said}"),
+            other => panic!("{said}: {other:?}"),
+        }
+    }
+    match g.resolve_within("ירושלים", "ירושלים") {
+        Some(callora_core::gazetteer::Lookup::Found(a)) => assert!(a.street.is_none()),
+        other => panic!("{other:?}"),
+    }
+    match g.resolve("מרכז רפואי, ירושלים") {
+        callora_core::gazetteer::Lookup::Found(a) => assert_eq!(a.street.as_deref(), Some("מרכז רפואי ירושלים")),
+        other => panic!("the place by its other name: {other:?}"),
+    }
+}
+
+#[test]
 fn a_price_list_that_does_not_answer_sends_no_one_to_the_desk() {
     let (mut call, _) = Call::new(with_desk());
     for attempt in 0..3 {
@@ -2044,6 +2092,22 @@ fn thanks_to_anything_else_ends_the_call() {
     let mut call = booked_ride();
     let d = call.engine.on_agent_turn("טוב תודה", decide(AgentAction::EndCall, "", None, &[]), "");
     assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{d:?}");
+}
+
+#[test]
+fn silence_after_anything_else_on_a_sent_ride_is_a_goodbye() {
+    // The call of 14:55: "יאללה, סגרנו ... אפשר לעזור במשהו נוסף?", nothing, then "הלו? אני פה.
+    // אפשר לעזור במשהו נוסף?". The caller was done, not gone.
+    let mut call = booked_ride();
+    let d = call.engine.on_silence();
+    let said = spoken(&d);
+    assert!(!said.contains("הלו") && !said.contains("נוסף"), "{said}");
+    assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{d:?}");
+
+    // Before anything is sent, silence still asks again.
+    let mut call = read_back_ride();
+    let d = call.engine.on_silence();
+    assert!(!d.iter().any(|d| matches!(d, Directive::Hangup)), "{d:?}");
 }
 
 #[test]

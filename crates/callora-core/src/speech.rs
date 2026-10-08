@@ -72,9 +72,10 @@ fn spell_identifier(id: &str) -> String {
         .replace(" ,", ",")
 }
 
+/// "מאתיים וארבעים שקל", as prices are said on the phone ("שקלים" sounded read out).
 fn money(whole: &str, cents: Option<&str>) -> String {
     let n: i64 = whole.parse().unwrap_or(0);
-    let mut out = count_phrase(n, Gender::Masculine, "שקל אחד", "שקלים");
+    let mut out = count_phrase(n, Gender::Masculine, "שקל אחד", "שקל");
     if let Some(c) = cents.and_then(|c| c.parse::<i64>().ok()).filter(|c| *c > 0) {
         out.push_str(&format!(" ו{}", count_phrase(c, Gender::Feminine, "אגורה אחת", "אגורות")));
     }
@@ -182,7 +183,7 @@ mod tests {
 
     #[test]
     fn money_percent_and_numbers() {
-        assert_eq!(normalize_hebrew("זה יעלה 82₪"), "זה יעלה שמונים ושניים שקלים");
+        assert_eq!(normalize_hebrew("זה יעלה 82₪"), "זה יעלה שמונים ושניים שקל");
         assert_eq!(normalize_hebrew("₪1"), "שקל אחד");
         assert_eq!(normalize_hebrew("הנחה של 10%"), "הנחה של עשרה אחוז");
         assert_eq!(normalize_hebrew("רבי עקיבא 12"), "רבי עקיבא שתים עשרה");
@@ -214,7 +215,7 @@ mod tests {
         }
         assert_eq!(
             normalize_hebrew("הסכום לתשלום הוא ₪249.90."),
-            "הסכום לתשלום הוא מאתיים ארבעים ותשעה שקלים ותשעים אגורות."
+            "הסכום לתשלום הוא מאתיים ארבעים ותשעה שקל ותשעים אגורות."
         );
         assert_eq!(
             normalize_hebrew("מספר הטלפון הוא 050-123-4567."),
