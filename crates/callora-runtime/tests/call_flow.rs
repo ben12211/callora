@@ -1655,3 +1655,27 @@ async fn a_passengers_answer_with_no_number_is_heard_again() {
     let requests = agent.requests.lock();
     assert!(requests[1].user.contains("SECOND HEARING") && requests[1].user.contains("שתיים"), "{}", requests[1].user);
 }
+
+#[tokio::test]
+async fn words_the_failed_recognizer_never_answered_go_to_the_next_one() {
+    // OpenAI out of credit: the session closed (failed over to the backup) with the caller's last
+    // words never transcribed. The new session gets them and is asked to finish them.
+    let h = start_server().await;
+    let mut ws = open_call(&h, "CA-failover").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    *h.stt.slow_final.lock() = Some(Duration::from_secs(10));
+    for _ in 0..30 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    for _ in 0..40 {
+        ws.send(Message::Text(quiet_frame().into())).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(*h.stt.finalizes.lock(), 1);
+    let before = h.stt.audio.lock().len();
+    let events = h.stt.events.lock().clone().unwrap();
+    events.send(SttEvent::Closed).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(*h.stt.finalizes.lock(), 2, "the new session is asked to finish the words");
+    assert!(h.stt.audio.lock().len() >= before + 30 * 160, "with the words' audio");
+}

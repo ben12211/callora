@@ -321,6 +321,7 @@ dependencies = [
  "callora-core",
  "callora-runtime",
  "futures",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",

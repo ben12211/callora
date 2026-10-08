@@ -21,6 +21,11 @@
 //!
 //! A `scripted` turn is a fixed decision (the scene before the turn under test) and never
 //! calls the model. Alternatives inside one expected string are separated by `|`.
+//!
+//! A turn with `audio` (base64 μ-law 8 kHz, `evaluation/audio`) is the caller's voice: the
+//! configured recognizer hears it, and the second hearing when a call would ask for one, and
+//! the agent answers what they heard (`caller` is then what was said, for the report). So a
+//! release is checked from the caller's voice to the reply, not only from the transcript.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -71,6 +76,9 @@ pub struct CaseTurn {
     /// A fixed decision instead of the model's (setting the scene).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripted: Option<Value>,
+    /// The caller's voice (base64 μ-law 8 kHz), heard by the recognizer in place of `caller`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<String>,
     #[serde(default, skip_serializing_if = "Expect::is_empty")]
     pub expect: Expect,
 }
@@ -262,6 +270,34 @@ pub struct Runner {
     pub gazetteer: Option<Arc<Gazetteer>>,
     pub actions: Arc<dyn ActionRunner>,
     pub pacer: Option<Arc<Pacer>>,
+    /// For turns with audio: the recognizer, and the second hearing.
+    pub hearing: Option<Hearing>,
+}
+
+#[derive(Clone)]
+pub struct Hearing {
+    pub stt: Arc<dyn callora_runtime::ports::SpeechToText>,
+    pub second: Option<Arc<dyn callora_runtime::ports::Transcriber>>,
+}
+
+/// One utterance through a streaming recognizer, as a call sends it: the audio, then the end.
+pub async fn transcribe(stt: &dyn callora_runtime::ports::SpeechToText, audio: &[u8]) -> anyhow::Result<String> {
+    use callora_runtime::ports::{SttEvent, SttInput};
+    let mut session = stt.open("he-IL", &[]).await?;
+    for frame in audio.chunks(160) {
+        session.input.send(SttInput::Audio(bytes::Bytes::copy_from_slice(frame))).await?;
+    }
+    session.input.send(SttInput::Finalize).await?;
+    let heard = loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), session.events.recv()).await {
+            Ok(Some(SttEvent::Final(t))) => break t,
+            Ok(Some(SttEvent::Error(e))) => anyhow::bail!("recognition failed: {e}"),
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => anyhow::bail!("no transcript"),
+        }
+    };
+    let _ = session.input.send(SttInput::Close).await;
+    Ok(heard)
 }
 
 /// What the directives of one turn did.
@@ -295,6 +331,46 @@ impl Runner {
         self.drive(&b, &mut engine, &info, greeting).await;
 
         for t in &case.turns {
+            // The caller's voice: what the recognizer (and a second hearing) made of it.
+            let (said, second_hearing) = match (&t.audio, &self.hearing) {
+                (Some(b64), Some(h)) => {
+                    use base64::Engine as _;
+                    let heard = match base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
+                        Ok(audio) => match transcribe(h.stt.as_ref(), &audio).await {
+                            Ok(text) => {
+                                let second = match (&h.second, engine.second_hearing_question(&text)) {
+                                    (Some(second), Some((question, names))) => {
+                                        second.hear(&audio, "he-IL", &question, &names).await.ok()
+                                    }
+                                    _ => None,
+                                };
+                                Ok((text, second))
+                            }
+                            Err(e) => Err(format!("{e:#}")),
+                        },
+                        Err(e) => Err(format!("audio: {e}")),
+                    };
+                    match heard {
+                        Ok(h) => h,
+                        Err(e) => {
+                            run.error = Some(e.clone());
+                            run.turns.push(TurnRun {
+                                caller: t.caller.clone(),
+                                route: Route::Agent,
+                                reply: None,
+                                heard: String::new(),
+                                first_words_ms: None,
+                                decision_ms: None,
+                                usage: None,
+                                failures: vec![format!("the recognizer failed: {e}")],
+                            });
+                            return run;
+                        }
+                    }
+                }
+                _ => (t.caller.clone(), t.second_hearing.clone()),
+            };
+            let t = &CaseTurn { caller: said, second_hearing, ..t.clone() };
             let mut turn = TurnRun {
                 caller: t.caller.clone(),
                 route: Route::Agent,
@@ -742,7 +818,50 @@ mod tests {
             gazetteer: None,
             actions: Arc::new(ConfiguredActions::new(reqwest::Client::new(), Default::default())),
             pacer: None,
+            hearing: None,
         }
+    }
+
+    /// A recognizer that hears every utterance as these words.
+    struct Hears(&'static str);
+
+    #[async_trait]
+    impl callora_runtime::ports::SpeechToText for Hears {
+        async fn open(
+            &self,
+            _language: &str,
+            _keyterms: &[String],
+        ) -> anyhow::Result<callora_runtime::ports::SttSession> {
+            use callora_runtime::ports::{SttEvent, SttInput};
+            let (in_tx, mut in_rx) = tokio::sync::mpsc::channel(512);
+            let (ev_tx, ev_rx) = tokio::sync::mpsc::channel(4);
+            let words = self.0.to_string();
+            tokio::spawn(async move {
+                while let Some(i) = in_rx.recv().await {
+                    if matches!(i, SttInput::Finalize) {
+                        let _ = ev_tx.send(SttEvent::Final(words.clone())).await;
+                    }
+                }
+            });
+            Ok(callora_runtime::ports::SttSession { input: in_tx, events: ev_rx })
+        }
+        fn name(&self) -> &'static str {
+            "hears"
+        }
+    }
+
+    #[tokio::test]
+    async fn an_audio_turn_is_what_the_recognizer_heard() {
+        assert_eq!(transcribe(&Hears("שתיים"), &[0xFF; 1600]).await.unwrap(), "שתיים");
+        let runner =
+            Runner { hearing: Some(Hearing { stt: Arc::new(Hears("כן, תשלח")), second: None }), ..runner() };
+        let c = case(json!([
+            { "caller": "צריך מונית", "scripted": { "action": "none", "task": "book_ride", "fields": [], "say": "מאיפה לאן?" } },
+            { "caller": "כן", "audio": "/////w==", "scripted": { "action": "none", "task": "book_ride", "fields": [], "say": "סבבה" } }
+        ]));
+        let model = Scripted(Mutex::new(Vec::new()));
+        let run = runner.run_case(&c, &model, 1).await;
+        assert_eq!(run.turns[1].caller, "כן, תשלח", "the turn is what was heard, not what was written");
     }
 
     fn case(turns: Value) -> Case {

@@ -399,6 +399,8 @@ pub struct Session {
     caller_levels: Vec<f32>,
     /// The next final transcript is held words released as they are (not held again).
     releasing_unfinished: bool,
+    /// The recognizer closed with the caller's last words unanswered: the next one hears them.
+    resend_utterance: bool,
     /// Turns whose reply began more than SLOW_TURN_MS after the caller's voice ended.
     slow_turns: u32,
     /// The words of the coming transcript the recognizer was unsure of.
@@ -548,6 +550,7 @@ impl Session {
             caller_levels: Vec::new(),
             unsure: Vec::new(),
             releasing_unfinished: false,
+            resend_utterance: false,
             slow_turns: 0,
             line_lost_ms: 0,
             clipped_frames: 0,
@@ -730,6 +733,23 @@ impl Session {
     fn on_event(&mut self, e: Ev) {
         match e {
             Ev::SttReady(Ok(session)) => {
+                // The recognizer that closed had the caller's last words and never answered
+                // them (it failed over to the backup): they are heard again, not lost.
+                if std::mem::take(&mut self.resend_utterance) && !self.last_utterance.is_empty() {
+                    tracing::info!(call = %self.info.call_sid, ms = self.last_utterance.len() / 8, "the caller's last words to the new recognizer");
+                    for chunk in self.last_utterance.chunks(160) {
+                        let _ = session.input.try_send(SttInput::Audio(Bytes::copy_from_slice(chunk)));
+                    }
+                    if session.input.try_send(SttInput::Finalize).is_ok() {
+                        let now = Instant::now();
+                        self.finalize_sent_at = Some(now);
+                        let tx = self.events.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(FINAL_OVERDUE).await;
+                            let _ = tx.send(Ev::FinalOverdue { sent_at: now });
+                        });
+                    }
+                }
                 for frame in self.stt_backlog.drain(..) {
                     let _ = session.input.try_send(SttInput::Audio(frame));
                 }

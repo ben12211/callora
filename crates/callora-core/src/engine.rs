@@ -1965,6 +1965,31 @@ impl Engine {
             && words <= 2
     }
 
+    /// What a second hearing of the caller's last words listens for, when the stream's
+    /// transcript is worth hearing again: the question and the names its answer should be one
+    /// of. A street of the city asked (unless the stream already wrote one of its streets), a
+    /// city (unless it named a town), or a number of passengers (unless it has a number: "שתיים"
+    /// was heard "ביי." and the call hung up).
+    pub fn second_hearing_question(&self, transcript: &str) -> Option<(String, Vec<String>)> {
+        let g = self.gazetteer.as_ref()?;
+        if let Some(city) = self.street_focus() {
+            let street_found = matches!(
+                g.resolve_within(transcript, &city),
+                Some(crate::gazetteer::Lookup::Found(a)) if a.street.is_some()
+            );
+            return (!street_found)
+                .then(|| (format!("which street in {city}"), g.street_candidates(&city, transcript, 700, 150)));
+        }
+        if self.awaiting_city() && g.towns_named(transcript).is_empty() {
+            return Some(("which town or city, from where and to where".into(), g.town_names(20)));
+        }
+        if self.state.last_asks.iter().any(|s| s == "passengers") && !has_a_number(transcript) {
+            let numbers = PASSENGER_WORDS.iter().map(|w| w.to_string()).collect();
+            return Some(("how many passengers (a number)".into(), numbers));
+        }
+        None
+    }
+
     /// What went wrong in the call so far, for its health record: a booking with details given
     /// and never sent, the same question twice in a row.
     pub fn health(&self) -> Vec<&'static str> {
@@ -3278,4 +3303,33 @@ fn street_before_city(raw: &str) -> Option<String> {
 /// An action and what it was asked, without its run id: the same question twice.
 fn failed_key(action: &str, input: &serde_json::Value) -> String {
     format!("{action} {}", input.get("slots").unwrap_or(input))
+}
+
+/// How a number of passengers is said.
+const PASSENGER_WORDS: [&str; 16] = [
+    "אחד",
+    "אחת",
+    "שניים",
+    "שתיים",
+    "שלושה",
+    "שלוש",
+    "ארבעה",
+    "ארבע",
+    "חמישה",
+    "חמש",
+    "שישה",
+    "שש",
+    "שבעה",
+    "שבע",
+    "שמונה",
+    "רק אני",
+];
+
+/// A digit or a number word in the words heard.
+pub fn has_a_number(text: &str) -> bool {
+    text.chars().any(|c| c.is_ascii_digit())
+        || crate::text::normalize(text).split_whitespace().any(|w| {
+            PASSENGER_WORDS.iter().any(|n| w == *n || w.strip_prefix('ו') == Some(n))
+                || matches!(w, "תשעה" | "תשע" | "עשרה" | "עשר" | "לבד" | "שנינו" | "שלושתנו")
+        })
 }

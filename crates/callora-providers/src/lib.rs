@@ -10,4 +10,5 @@ pub mod openai_stt;
 pub mod race;
 pub mod scribe;
 pub mod scribe_batch;
+pub mod stt_failover;
 pub mod twilio_rest;

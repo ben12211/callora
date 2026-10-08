@@ -170,29 +170,11 @@ impl Session {
     /// stream did not already write one the lists know. Elsewhere the stream is good enough,
     /// and waiting (about a second) would only slow the call.
     pub(super) fn second_hearing_expected(&self, transcript: &str) -> Option<(String, Vec<String>)> {
-        let g = self.services.gazetteer.as_ref()?;
         self.services.second_hearing.as_ref()?;
         if self.last_utterance.len() < 8000 / 4 {
             return None;
         }
-        if let Some(city) = self.engine.street_focus() {
-            let street_found = matches!(
-                g.resolve_within(transcript, &city),
-                Some(callora_core::gazetteer::Lookup::Found(a)) if a.street.is_some()
-            );
-            return (!street_found)
-                .then(|| (format!("which street in {city}"), g.street_candidates(&city, transcript, 700, 150)));
-        }
-        if self.engine.awaiting_city() && g.towns_named(transcript).is_empty() {
-            return Some(("which town or city, from where and to where".into(), g.town_names(20)));
-        }
-        // "כמה נוסעים?" answered with no number at all: "שתיים" was heard "ביי." and the call
-        // hung up. The audio model, told a number is expected, heard "שתיים".
-        if self.engine.state.last_asks.iter().any(|s| s == "passengers") && !has_a_number(transcript) {
-            let numbers = PASSENGER_WORDS.iter().map(|w| w.to_string()).collect();
-            return Some(("how many passengers (a number)".into(), numbers));
-        }
-        None
+        self.engine.second_hearing_question(transcript)
     }
 
     /// The silence that ends the caller's utterance, by what has been heard of it: shorter
@@ -321,6 +303,9 @@ impl Session {
             SttEvent::Closed => {
                 self.stt = None;
                 self.stt_reconnects += 1;
+                if self.finalize_sent_at.take().is_some() && !self.vad.is_speaking() {
+                    self.resend_utterance = true;
+                }
                 if self.stt_reconnects > MAX_STT_RECONNECTS {
                     // A session the service keeps closing (a rejected request, an outage)
                     // would otherwise reconnect forever while the caller talks to no one.
@@ -746,35 +731,6 @@ pub(super) fn is_unfinished(text: &str) -> bool {
         .last()
         .is_some_and(|w| w.chars().count() == 1 && w.chars().all(|c| ('א'..='ת').contains(&c)));
     t.ends_with("...") || t.ends_with('…') || t.ends_with('-') || lone_letter
-}
-
-/// How a number of passengers is said.
-const PASSENGER_WORDS: [&str; 16] = [
-    "אחד",
-    "אחת",
-    "שניים",
-    "שתיים",
-    "שלושה",
-    "שלוש",
-    "ארבעה",
-    "ארבע",
-    "חמישה",
-    "חמש",
-    "שישה",
-    "שש",
-    "שבעה",
-    "שבע",
-    "שמונה",
-    "רק אני",
-];
-
-/// A digit or a number word in the words heard.
-fn has_a_number(text: &str) -> bool {
-    text.chars().any(|c| c.is_ascii_digit())
-        || callora_core::text::normalize(text).split_whitespace().any(|w| {
-            PASSENGER_WORDS.iter().any(|n| w == *n || w.strip_prefix('ו') == Some(n))
-                || matches!(w, "תשעה" | "תשע" | "עשרה" | "עשר" | "לבד" | "שנינו" | "שלושתנו")
-        })
 }
 
 /// "אני רוצה", "צריך": the start of a request the caller paused in. Only filler words, so it

@@ -409,7 +409,10 @@ fn speech_to_text() -> Arc<dyn SpeechToText> {
     };
     let chosen = match env("STT_PROVIDER").as_deref() {
         Some("openai") => match (openai(), deepgram().or_else(scribe).or_else(cartesia)) {
-            (Some(primary), Some(backup)) => Some(Arc::new(SttWithBackup { primary, backup }) as Arc<dyn SpeechToText>),
+            (Some(primary), Some(backup)) => {
+                Some(Arc::new(callora_providers::stt_failover::SttFailover::new(primary, backup))
+                    as Arc<dyn SpeechToText>)
+            }
             (primary, backup) => primary.or(backup),
         },
         Some("cartesia") => cartesia().or_else(deepgram).or_else(scribe),
@@ -812,33 +815,6 @@ async fn voice_library(dir: &Path, command: LibraryCommand) -> anyhow::Result<()
     }
 }
 
-/// A recognizer backed by another: when the primary's session cannot open (an outage, a
-/// rejected key), the call is heard by the backup instead of being handed off.
-struct SttWithBackup {
-    primary: Arc<dyn SpeechToText>,
-    backup: Arc<dyn SpeechToText>,
-}
-
-#[async_trait::async_trait]
-impl SpeechToText for SttWithBackup {
-    async fn open(&self, language: &str, keyterms: &[String]) -> anyhow::Result<SttSession> {
-        match self.primary.open(language, keyterms).await {
-            Ok(s) => Ok(s),
-            Err(e) => {
-                tracing::warn!(primary = self.primary.name(), error = %format!("{e:#}"), "speech recognition failed to open; using the backup");
-                self.backup.open(language, keyterms).await
-            }
-        }
-    }
-    fn wants_business_words(&self) -> bool {
-        self.primary.wants_business_words()
-    }
-
-    fn name(&self) -> &'static str {
-        self.primary.name()
-    }
-}
-
 /// `callora stt-probe`: stored caller utterances (the JSON lines the calls export makes:
 /// `heard`, `audio` as base64 μ-law) through the configured recognizer, as a call streams
 /// them, with the time from the end of speech to the transcript.
@@ -1207,9 +1183,15 @@ async fn run_eval(dir: &Path, args: EvalArgs) -> anyhow::Result<()> {
         };
         models.push((label, model));
     }
+    // Cases with the caller's voice are heard as a call hears them.
+    let hearing = cases
+        .iter()
+        .any(|c| c.turns.iter().any(|t| t.audio.is_some()))
+        .then(|| eval::Hearing { stt: speech_to_text(), second: second_hearing() });
     let runner = Arc::new(eval::Runner {
         registry,
         gazetteer: load_gazetteer(),
+        hearing,
         // Mock backends only: an eval never books a real ride.
         actions: Arc::new(ConfiguredActions::new(client, HashMap::new())),
         pacer: args
