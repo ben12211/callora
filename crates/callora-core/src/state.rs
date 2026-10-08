@@ -290,7 +290,7 @@ pub struct CallState {
     pub moods: Vec<Tone>,
 }
 
-pub const HISTORY_LIMIT: usize = 24;
+pub const HISTORY_LIMIT: usize = 40;
 /// How many of the caller's tones are kept.
 pub const MOODS_KEPT: usize = 6;
 

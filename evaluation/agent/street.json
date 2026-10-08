@@ -1,0 +1,32 @@
+[
+  {
+    "id": "street_remembers_what_the_caller_gave_early",
+    "note": "the passengers were said in the first sentence: later turns never ask for them again",
+    "turns": [
+      {
+        "caller": "צריך מונית מאלעד לבני ברק, אנחנו ארבעה",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            { "slot": "pickup", "value": "אלעד" },
+            { "slot": "destination", "value": "בני ברק" },
+            { "slot": "passengers", "value": "4" }
+          ],
+          "say": "איפה באלעד לאסוף?",
+          "asks": [ "pickup" ]
+        }
+      },
+      {
+        "caller": "בן זכאי 45",
+        "expect": {
+          "says_none": [
+            "כמה נוסעים|כמה אתם|כמה אנשים"
+          ],
+          "no_fields": [ "passengers" ],
+          "ended": false
+        }
+      }
+    ]
+  }
+]
