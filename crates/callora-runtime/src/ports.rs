@@ -64,6 +64,14 @@ pub trait SpeechToText: Send + Sync {
 #[async_trait]
 pub trait Transcriber: Send + Sync {
     async fn transcribe(&self, mulaw: &[u8], language: &str, keyterms: &[String]) -> anyhow::Result<String>;
+
+    /// The answer to `question` ("which street in אלעד"), heard against the names expected
+    /// (the city's streets): a hearing that knows the list writes a name from it, where the
+    /// stream wrote what it could spell. By default a transcription hinted with the names.
+    async fn hear(&self, mulaw: &[u8], language: &str, question: &str, names: &[String]) -> anyhow::Result<String> {
+        let _ = question;
+        self.transcribe(mulaw, language, names).await
+    }
 }
 
 // ---------------------------------------------------------------------------------------

@@ -59,6 +59,9 @@ const UNHEARD_WAIT: Duration = Duration::from_millis(2000);
 /// After speech with no words at all (noise the recognizer returned nothing for), how long
 /// before the question is asked again: otherwise nothing is said until the caller speaks.
 const NO_WORDS_WAIT: Duration = Duration::from_millis(2000);
+/// The longest a turn waits for its second hearing before the agent goes on without it. The
+/// audio hearing takes about a second (p90 1.4 s on 161 street answers).
+const SECOND_HEARING_WAIT: Duration = Duration::from_millis(1800);
 /// Words begun before the agent's reply finish the previous answer only when they follow it
 /// closely ("דוד" ... "אביטבול"), not after a long pause.
 const CONTINUATION_GAP: Duration = Duration::from_millis(2500);

@@ -201,6 +201,19 @@ async fn start_server_full(
     eleven: Option<String>,
     mode: callora_runtime::settings::CallModeSettings,
 ) -> Harness {
+    start_server_inner(agent, session, eleven, mode, None).await
+}
+
+/// The streets list and a second hearing, for the turns that answer a street or a city.
+type Hearing = (Arc<callora_core::gazetteer::Gazetteer>, Arc<dyn callora_runtime::ports::Transcriber>);
+
+async fn start_server_inner(
+    agent: Option<Arc<dyn LanguageModel>>,
+    session: SessionConfig,
+    eleven: Option<String>,
+    mode: callora_runtime::settings::CallModeSettings,
+    hearing: Option<Hearing>,
+) -> Harness {
     let env = |k: &str| {
         (k == "TAXI_PHONE_NUMBERS")
             .then(|| NUMBER.to_string())
@@ -220,8 +233,8 @@ async fn start_server_full(
         stt: Arc::new(stt.clone()),
         llm: None,
         agent,
-        gazetteer: None,
-        second_hearing: None,
+        gazetteer: hearing.as_ref().map(|h| h.0.clone()),
+        second_hearing: hearing.map(|h| h.1),
         tts: Some(Arc::new(FakeTts)),
         tts_cache: TtsCache::new(100),
         actions: Arc::new(ConfiguredActions::new(reqwest::Client::new(), HashMap::new())),
@@ -1249,4 +1262,113 @@ async fn a_transcript_that_does_not_stop_the_agent_is_still_answered_not_dropped
     // ...and the read-back plays on to its end (the words are handled after it, not lost).
     let (frames, _) = collect(&mut ws, Duration::from_millis(2500)).await;
     assert!(!frames.is_empty(), "the agent finishes what it was saying");
+}
+
+/// A second hearing that answers with a street and keeps what it was asked.
+#[derive(Default)]
+struct ListedHearing {
+    asked: Mutex<Vec<(String, Vec<String>)>>,
+}
+
+#[async_trait]
+impl callora_runtime::ports::Transcriber for ListedHearing {
+    async fn transcribe(&self, _mulaw: &[u8], _language: &str, _keyterms: &[String]) -> anyhow::Result<String> {
+        anyhow::bail!("the listed hearing is asked with its question")
+    }
+    async fn hear(&self, _mulaw: &[u8], _language: &str, question: &str, names: &[String]) -> anyhow::Result<String> {
+        self.asked.lock().push((question.to_string(), names.to_vec()));
+        Ok("רבן יוחנן בן זכאי 45".into())
+    }
+}
+
+async fn speak(ws: &mut Ws, h: &Harness, text: &str) {
+    for _ in 0..30 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    for _ in 0..40 {
+        ws.send(Message::Text(quiet_frame().into())).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.stt.say(text).await;
+}
+
+#[tokio::test]
+async fn a_garbled_street_is_heard_again_against_the_citys_streets() {
+    // The call of 2026-10-07: "בן זכאי ארבעים וחמש" came out "ב... זה קח ארבעים וחמש". An audio
+    // model told the streets of אלעד wrote it right; the agent gets both hearings.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "say": "איפה באלעד לאסוף?", "action": "none", "task": "book_ride", "asks": ["pickup"],
+                "fields": [{ "slot": "pickup", "value": "אלעד" }] }),
+        json!({ "say": "לאן?", "action": "none", "task": "book_ride",
+                "fields": [{ "slot": "pickup", "value": "רבן יוחנן בן זכאי 45, אלעד" }] }),
+    ]);
+    let gazetteer = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         1309\tאלעד\t111\tרבי עקיבא\tofficial\n6100\tבני ברק\t825\tעזרא\tofficial\n",
+    ));
+    let hearing = Arc::new(ListedHearing::default());
+    let h = start_server_inner(
+        Some(agent.clone()),
+        SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() },
+        None,
+        Default::default(),
+        Some((gazetteer, hearing.clone())),
+    )
+    .await;
+    let mut ws = open_call(&h, "CA-heard-again").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    speak(&mut ws, &h, "צריך מונית מאלעד").await;
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+    assert!(hearing.asked.lock().is_empty(), "a city answer that names a town is not heard again");
+
+    speak(&mut ws, &h, "ב... זה קח ארבעים וחמש").await;
+    collect(&mut ws, Duration::from_millis(600)).await;
+    let asked = hearing.asked.lock().clone();
+    assert_eq!(asked.len(), 1, "the street answer is heard again");
+    assert_eq!(asked[0].0, "which street in אלעד");
+    assert!(
+        asked[0].1.contains(&"רבן יוחנן בן זכאי".to_string()) && asked[0].1.contains(&"רבי עקיבא".to_string()),
+        "{:?}",
+        asked[0].1
+    );
+    assert!(!asked[0].1.contains(&"עזרא".to_string()), "only that city's streets");
+    let requests = agent.requests.lock();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1].user.contains("SECOND HEARING") && requests[1].user.contains("רבן יוחנן בן זכאי 45"),
+        "the agent gets the second hearing: {}",
+        requests[1].user
+    );
+}
+
+#[tokio::test]
+async fn a_street_the_stream_heard_right_is_not_heard_again() {
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "say": "איפה באלעד לאסוף?", "action": "none", "task": "book_ride", "asks": ["pickup"],
+                "fields": [{ "slot": "pickup", "value": "אלעד" }] }),
+        json!({ "say": "לאן?", "action": "none", "task": "book_ride",
+                "fields": [{ "slot": "pickup", "value": "בן זכאי 45, אלעד" }] }),
+    ]);
+    let gazetteer = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n",
+    ));
+    let hearing = Arc::new(ListedHearing::default());
+    let h = start_server_inner(
+        Some(agent.clone()),
+        SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() },
+        None,
+        Default::default(),
+        Some((gazetteer, hearing.clone())),
+    )
+    .await;
+    let mut ws = open_call(&h, "CA-heard-once").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    speak(&mut ws, &h, "צריך מונית מאלעד").await;
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+    speak(&mut ws, &h, "בן זכאי ארבעים וחמש").await;
+    collect(&mut ws, Duration::from_millis(600)).await;
+    assert!(hearing.asked.lock().is_empty(), "no second of waiting for a street already found");
+    assert_eq!(agent.requests.lock().len(), 2);
 }

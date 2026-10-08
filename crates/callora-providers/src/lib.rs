@@ -5,6 +5,7 @@ pub mod cartesia;
 pub mod deepgram;
 pub mod elevenlabs;
 pub mod openai;
+pub mod openai_audio;
 pub mod openai_stt;
 pub mod race;
 pub mod scribe;

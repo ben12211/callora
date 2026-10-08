@@ -843,6 +843,30 @@ async fn stt_probe(file: &Path, limit: usize, keyterms: &[String]) -> anyhow::Re
     Ok(())
 }
 
+/// The second hearing of a street or city answer (`SECOND_HEARING`): by default an OpenAI
+/// audio model told the names expected (`SECOND_HEARING_MODEL`, default gpt-audio-1.5), which
+/// on recorded and synthetic answers found the street 85-95% of the time where the stream
+/// alone found 50-77%; `scribe` (or the old `1`) is ElevenLabs Scribe hinted with the names,
+/// which made names up on live calls; `off` is none.
+fn second_hearing() -> Option<Arc<dyn callora_runtime::ports::Transcriber>> {
+    match env("SECOND_HEARING").as_deref().map(str::trim) {
+        Some("off" | "0" | "none" | "false") => None,
+        Some("scribe" | "1") => env("ELEVENLABS_API_KEY").map(|key| {
+            Arc::new(callora_providers::scribe_batch::ScribeBatch::new(
+                http(),
+                key,
+                None,
+                env("ELEVENLABS_BATCH_STT_MODEL"),
+            )) as Arc<dyn callora_runtime::ports::Transcriber>
+        }),
+        _ => env("OPENAI_API_KEY").map(|key| {
+            tracing::info!("street and city answers get a second hearing by an audio model told the names");
+            Arc::new(callora_providers::openai_audio::AudioHearing::new(http(), key, None, env("SECOND_HEARING_MODEL")))
+                as Arc<dyn callora_runtime::ports::Transcriber>
+        }),
+    }
+}
+
 /// STT for a server started without a speech recognition key: every call is handed off.
 struct NoStt;
 
@@ -942,18 +966,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     }
 
     let gazetteer = load_gazetteer();
-    // The second hearing uses the same ElevenLabs key as the stream. Off unless
-    // SECOND_HEARING=1: with a city's streets as hints it made names up on live calls
-    // ("44, 45" heard "בן זכריה ארבעים וחמש"), so it waits for measured results.
-    let second_hearing =
-        env("ELEVENLABS_API_KEY").filter(|_| env("SECOND_HEARING").as_deref() == Some("1")).map(|key| {
-            Arc::new(callora_providers::scribe_batch::ScribeBatch::new(
-                http(),
-                key,
-                None,
-                env("ELEVENLABS_BATCH_STT_MODEL"),
-            )) as Arc<dyn callora_runtime::ports::Transcriber>
-        });
+    let second_hearing = second_hearing();
     let settings_store = Arc::new(match &db {
         Some(pool) => callora_runtime::settings::SettingsStore::load(pool).await.unwrap_or_else(|e| {
             tracing::error!(error = %e, "saved settings unreadable; using the business files");

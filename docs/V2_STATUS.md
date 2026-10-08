@@ -32,7 +32,7 @@ fixed questions from the voice library.
 | New voice library clips | `ask_place_address` and `ride_unconfirmed` were added: run `voice-library build` (they play through live TTS until then). |
 | Dispatch backend idempotency | Callora sends the key; whether `TAXI_DISPATCH_URL` honours it is up to that backend. `create_ride` keeps `max_attempts: 1` until it does. |
 | Eval cases | 37 cases from the bugs seen on live calls. Their expectations were checked against the engine and the places list, not yet against a model run: the first run may show cases whose wording needs loosening. |
-| Second hearing | Off (`SECOND_HEARING`) until measured: with a city's streets as hints it made names up on live calls. |
+| Second hearing | On: a street or city answer the stream did not match is heard again by `gpt-audio-1.5`, told the city's streets or the towns (streets 50% to 85% on past calls; towns 62% to 86%). `SECOND_HEARING=off` turns it off. |
 | CI gate before deploy | `quality` runs on pull requests only; a push to `main` deploys without it (a deliberate choice for now). |
 
 ## Done

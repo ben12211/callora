@@ -164,8 +164,14 @@ and merges its answer with the rules'.
   second session opens beside the live one and takes over between utterances), and go
   back to the business's words once the question moves on: left on, a city's streets
   turned the caller's name into one of them. Keyterms stay within Deepgram's 500-token
-  budget (900 characters); a session refused for them opens without them. A second, slower,
-  hinted transcription (`SECOND_HEARING=1`) is off until measured.
+  budget (900 characters); a session refused for them opens without them. When the stream's
+  transcript of a street or city answer names none the lists know, the same audio is heard
+  again by an OpenAI audio model told the question and the names it should be one of (the
+  city's streets, the 150 closest in a city of more than 700; or the towns), about a second
+  (`crates/callora-providers/src/openai_audio.rs`). The agent gets both hearings. Measured on
+  the street answers of past calls (stream 50%, both 85%), 120 random streets of ten cities
+  (77%, 95%) and 71 towns (62%, 86%). `SECOND_HEARING=off` turns it off, `scribe` is the
+  older ElevenLabs Scribe hearing.
 - **Playout** sends 20 ms frames about 60 ms ahead of real time. Cancel drops everything
   and sends Twilio `clear`. Barge-in: energy VAD on the caller's track after ~100 ms.
 - **Fillers**: a pipeline's own filler when its action starts ("רגע, בודק."). The agent's thinking

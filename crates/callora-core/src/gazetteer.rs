@@ -678,6 +678,37 @@ impl Gazetteer {
         ranked.into_iter().map(|si| c.short[si].clone()).take(limit).collect()
     }
 
+    /// The streets a second hearing chooses from: every street of the city when it has at
+    /// most `all` (אלעד 71, בני ברק 443), else the `near` that sound closest to what the
+    /// stream heard (ירושלים has 4,383: too long a list to read in a second).
+    pub fn street_candidates(&self, city: &str, heard: &str, all: usize, near: usize) -> Vec<String> {
+        let Some(&(ci, _)) = self.city_keys.get(&norm(city)) else { return Vec::new() };
+        let c = &self.cities[ci];
+        if c.streets.len() <= all {
+            return c.streets.clone();
+        }
+        let words: Vec<String> = norm(heard).split(' ').filter(|w| w.chars().count() >= 2).map(spelling).collect();
+        // A street's distance to the closest stretch of as many words, relative to its length.
+        let score = |name: &str| -> usize {
+            let key = spelling(&norm(name));
+            let n = key.split(' ').count().max(1);
+            let len = key.chars().count().max(1);
+            (0..words.len().max(1))
+                .flat_map(|i| [n.saturating_sub(1).max(1), n, n + 1].map(|k| (i, k)))
+                .filter(|&(i, k)| i + k <= words.len())
+                .map(|(i, k)| {
+                    let stretch = words[i..i + k].join(" ");
+                    let stripped = strip_prefix(&stretch).map(|s| distance(&spelling(s), &key)).unwrap_or(usize::MAX);
+                    distance(&stretch, &key).min(stripped) * 100 / len
+                })
+                .min()
+                .unwrap_or(usize::MAX)
+        };
+        let mut ranked: Vec<(usize, &String)> = c.streets.iter().map(|s| (score(s), s)).collect();
+        ranked.sort();
+        ranked.into_iter().take(near).map(|(_, s)| s.clone()).collect()
+    }
+
     /// Towns and cities (localities with at least `min_streets` streets), for hinting
     /// recognition when the caller is about to say one.
     pub fn town_names(&self, min_streets: usize) -> Vec<String> {
@@ -1118,6 +1149,23 @@ mod tests {
 ",
         );
         assert!(matches!(g.resolve("שוויצר 3, ירושלים"), Lookup::NoStreet { .. }));
+    }
+
+    #[test]
+    fn a_big_city_offers_the_streets_closest_to_what_was_heard() {
+        let mut tsv = String::from("3000\tירושלים\t1\tהנביאים\tofficial\n3000\tירושלים\t2\tיפו\tofficial\n");
+        for i in 0..800 {
+            tsv.push_str(&format!("3000\tירושלים\t{}\tשדרות מספר {i}\tofficial\n", 100 + i));
+        }
+        tsv.push_str("1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t111\tרבי עקיבא\tofficial\n");
+        let g = Gazetteer::from_tsv(&tsv);
+        let near = g.street_candidates("ירושלים", "אני וים ארבע", 700, 150);
+        assert_eq!(near.len(), 150, "a big city: the closest only");
+        assert!(near.contains(&"הנביאים".to_string()), "\"אני וים\" is closest to הנביאים");
+        let near = g.street_candidates("ירושלים", "לנביאים 4", 700, 150);
+        assert_eq!(near.first().map(String::as_str), Some("הנביאים"), "a prefix is no distance");
+        assert_eq!(g.street_candidates("אלעד", "ב... זה קח", 700, 150).len(), 2, "a small city: every street");
+        assert!(g.street_candidates("אין כזאת", "x", 700, 150).is_empty());
     }
 
     #[test]

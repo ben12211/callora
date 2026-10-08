@@ -82,7 +82,9 @@ impl Session {
         if let Some((_, earlier)) = self.second_pending.take() {
             transcript = format!("{earlier} {transcript}");
         }
-        if let (Some(terms), Some(t)) = (self.second_hearing_terms(), self.services.second_hearing.clone()) {
+        if let (Some((question, names)), Some(t)) =
+            (self.second_hearing_expected(&transcript), self.services.second_hearing.clone())
+        {
             self.second_ids += 1;
             let id = self.second_ids;
             let audio = self.last_utterance.clone();
@@ -92,7 +94,7 @@ impl Session {
             let call = self.info.call_sid.clone();
             tokio::spawn(async move {
                 let heard =
-                    tokio::time::timeout(Duration::from_millis(1500), t.transcribe(&audio, &language, &terms)).await;
+                    tokio::time::timeout(SECOND_HEARING_WAIT, t.hear(&audio, &language, &question, &names)).await;
                 let text = match heard {
                     Ok(Ok(text)) => Some(text),
                     Ok(Err(e)) => {

@@ -151,26 +151,28 @@ impl Session {
         }
     }
 
-    /// Keyterms for a second hearing of this turn, when it is worth one: the caller is
-    /// giving a street (every street of the city) or a city (the towns). Elsewhere the
-    /// stream is good enough and waiting would only slow the call.
-    pub(super) fn second_hearing_terms(&self) -> Option<Vec<String>> {
+    /// What a second hearing of this turn listens for, when it is worth one: the caller is
+    /// giving a street (the question, and the city's streets) or a city (the towns), and the
+    /// stream did not already write one the lists know. Elsewhere the stream is good enough,
+    /// and waiting (about a second) would only slow the call.
+    pub(super) fn second_hearing_expected(&self, transcript: &str) -> Option<(String, Vec<String>)> {
         let g = self.services.gazetteer.as_ref()?;
         self.services.second_hearing.as_ref()?;
         if self.last_utterance.len() < 8000 / 4 {
             return None;
         }
-        let mut terms = if let Some(city) = self.engine.street_focus() {
-            let mut t = vec![city.clone()];
-            t.extend(g.street_keyterms(&city, 950));
-            t
-        } else if self.engine.awaiting_city() {
-            g.town_names(20)
-        } else {
-            return None;
-        };
-        terms.extend(self.business.stt_keyterms());
-        Some(terms)
+        if let Some(city) = self.engine.street_focus() {
+            let street_found = matches!(
+                g.resolve_within(transcript, &city),
+                Some(callora_core::gazetteer::Lookup::Found(a)) if a.street.is_some()
+            );
+            return (!street_found)
+                .then(|| (format!("which street in {city}"), g.street_candidates(&city, transcript, 700, 150)));
+        }
+        if self.engine.awaiting_city() && g.towns_named(transcript).is_empty() {
+            return Some(("which town or city, from where and to where".into(), g.town_names(20)));
+        }
+        None
     }
 
     /// The silence that ends the caller's utterance, by what has been heard of it: shorter
