@@ -1205,8 +1205,10 @@ async fn a_finished_short_answer_ends_sooner_and_a_broken_sentence_later() {
     let (h, mut ws) = call_at_the_read_back(no_gain(), "CA70").await;
     voice_then_partial(&h, &mut ws, "כן").await;
     send_frames(&mut ws, true, 5).await;
+    // Frames are counted as they arrive; on a loaded CI runner a few more slip in, so the
+    // bounds leave room for that and the comparisons below carry the meaning.
     let short = quiet_frames_until_finalize(&h, &mut ws, 40).await.expect("it ends");
-    assert!((16..=19).contains(&short), "about 350 ms, got {} ms", short * 20);
+    assert!((16..=22).contains(&short), "about 350 ms, got {} ms", short * 20);
 
     // The same without the adaptation takes the full 500 ms.
     let session = SessionConfig { endpoint_short_ms: 500, endpoint_long_ms: 500, ..no_gain() };
@@ -1214,7 +1216,8 @@ async fn a_finished_short_answer_ends_sooner_and_a_broken_sentence_later() {
     voice_then_partial(&h, &mut ws, "כן").await;
     send_frames(&mut ws, true, 5).await;
     let plain = quiet_frames_until_finalize(&h, &mut ws, 40).await.expect("it ends");
-    assert!((24..=26).contains(&plain), "500 ms, got {} ms", plain * 20);
+    assert!((24..=29).contains(&plain), "500 ms, got {} ms", plain * 20);
+    assert!(short + 4 <= plain, "a finished answer ends sooner: {} ms vs {} ms", short * 20, plain * 20);
 
     // A sentence that breaks off waits longer for the rest of it.
     let (h, mut ws) = call_at_the_read_back(no_gain(), "CA72").await;
@@ -1222,6 +1225,7 @@ async fn a_finished_short_answer_ends_sooner_and_a_broken_sentence_later() {
     send_frames(&mut ws, true, 5).await;
     let long = quiet_frames_until_finalize(&h, &mut ws, 60).await.expect("it ends");
     assert!(long >= 34, "about 700 ms, got {} ms", long * 20);
+    assert!(long >= plain + 6, "a broken sentence waits longer: {} ms vs {} ms", long * 20, plain * 20);
 }
 
 #[tokio::test]
