@@ -382,7 +382,8 @@ fn speech_to_text() -> Arc<dyn SpeechToText> {
                     env("OPENAI_STT_PROMPT"),
                 )
                 .with_hints(env("OPENAI_STT_HINTS").as_deref() == Some("1"))
-                .with_noise_reduction(env("OPENAI_STT_NOISE_REDUCTION")),
+                .with_noise_reduction(env("OPENAI_STT_NOISE_REDUCTION"))
+                .with_logprobs(env("OPENAI_STT_LOGPROBS").as_deref() == Some("1")),
             ) as Arc<dyn SpeechToText>
         })
     };
@@ -866,6 +867,7 @@ async fn stt_probe(file: &Path, limit: usize, keyterms: &[String]) -> anyhow::Re
                     break;
                 }
                 callora_runtime::ports::SttEvent::Closed => break,
+                callora_runtime::ports::SttEvent::Unsure(_) => {}
                 callora_runtime::ports::SttEvent::Partial(_) => {}
             }
         }

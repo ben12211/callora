@@ -384,6 +384,8 @@ pub struct Session {
     utterance_level: f32,
     /// The levels of the caller's own utterances so far (the ones that were words).
     caller_levels: Vec<f32>,
+    /// The words of the coming transcript the recognizer was unsure of.
+    unsure: Vec<(String, f32)>,
     /// The caller's current speech began while the agent was talking or just after: it may be
     /// the agent's own voice coming back through a speakerphone.
     speech_over_agent: bool,
@@ -523,6 +525,7 @@ impl Session {
             voiced_level: (0.0, 0),
             utterance_level: 0.0,
             caller_levels: Vec::new(),
+            unsure: Vec::new(),
             speech_over_agent: false,
             overlap: false,
             priced: None,

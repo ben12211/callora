@@ -289,6 +289,7 @@ impl Session {
                 }
                 self.last_partial = text;
             }
+            SttEvent::Unsure(words) => self.unsure = words,
             SttEvent::Final(text) => {
                 self.stt_reconnects = 0;
                 if !text.trim().is_empty() {
@@ -380,6 +381,10 @@ impl Session {
             return;
         }
         self.engine.state.distant_voice = self.is_distant();
+        self.engine.state.unsure_words = std::mem::take(&mut self.unsure);
+        if !self.engine.state.unsure_words.is_empty() {
+            tracing::info!(call = %self.info.call_sid, unsure = ?self.engine.state.unsure_words, "words the recognizer was unsure of");
+        }
         if self.engine.state.distant_voice {
             tracing::info!(
                 call = %self.info.call_sid,

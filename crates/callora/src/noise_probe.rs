@@ -52,6 +52,7 @@ struct Clip {
     truth: String,
     other: String,
     heard: Vec<String>,
+    unsure: Vec<String>,
     end_delay_ms: Option<i64>,
 }
 
@@ -93,6 +94,7 @@ async fn hear(
         })
         .map(|(_, b)| *b as i64 * 20 - speech_end_ms as i64);
     let mut heard = Vec::new();
+    let mut unsure = Vec::new();
     if !segments.is_empty() {
         let mut session = stt.open("he-IL", &[]).await?;
         for (a, b) in &segments {
@@ -107,6 +109,7 @@ async fn hear(
                         break;
                     }
                     Ok(Some(SttEvent::Partial(_))) => {}
+                    Ok(Some(SttEvent::Unsure(u))) => unsure.extend(u.into_iter().flat_map(|(w, _)| words(&w))),
                     Ok(Some(SttEvent::Error(e))) => anyhow::bail!("recognition error: {e}"),
                     _ => break,
                 }
@@ -119,6 +122,7 @@ async fn hear(
         truth: row["truth"].as_str().unwrap_or("").to_string(),
         other: row["other"].as_str().unwrap_or("").to_string(),
         heard,
+        unsure,
         end_delay_ms,
     })
 }
@@ -180,6 +184,21 @@ pub async fn run(
                 if show && f < truth.len() {
                     println!("  {kind} | said \"{}\" | heard \"{}\"", c.truth, c.heard.join(" "));
                 }
+            }
+            // Unsure words: how many were wrong (not the caller's), and how many wrong words were
+            // flagged.
+            let (mut flagged, mut flagged_wrong, mut wrong) = (0, 0, 0);
+            for c in clips {
+                let truth = words(&c.truth);
+                let wrong_words: Vec<&String> = c.heard.iter().filter(|w| !truth.contains(w)).collect();
+                wrong += wrong_words.len();
+                flagged += c.unsure.len();
+                flagged_wrong += c.unsure.iter().filter(|u| !truth.contains(u)).count();
+            }
+            if flagged > 0 {
+                println!(
+                    "{kind:>9}: unsure words {flagged}, of them wrong {flagged_wrong}; wrong words heard {wrong}, of them flagged unsure {flagged_wrong}"
+                );
             }
             delays.sort_unstable();
             let p50 = delays.get(delays.len() / 2).copied().unwrap_or(0);

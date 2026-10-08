@@ -41,6 +41,8 @@ pub struct OpenAiStt {
     /// The service's own noise reduction (`near_field` for a phone at the mouth,
     /// `far_field` for a speakerphone), applied before it transcribes. None by default.
     noise_reduction: Option<String>,
+    /// Ask for each token's probability, to tell the agent which words were unsure.
+    logprobs: bool,
 }
 
 impl OpenAiStt {
@@ -53,7 +55,13 @@ impl OpenAiStt {
             prompt: nonblank(prompt).unwrap_or_else(|| DEFAULT_PROMPT.into()),
             hints: false,
             noise_reduction: None,
+            logprobs: false,
         }
+    }
+
+    pub fn with_logprobs(mut self, on: bool) -> Self {
+        self.logprobs = on;
+        self
     }
 
     pub fn with_noise_reduction(mut self, kind: Option<String>) -> Self {
@@ -95,6 +103,9 @@ impl OpenAiStt {
         if let Some(kind) = &self.noise_reduction {
             update["session"]["audio"]["input"]["noise_reduction"] = json!({ "type": kind });
         }
+        if self.logprobs {
+            update["session"]["include"] = json!(["item.input_audio_transcription.logprobs"]);
+        }
         update
     }
 }
@@ -116,6 +127,38 @@ pub fn pcm24k(mulaw: &[u8]) -> Vec<u8> {
 
 fn append(audio: &[u8]) -> String {
     json!({ "type": "input_audio_buffer.append", "audio": STANDARD.encode(pcm24k(audio)) }).to_string()
+}
+
+/// A word counts as unsure under this probability.
+pub const UNSURE_BELOW: f32 = 0.5;
+
+/// The words of a completed transcript the recognizer was unsure of: each word's
+/// probability is its least likely token's.
+pub fn unsure_words(v: &Value) -> Vec<(String, f32)> {
+    let Some(tokens) = v.get("logprobs").and_then(Value::as_array) else { return Vec::new() };
+    let mut words: Vec<(String, f32)> = Vec::new();
+    let mut current = (String::new(), 1.0f32);
+    for t in tokens {
+        let token = t.get("token").and_then(Value::as_str).unwrap_or("");
+        let p = t.get("logprob").and_then(Value::as_f64).map_or(1.0, |l| l.exp() as f32);
+        for (i, piece) in token.split(' ').enumerate() {
+            if i > 0 && !current.0.is_empty() {
+                words.push(std::mem::replace(&mut current, (String::new(), 1.0)));
+            }
+            if !piece.is_empty() {
+                current.0.push_str(piece);
+                current.1 = current.1.min(p);
+            }
+        }
+    }
+    if !current.0.is_empty() {
+        words.push(current);
+    }
+    words
+        .into_iter()
+        .map(|(w, p)| (w.trim_matches(|c: char| !c.is_alphanumeric()).to_string(), p))
+        .filter(|(w, p)| !w.is_empty() && *p < UNSURE_BELOW)
+        .collect()
 }
 
 /// What a server message means for the session. Partial text accumulates per turn.
@@ -194,6 +237,14 @@ impl SpeechToText for OpenAiStt {
             while let Some(Ok(msg)) = stream.next().await {
                 let Message::Text(text) = msg else { continue };
                 let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+                if v.get("type").and_then(Value::as_str)
+                    == Some("conversation.item.input_audio_transcription.completed")
+                {
+                    let unsure = unsure_words(&v);
+                    if !unsure.is_empty() && ev_tx.send(SttEvent::Unsure(unsure)).await.is_err() {
+                        return;
+                    }
+                }
                 if let Some(e) = event(&v, &mut partial) {
                     if ev_tx.send(e).await.is_err() {
                         return;
@@ -230,6 +281,19 @@ mod tests {
             !input["transcription"]["prompt"].as_str().unwrap_or("").contains("בן זכאי"),
             "hints are off by default"
         );
+    }
+
+    #[test]
+    fn unsure_words_are_the_ones_with_an_unlikely_token() {
+        let t = |token: &str, p: f64| json!({ "token": token, "logprob": p.ln() });
+        let v = json!({ "logprobs": [t("בן", 0.99), t(" ז", 0.3), t("כאי", 0.9), t(" ארבעים", 0.95), t(" וחמש", 0.97), t(".", 0.99)] });
+        let u = unsure_words(&v);
+        assert_eq!(u.len(), 1, "{u:?}");
+        assert_eq!(u[0].0, "זכאי");
+        assert!((u[0].1 - 0.3).abs() < 1e-3);
+        assert!(unsure_words(&json!({ "transcript": "כן" })).is_empty(), "no probabilities, nothing unsure");
+        let s = OpenAiStt::new("k".into(), None, None, None).with_logprobs(true);
+        assert_eq!(s.session_update("he-IL", &[])["session"]["include"][0], "item.input_audio_transcription.logprobs");
     }
 
     #[test]

@@ -501,6 +501,15 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
              expected): \"{second}\". Where the two differ, go by the one that makes sense (usually this one)."
         ));
     }
+    if !state.unsure_words.is_empty() {
+        let words: Vec<String> =
+            state.unsure_words.iter().map(|(w, p)| format!("\"{w}\" ({:.0}%)", p * 100.0)).collect();
+        u.push_str(&format!(
+            "
+UNSURE: the recognizer was not sure of {}. If one of them is a detail you need (a place, a number,              a name) and nothing else in the call settles it, do not guess: ask about that one detail (\"אמרת              ...?\" or the question again). Other words do not matter.",
+            words.join(", ")
+        ));
+    }
     if state.distant_voice {
         u.push_str(
             "

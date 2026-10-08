@@ -36,6 +36,9 @@ pub enum SttInput {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SttEvent {
     Partial(String),
+    /// The words of the next `Final` the recognizer was unsure of, with how sure it was
+    /// (0 to 1), when it says.
+    Unsure(Vec<(String, f32)>),
     Final(String),
     Error(String),
     Closed,
