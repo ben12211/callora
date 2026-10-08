@@ -339,15 +339,36 @@ pub fn transcript_records(call_id: uuid::Uuid, conversation: &Value) -> Vec<Call
         .into_iter()
         .flatten()
         .filter_map(|turn| {
-            let message = turn["message"].as_str()?.trim();
-            if message.is_empty() {
-                return None;
-            }
+            let message = turn["message"].as_str().unwrap_or("").trim();
+            // A turn with no words but a tool call is shown as the call: "⚙ create_ride (שגיאה)".
+            let tools: Vec<String> = turn["tool_calls"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c["tool_name"].as_str())
+                .map(|name| {
+                    let failed = turn["tool_results"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|r| r["tool_name"].as_str() == Some(name) && r["is_error"].as_bool() == Some(true));
+                    if failed {
+                        format!("{name} (שגיאה)")
+                    } else {
+                        name.to_string()
+                    }
+                })
+                .collect();
+            let text = match (message.is_empty(), tools.is_empty()) {
+                (true, true) => return None,
+                (true, false) => format!("⚙ {}", tools.join(", ")),
+                (false, _) => message.to_string(),
+            };
             let speaker = if turn["role"].as_str() == Some("user") { "caller" } else { "agent" };
             Some(CallRecord::Turn {
                 call_id,
                 speaker: speaker.into(),
-                text: message.to_string(),
+                text,
                 detail: json!({
                     "source": "elevenlabs",
                     "at": turn["time_in_call_secs"],
@@ -426,17 +447,20 @@ mod tests {
             "transcript": [
                 { "role": "agent", "message": "אהלן", "time_in_call_secs": 0, "tool_calls": [] },
                 { "role": "user", "message": " צריך מונית ", "time_in_call_secs": 4, "tool_calls": [] },
-                { "role": "agent", "message": "", "time_in_call_secs": 6, "tool_calls": [{ "tool_name": "create_ride" }] },
+                { "role": "agent", "message": "", "time_in_call_secs": 6, "tool_calls": [{ "tool_name": "create_ride" }],
+                  "tool_results": [{ "tool_name": "create_ride", "is_error": true }] },
+                { "role": "agent", "message": "", "time_in_call_secs": 7, "tool_calls": [] },
             ],
             "analysis": { "call_successful": "success", "transcript_summary": "הוזמנה מונית" },
         });
         let records = transcript_records(id, &conversation);
-        assert_eq!(records.len(), 3, "two turns with words and the end: {records:?}");
+        assert_eq!(records.len(), 4, "two turns with words, a tool call and the end: {records:?}");
         assert!(matches!(&records[0], CallRecord::Turn { speaker, text, .. } if speaker == "agent" && text == "אהלן"));
         assert!(
             matches!(&records[1], CallRecord::Turn { speaker, text, .. } if speaker == "caller" && text == "צריך מונית")
         );
-        assert!(matches!(&records[2], CallRecord::Ended { outcome, .. } if outcome == "success"));
+        assert!(matches!(&records[2], CallRecord::Turn { text, .. } if text == "⚙ create_ride (שגיאה)"));
+        assert!(matches!(&records[3], CallRecord::Ended { outcome, .. } if outcome == "success"));
     }
 
     #[test]

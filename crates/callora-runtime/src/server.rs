@@ -885,6 +885,11 @@ async fn eleven_tool(
     let want = crate::eleven_tools::tools_token(secret);
     let given = headers.get("x-callora-tools-token").and_then(|v| v.to_str().ok()).unwrap_or("");
     if secret.is_empty() || !bool::from(given.as_bytes().ct_eq(want.as_bytes())) {
+        tracing::warn!(
+            %tool,
+            token = if given.is_empty() { "missing" } else { "wrong" },
+            "an ElevenLabs tool call was refused: its x-callora-tools-token header is missing or not the one on the settings page"
+        );
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let body = body.map_or(json!({}), |Json(b)| b);
