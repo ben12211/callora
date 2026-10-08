@@ -489,6 +489,14 @@ async fn call_status(
             }
             let started = s.eleven_calls.lock().remove(sid);
             if let Some(started) = started {
+                // The call ends now, not when its transcript is read a few seconds later: the first
+                // end is the one kept, and the transcript only adds its words and its outcome.
+                s.services.store.record(CallRecord::Ended {
+                    call_id: crate::eleven_tools::eleven_call_id(sid),
+                    outcome: "completed".into(),
+                    state: json!({ "source": "elevenlabs" }),
+                    usage: Default::default(),
+                });
                 tokio::spawn(crate::eleven_tools::pull_transcript(s.clone(), sid.clone(), started));
             }
         }

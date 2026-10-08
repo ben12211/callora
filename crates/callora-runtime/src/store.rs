@@ -108,7 +108,7 @@ async fn write(pool: &PgPool, record: &CallRecord) -> sqlx::Result<()> {
         }
         CallRecord::Ended { call_id, outcome, state, usage } => {
             sqlx::query(
-                "UPDATE callora_v2.calls SET ended_at = now(), outcome = $2, final_state = $3, llm_usage = $4 WHERE id = $1",
+                "UPDATE callora_v2.calls SET ended_at = COALESCE(ended_at, now()), outcome = $2, final_state = $3, llm_usage = $4 WHERE id = $1",
             )
             .bind(call_id)
             .bind(outcome)
