@@ -12,7 +12,8 @@ impl Session {
         if self.vad.is_speaking() && self.vad.silence_ms() > 0 {
             self.adapt_endpoint();
         }
-        let vad_event = self.vad.push(&frame);
+        let voice = self.denoiser.as_mut().map(|d| d.push(&frame).voice);
+        let vad_event = self.vad.push_with(&frame, voice);
         self.keep_audio(&frame, vad_event.as_ref());
         match vad_event {
             Some(VadEvent::SpeechStarted) => {

@@ -1,5 +1,6 @@
 //! Telephone audio for Callora.
 
+pub mod denoise;
 pub mod library;
 pub mod mulaw;
 pub mod playout;

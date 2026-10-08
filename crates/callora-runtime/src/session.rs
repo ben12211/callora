@@ -351,6 +351,8 @@ pub struct Session {
     engine: Engine,
     playout: Playout,
     vad: Vad,
+    /// RNNoise on the caller's track, for the VAD's voice probability (when it uses one).
+    denoiser: Option<callora_audio::denoise::Denoiser>,
     events: mpsc::UnboundedSender<Ev>,
     stt: Option<SttSession>,
     stt_backlog: VecDeque<Bytes>,
@@ -481,6 +483,7 @@ impl Session {
             business,
             library,
             vad: Vad::new(cfg.vad),
+            denoiser: cfg.vad.voice_start.map(|_| callora_audio::denoise::Denoiser::new()),
             services,
             cfg,
             info,

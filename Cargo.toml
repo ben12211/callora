@@ -16,6 +16,7 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
+nnnoiseless = { version = "0.5", default-features = false }
 flate2 = "1"
 callora-core = { path = "crates/callora-core" }
 callora-audio = { path = "crates/callora-audio" }

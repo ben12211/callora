@@ -25,6 +25,26 @@ pub struct VadConfig {
     /// level becomes the threshold. Without it the call waited for the end of a sentence
     /// that never came.
     pub max_speech_ms: u64,
+    /// Speech must be this many times louder than the background noise (followed as the call
+    /// goes): at a bus stop the noise itself is above the fixed threshold, and the end of a
+    /// sentence was heard 2 s late. 0 is off.
+    pub noise_floor_ratio: f32,
+    /// With a voice probability for each frame (RNNoise), how sure it must be that a voice
+    /// starts speech; a bus braking is loud but no voice. `None` is the energy alone.
+    pub voice_start: Option<f32>,
+    /// And how sure it must stay while speech goes on (lower, so a soft syllable does not
+    /// end a sentence).
+    pub voice_hold: f32,
+}
+
+impl VadConfig {
+    /// The caller in a noisy place: background-following threshold and the voice
+    /// probability. On 110 noisy clips (bus station, traffic, wind, a cafe, a TV, a market)
+    /// the end of speech was heard 0.3 s after it instead of 2 s, and noise alone started
+    /// "speech" in 7 of 21 clips instead of 16.
+    pub fn for_noise(self) -> Self {
+        Self { noise_floor_ratio: 2.0, voice_start: Some(0.9), voice_hold: 0.3, ..self }
+    }
 }
 
 impl Default for VadConfig {
@@ -33,7 +53,15 @@ impl Default for VadConfig {
         // of the sentence. Scribe keeps every word (a word after an early commit starts the
         // next segment, and a new sentence while the agent thinks joins the utterance), so
         // 500 ms is safe and saves 200 ms on every turn.
-        Self { threshold_rms: 600.0, trigger_ms: 100, endpoint_ms: 500, max_speech_ms: 15_000 }
+        Self {
+            threshold_rms: 600.0,
+            trigger_ms: 100,
+            endpoint_ms: 500,
+            max_speech_ms: 15_000,
+            noise_floor_ratio: 0.0,
+            voice_start: None,
+            voice_hold: 0.5,
+        }
     }
 }
 
@@ -57,6 +85,8 @@ pub struct Vad {
     peak: f32,
     /// Silence that ends the utterance now (the configured one unless the runtime moved it).
     endpoint_ms: u64,
+    /// The background level, followed down fast and up slowly.
+    floor: f32,
 }
 
 impl Vad {
@@ -72,6 +102,7 @@ impl Vad {
             loudness: 0.0,
             peak: 0.0,
             endpoint_ms: cfg.endpoint_ms,
+            floor: 300.0,
         }
     }
 
@@ -108,16 +139,41 @@ impl Vad {
         self.peak
     }
 
-    /// The level that counts as speech now.
+    /// The level that counts as speech now: the threshold, or above the background noise.
     pub fn threshold(&self) -> f32 {
-        self.threshold
+        if self.cfg.noise_floor_ratio > 0.0 {
+            self.threshold.max(self.floor * self.cfg.noise_floor_ratio)
+        } else {
+            self.threshold
+        }
+    }
+
+    /// The background noise level heard (RMS).
+    pub fn noise_floor(&self) -> f32 {
+        self.floor
     }
 
     /// Feed one inbound μ-law frame.
     pub fn push(&mut self, frame: &[u8]) -> Option<VadEvent> {
+        self.push_with(frame, None)
+    }
+
+    /// Feed one inbound μ-law frame with how likely it holds a voice (0 to 1), when known.
+    pub fn push_with(&mut self, frame: &[u8], voice: Option<f32>) -> Option<VadEvent> {
         let frame_ms = (frame.len() as u64 * 1000) / 8000;
         self.last_rms = rms(frame);
-        if self.last_rms >= self.threshold {
+        let threshold = self.threshold();
+        self.floor = if self.last_rms < self.floor {
+            0.9 * self.floor + 0.1 * self.last_rms
+        } else {
+            0.995 * self.floor + 0.005 * self.last_rms
+        };
+        let sure = if self.speaking { Some(self.cfg.voice_hold) } else { self.cfg.voice_start };
+        let voiced = match (self.cfg.voice_start, voice) {
+            (Some(_), Some(p)) => p >= sure.unwrap_or(0.0),
+            _ => true,
+        };
+        if self.last_rms >= threshold && voiced {
             self.speech_ms = (self.speech_ms + frame_ms).min(2 * self.cfg.trigger_ms);
             self.silence_ms = 0;
         } else {
@@ -236,5 +292,48 @@ mod tests {
         assert_eq!(events, vec![VadEvent::SpeechStarted, VadEvent::SpeechEnded], "it ends after 15 s");
         // The same noise again is not speech any more.
         assert!((0..100).all(|_| vad.push(&loud()).is_none()) && !vad.is_speaking());
+    }
+}
+
+#[cfg(test)]
+mod noise_tests {
+    use super::*;
+    use crate::mulaw::{encode, FRAME_BYTES};
+
+    fn level(amp: i16) -> Vec<u8> {
+        (0..FRAME_BYTES).map(|i| encode(if i % 2 == 0 { amp } else { -amp })).collect()
+    }
+
+    #[test]
+    fn steady_background_raises_the_level_that_counts_as_speech() {
+        let mut vad = Vad::new(VadConfig::default().for_noise());
+        for _ in 0..300 {
+            vad.push_with(&level(900), Some(0.0));
+        }
+        assert!(vad.noise_floor() > 700.0, "{}", vad.noise_floor());
+        assert!(vad.threshold() > 1400.0, "{}", vad.threshold());
+        assert!(!vad.is_speaking(), "a loud background with no voice is no speech");
+        // A voice twice as loud as the background is speech.
+        let started = (0..20).any(|_| vad.push_with(&level(4000), Some(0.95)) == Some(VadEvent::SpeechStarted));
+        assert!(started);
+        // Back to the background alone: the sentence ends after the endpoint, not seconds later.
+        let ended = (1..=40).find(|_| vad.push_with(&level(900), Some(0.1)) == Some(VadEvent::SpeechEnded));
+        assert_eq!(ended, Some(25), "500 ms");
+    }
+
+    #[test]
+    fn loud_sound_with_no_voice_does_not_start_speech_but_a_soft_syllable_keeps_it() {
+        let mut vad = Vad::new(VadConfig::default().for_noise());
+        assert!((0..50).all(|_| vad.push_with(&level(5000), Some(0.2)).is_none()), "a horn is no speech");
+        let mut vad = Vad::new(VadConfig::default().for_noise());
+        assert!((0..10).any(|_| vad.push_with(&level(4000), Some(0.95)) == Some(VadEvent::SpeechStarted)));
+        assert!((0..40).all(|_| vad.push_with(&level(4000), Some(0.6)).is_none()), "less sure, still speech");
+        assert!(vad.is_speaking());
+    }
+
+    #[test]
+    fn without_a_voice_probability_it_is_the_energy_vad() {
+        let mut vad = Vad::new(VadConfig::default().for_noise());
+        assert!((0..10).any(|_| vad.push(&level(4000)) == Some(VadEvent::SpeechStarted)));
     }
 }

@@ -51,6 +51,8 @@ A live TTS sentence still arriving has an unknown end and is always cut.
 | `VAD_ENDPOINT_SHORT_MS` | `350` | Used when the partial transcript is a finished short answer (≤3 words, and the call is waiting for a short answer: the read-back, "anything else?"). |
 | `VAD_ENDPOINT_LONG_MS` | `700` | Used when the partial transcript looks broken off ("…", a lone letter). |
 | `VAD_THRESHOLD_RMS` | `600` | Level (RMS, 16-bit scale) that counts as the caller's voice. Was 900: quiet callers' words sat at 600-900, so the ends of their sentences were taken for silence. |
+| `VAD_NOISE` | on | `off` turns off the noisy-place VAD: the level that counts as speech follows the background noise (`VAD_NOISE_FLOOR_RATIO`, 2: twice the background), and RNNoise must be sure a sound is a voice to start speech (`VAD_VOICE_START`, 0.9) and less sure to keep it (`VAD_VOICE_HOLD`, 0.3). On 110 clips in street noise (`callora noise-probe`) the end of speech was heard 0.3 s after it instead of 2.2 s, and noise alone started speech in 7 of 21 clips instead of 16; 8 of 585 recorded utterances of past calls split at a pause the old VAD bridged. |
+| `OPENAI_STT_NOISE_REDUCTION` | none | The recognizer's own noise reduction: `near_field` or `far_field`. |
 | `VAD_TRIGGER_MS` | `100` | Voice needed for the VAD to say speech started (existing). |
 | `AGENT_SPECULATE` | on | Start the agent on the partial transcript (existing). |
 

@@ -36,6 +36,7 @@ use callora_runtime::server::{router, AppState, ServerSettings};
 use callora_runtime::session::{Services, SessionConfig};
 
 mod eval;
+mod noise_probe;
 
 #[derive(Parser)]
 #[command(name = "callora", version, about = "Callora V2 phone agent")]
@@ -75,6 +76,21 @@ enum Command {
         #[arg(long, default_value = "taxi")]
         business: String,
         text: String,
+    },
+    /// Recorded caller audio in noise through the VAD and the configured speech recognizer,
+    /// scored against what was said (see noise_probe.rs).
+    NoiseProbe {
+        file: PathBuf,
+        /// The VAD of production (`noise`: following the background, RNNoise's voice
+        /// probability) or the energy alone (`energy`).
+        #[arg(long, default_value = "noise")]
+        vad: String,
+        /// Send RNNoise's cleaned audio to the recognizer instead of the call's.
+        #[arg(long)]
+        clean: bool,
+        /// Print every clip that lost words or got words from nothing.
+        #[arg(long)]
+        show: bool,
     },
     /// Stored caller utterances through the configured speech recognizer, with its latency.
     SttProbe {
@@ -365,7 +381,8 @@ fn speech_to_text() -> Arc<dyn SpeechToText> {
                     env("OPENAI_STT_MODEL"),
                     env("OPENAI_STT_PROMPT"),
                 )
-                .with_hints(env("OPENAI_STT_HINTS").as_deref() == Some("1")),
+                .with_hints(env("OPENAI_STT_HINTS").as_deref() == Some("1"))
+                .with_noise_reduction(env("OPENAI_STT_NOISE_REDUCTION")),
             ) as Arc<dyn SpeechToText>
         })
     };
@@ -503,6 +520,12 @@ async fn main() -> anyhow::Result<()> {
                 EvalArgs { cases, models, reasoning, repeat, only, concurrency, json, check, min_pass, rpm },
             )
             .await
+        }
+        Command::NoiseProbe { file, vad, clean, show } => {
+            init_tracing();
+            let base = callora_audio::vad::VadConfig::default();
+            let (cfg, voice) = if vad == "energy" { (base, false) } else { (base.for_noise(), true) };
+            noise_probe::run(speech_to_text(), &file, cfg, voice, clean, show).await
         }
         Command::SttProbe { file, limit, city, business_words, area } => {
             init_tracing();
@@ -659,6 +682,16 @@ fn apply_voice_env(session: &mut SessionConfig) {
                 $field = v;
             }
         };
+    }
+    // Noisy places: the VAD follows the background and asks RNNoise whether a sound is a
+    // voice. On unless `VAD_NOISE=off`.
+    if !env("VAD_NOISE").is_some_and(|v| v == "off" || v == "false" || v == "0") {
+        session.vad = session.vad.for_noise();
+    }
+    set!("VAD_NOISE_FLOOR_RATIO", session.vad.noise_floor_ratio);
+    set!("VAD_VOICE_HOLD", session.vad.voice_hold);
+    if let Some(start) = env_num::<f32>("VAD_VOICE_START") {
+        session.vad.voice_start = Some(start);
     }
     // Loudness.
     set!("VAD_THRESHOLD_RMS", session.vad.threshold_rms);

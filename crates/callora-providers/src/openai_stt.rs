@@ -38,6 +38,9 @@ pub struct OpenAiStt {
     /// The words the call expects (keyterms) go into the prompt. Off by default: a place
     /// list made another recognizer write places nobody said.
     hints: bool,
+    /// The service's own noise reduction (`near_field` for a phone at the mouth,
+    /// `far_field` for a speakerphone), applied before it transcribes. None by default.
+    noise_reduction: Option<String>,
 }
 
 impl OpenAiStt {
@@ -49,7 +52,13 @@ impl OpenAiStt {
             model: nonblank(model).unwrap_or_else(|| DEFAULT_MODEL.into()),
             prompt: nonblank(prompt).unwrap_or_else(|| DEFAULT_PROMPT.into()),
             hints: false,
+            noise_reduction: None,
         }
+    }
+
+    pub fn with_noise_reduction(mut self, kind: Option<String>) -> Self {
+        self.noise_reduction = kind.filter(|k| matches!(k.as_str(), "near_field" | "far_field"));
+        self
     }
 
     pub fn with_hints(mut self, hints: bool) -> Self {
@@ -70,7 +79,7 @@ impl OpenAiStt {
     pub fn session_update(&self, language: &str, keyterms: &[String]) -> Value {
         let lang = language.split('-').next().unwrap_or(language);
         let prompt = self.prompt_for(keyterms);
-        json!({
+        let mut update = json!({
             "type": "session.update",
             "session": {
                 "type": "transcription",
@@ -82,7 +91,11 @@ impl OpenAiStt {
                     }
                 }
             }
-        })
+        });
+        if let Some(kind) = &self.noise_reduction {
+            update["session"]["audio"]["input"]["noise_reduction"] = json!({ "type": kind });
+        }
+        update
     }
 }
 
@@ -216,6 +229,22 @@ mod tests {
         assert!(
             !input["transcription"]["prompt"].as_str().unwrap_or("").contains("בן זכאי"),
             "hints are off by default"
+        );
+    }
+
+    #[test]
+    fn noise_reduction_is_asked_only_when_set() {
+        let s = OpenAiStt::new("k".into(), None, None, None);
+        assert!(s.session_update("he-IL", &[])["session"]["audio"]["input"].get("noise_reduction").is_none());
+        let s = s.with_noise_reduction(Some("near_field".into()));
+        assert_eq!(
+            s.session_update("he-IL", &[])["session"]["audio"]["input"]["noise_reduction"]["type"],
+            "near_field"
+        );
+        let s = OpenAiStt::new("k".into(), None, None, None).with_noise_reduction(Some("loud".into()));
+        assert!(
+            s.session_update("he-IL", &[])["session"]["audio"]["input"].get("noise_reduction").is_none(),
+            "unknown kinds are ignored"
         );
     }
 
