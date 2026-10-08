@@ -33,8 +33,11 @@ service area, and how they are pronounced.
 `transfer_to_desk` are server tools (webhooks) that Callora serves at
 `POST {PUBLIC_BASE_URL}/webhooks/elevenlabs/tools/create-ride`, `.../get-price` and `.../transfer-to-desk`. They run the
 same actions as Callora's own agent (dispatch, the price list), put the ride on the orders page and
-send it to WhatsApp and Telegram. Both need the header `x-callora-tools-token`: the code and the URL
-are shown on the settings page ("מי עונה לטלפון", with ElevenLabs chosen).
+send it to WhatsApp and Telegram. A call is accepted in either of two ways: the header `x-callora-tools-token` (the code is shown on the
+settings page, "מי עונה לטלפון") or, with no setup at all, when the body's `conversation_id`
+(`system__conversation_id`, set by the platform) is, according to ElevenLabs itself
+(`GET /v1/convai/conversations/{id}`), a live conversation of the chosen agent. Every tool therefore
+carries `conversation_id` as a dynamic variable.
 
 `create_ride` body (JSON): `pickup` (string: street, number if said, city, e.g. `בן זכאי 45, אלעד`),
 `destination` (string, same), `passengers` (integer), `customer_name` (string, Hebrew letters),

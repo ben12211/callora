@@ -154,9 +154,9 @@ export function CallModeCard({ mode, canSave, onChanged }: { mode: CallModeData;
             </ul>
             <div className="grid gap-3 rounded-2xl bg-slate-50 p-4 ring-1 ring-inset ring-slate-200 dark:bg-white/[0.03] dark:ring-white/10">
               <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-                כדי שהסוכן ב-ElevenLabs ישלח הזמנות ויבדוק מחירים דרך קלורה (ההזמנה מופיעה בדף ההזמנות ונשלחת לוואטסאפ), הגדר שם שני כלים
-                מסוג Webhook, <span className="font-mono">create-ride</span> ו-<span className="font-mono">get-price</span>, בכתובת הזו, עם הכותרת{" "}
-                <span className="font-mono">x-callora-tools-token</span> והקוד:
+                הכלים של הסוכן ב-ElevenLabs (<span className="font-mono">create-ride</span> ו-<span className="font-mono">get-price</span>) שולחים הזמנה
+                (היא מופיעה בדף ההזמנות ונשלחת לוואטסאפ) ובודקים מחיר דרך קלורה. הם מאושרים אוטומטית: קלורה שואלת את ElevenLabs אם השיחה
+                שהכלי מציין היא שיחה חיה של הסוכן הזה. אפשר גם להוסיף ידנית כותרת <span className="font-mono">x-callora-tools-token</span> עם הקוד:
               </p>
               <CopyField label="כתובת הכלים (בסוף: create-ride או get-price)" value={`${mode.tools_url}/`} />
               <CopyField label="קוד (בכותרת x-callora-tools-token)" value={mode.tools_token} />

@@ -306,18 +306,39 @@ async fn fake_elevenlabs(reply: (u16, String)) -> (String, Arc<Mutex<Vec<(Value,
     use axum::http::{HeaderMap, StatusCode};
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    let app = axum::Router::new().route(
-        "/v1/convai/twilio/register-call",
-        axum::routing::post(move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
-            let log = log.clone();
-            let reply = reply.clone();
-            async move {
-                let key = headers.get("xi-api-key").and_then(|v| v.to_str().ok()).map(str::to_string);
-                log.lock().push((body, key));
-                (StatusCode::from_u16(reply.0).unwrap(), reply.1)
-            }
-        }),
-    );
+    let app = axum::Router::new()
+        .route(
+            "/v1/convai/conversations/{id}",
+            axum::routing::get(|axum::extract::Path(id): axum::extract::Path<String>| async move {
+                match id.as_str() {
+                    "conv-live" => (
+                        StatusCode::OK,
+                        axum::Json(json!({ "agent_id": "agent_abc123", "status": "in-progress",
+                            "metadata": { "phone_call": { "call_sid": "CA-eleven" } } })),
+                    ),
+                    "conv-done" => {
+                        (StatusCode::OK, axum::Json(json!({ "agent_id": "agent_abc123", "status": "done" })))
+                    }
+                    "conv-other" => (
+                        StatusCode::OK,
+                        axum::Json(json!({ "agent_id": "agent_someone_else", "status": "in-progress" })),
+                    ),
+                    _ => (StatusCode::NOT_FOUND, axum::Json(json!({}))),
+                }
+            }),
+        )
+        .route(
+            "/v1/convai/twilio/register-call",
+            axum::routing::post(move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+                let log = log.clone();
+                let reply = reply.clone();
+                async move {
+                    let key = headers.get("xi-api-key").and_then(|v| v.to_str().ok()).map(str::to_string);
+                    log.lock().push((body, key));
+                    (StatusCode::from_u16(reply.0).unwrap(), reply.1)
+                }
+            }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -456,6 +477,28 @@ async fn a_transfer_with_no_desk_says_so_instead_of_promising_one() {
     assert_eq!(none["ok"], false, "{none}");
     let (_, no_call) = tool(&h, "transfer-to-desk", Some(&token), json!({ "summary": "x" })).await;
     assert_eq!(no_call["ok"], false, "{no_call}");
+}
+
+#[tokio::test]
+async fn a_tool_call_needs_no_token_when_elevenlabs_confirms_its_live_conversation() {
+    let (base, _) = fake_elevenlabs((200, "<Response/>".to_string())).await;
+    let mode = callora_runtime::settings::CallModeSettings { elevenlabs: true, agent_id: "agent_abc123".into() };
+    let h = start_server_full(None, SessionConfig::default(), Some(base), mode).await;
+    let ride = |conversation: &str, sid: &str| {
+        json!({ "pickup": "הנביאים, ירושלים", "destination": "רוטשילד, תל אביב", "passengers": 2,
+                "customer_name": "דיאן", "conversation_id": conversation, "call_sid": sid })
+    };
+
+    let (status, sent) = tool(&h, "create-ride", None, ride("conv-live", "")).await;
+    assert_eq!((status, &sent["ok"]), (200, &json!(true)), "a live conversation of our agent: {sent}");
+
+    assert_eq!(tool(&h, "create-ride", None, ride("conv-done", "")).await.0, 401, "a finished one");
+    assert_eq!(tool(&h, "create-ride", None, ride("conv-other", "")).await.0, 401, "another agent's");
+    assert_eq!(tool(&h, "create-ride", None, ride("conv-unknown", "")).await.0, 401, "one that does not exist");
+    assert_eq!(
+        tool(&h, "create-ride", None, json!({ "pickup": "x", "destination": "y", "passengers": 1 })).await.0,
+        401
+    );
 }
 
 #[tokio::test]

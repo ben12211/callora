@@ -45,6 +45,40 @@ pub fn eleven_call_id(call_sid: &str) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
+/// Whether the conversation a tool call names is a real, live one of the agent the owner chose,
+/// according to ElevenLabs itself. This is what lets the tools work with no shared secret to set up:
+/// `conversation_id` comes from the platform (`system__conversation_id`, which the model cannot
+/// change), is unguessable, and exists only while a caller is on the line. A positive answer is kept
+/// for the length of a call.
+pub async fn conversation_is_ours(s: &AppState, body: &Value) -> bool {
+    let (conversation, call_sid) = (text(body, "conversation_id"), text(body, "call_sid"));
+    let Some(agents) = s.eleven_agents.clone() else { return false };
+    let agent_id = s.services.settings.call_mode().agent_id;
+    if conversation.is_empty() || agent_id.trim().is_empty() {
+        return false;
+    }
+    {
+        let mut known = s.verified_conversations.lock();
+        known.retain(|_, at| at.elapsed() < DUPLICATE_WINDOW);
+        if known.contains_key(&conversation) {
+            return true;
+        }
+    }
+    let Ok(found) = agents.conversation(&conversation).await else { return false };
+    let live = matches!(found["status"].as_str(), Some("in-progress" | "processing" | "initiated"));
+    let ours = found["agent_id"].as_str() == Some(agent_id.trim());
+    // When both say which phone call this is, it must be the same one.
+    let same_call = match (found["metadata"]["phone_call"]["call_sid"].as_str(), call_sid.as_str()) {
+        (Some(theirs), mine) if !mine.is_empty() => theirs == mine,
+        _ => true,
+    };
+    if live && ours && same_call {
+        s.verified_conversations.lock().insert(conversation, Instant::now());
+        return true;
+    }
+    false
+}
+
 fn text(body: &Value, key: &str) -> String {
     match &body[key] {
         Value::String(s) => s.trim().to_string(),

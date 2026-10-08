@@ -86,6 +86,8 @@ pub struct AppState {
     pub(crate) tool_rides: Mutex<HashMap<String, std::time::Instant>>,
     /// The calls handed to an ElevenLabs agent that have not ended: Twilio call SID → start (unix).
     pub(crate) eleven_calls: Mutex<HashMap<String, i64>>,
+    /// Conversations ElevenLabs confirmed as a live one of the chosen agent, for the length of a call.
+    pub(crate) verified_conversations: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl AppState {
@@ -129,6 +131,7 @@ impl AppState {
             eleven_agents,
             tool_rides: Mutex::new(HashMap::new()),
             eleven_calls: Mutex::new(HashMap::new()),
+            verified_conversations: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -884,15 +887,16 @@ async fn eleven_tool(
     let secret = s.settings.stream_secrets.first().map_or("", String::as_str);
     let want = crate::eleven_tools::tools_token(secret);
     let given = headers.get("x-callora-tools-token").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if secret.is_empty() || !bool::from(given.as_bytes().ct_eq(want.as_bytes())) {
+    let body = body.map_or(json!({}), |Json(b)| b);
+    let by_token = !secret.is_empty() && bool::from(given.as_bytes().ct_eq(want.as_bytes()));
+    if !by_token && !crate::eleven_tools::conversation_is_ours(&s, &body).await {
         tracing::warn!(
             %tool,
             token = if given.is_empty() { "missing" } else { "wrong" },
-            "an ElevenLabs tool call was refused: its x-callora-tools-token header is missing or not the one on the settings page"
+            "an ElevenLabs tool call was refused: no valid x-callora-tools-token, and ElevenLabs does not confirm its conversation_id as a live one of the chosen agent"
         );
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let body = body.map_or(json!({}), |Json(b)| b);
     Json(crate::eleven_tools::run(&s, &tool, &body).await).into_response()
 }
 
