@@ -122,8 +122,10 @@ pub fn instructions(question: &str, names: &[String]) -> String {
     format!(
         "The caller was asked {question}. The names it should be one of:\n{}\n\nAnswer with one JSON object with \
          exactly these keys: name: the one they said, exactly as written in the list (they may add ב/מ/ל or רחוב \
-         before it, or say it a little differently), or \"\" when what they said is not on the list; number: a house \
-         number in digits, or \"\"; said: their words as you heard them, in Hebrew letters.",
+         before it, or say it a little differently), or \"\" when what they said is not on the list. Never a name \
+         with words they did not say: \"עזרה\" said alone is the name that is only that word, not a longer one that \
+         ends with it. number: a house number in digits, or \"\"; said: their words as you heard them, in Hebrew \
+         letters.",
         names.join(" | ")
     )
 }

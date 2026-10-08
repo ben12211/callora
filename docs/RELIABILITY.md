@@ -40,6 +40,7 @@ hearing the audio itself (no faster, misses details).
 | The agent waited on its own reasoning line | The read of the caller is written after the words (0.2 s) |
 | A transcript arriving late was called "noise" | The no-words timer waits for the recognizer |
 | The agent fails (timeout, broken reply) | The rules answer the turn |
+| Recognition fails after its session opened (out of credit, a rejected key) | The call fails over to the backup recognizer for five minutes; the words the failed one never answered are sent to the backup |
 | Silence while the agent decides | A thinking sound, played only on a known wait or after 1.5 s: built and tested, off until the owner approves a recording |
 
 ## 3. The conversation
@@ -55,8 +56,10 @@ hearing the audio itself (no faster, misses details).
 
 ## 4. Releases
 
-- Every push to main runs fmt, clippy, the whole test suite and the agent eval with the real
-  model (pass 90% or nothing ships). The deploy waits for both.
+- Every push to main runs fmt, clippy, the whole test suite, the agent eval with the real
+  model, and the audio eval: 20 turns of a booking said by four voices over street noise,
+  heard by the production recognizer and second hearing, then answered by the agent (each
+  eval: pass 90% or nothing ships). The deploy waits for them.
 - Every call's health is logged at its end ("call health") and counted in
   `callora_call_problems_total{problem}`: booking left unfinished, the same question twice,
   a hang-up in the middle of a booking, slow turns.
@@ -71,7 +74,4 @@ Needs the owner (money or a decision):
 - A daily health report sent to the owner (WhatsApp/Telegram).
 
 Engineering:
-- Recognition that fails after its session opened (out of credit) switches the call to the
-  second recognizer.
-- End-to-end call tests with recorded audio (the noisy set, past calls) before each release,
-  not only the agent's text.
+- More audio cases: every live call that goes wrong becomes one (its audio, its scene).

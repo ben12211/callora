@@ -92,12 +92,17 @@ jobs:
           [[ -n "$OPENAI_API_KEY" ]] || { echo 'OPENAI_API_KEY is not set'; exit 1; }
           {
             echo "OPENAI_API_KEY=$OPENAI_API_KEY"
+            # The recognizer of production, for the cases with the caller's voice.
+            echo "STT_PROVIDER=openai"
             for v in AGENT_MODEL AGENT_BACKUP_MODEL AGENT_REASONING_EFFORT; do
               if [[ -n "${!v}" ]]; then echo "$v=${!v}"; fi
             done
           } > .env
           ./dev callora eval --repeat 1 --min-pass 0.9 | tee eval.txt
-          { echo '```'; tail -n 40 eval.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # From the caller's voice (evaluation/audio: four voices over street noise) through the
+          # recognizer, the second hearing and the agent.
+          ./dev callora eval --cases evaluation/audio --repeat 1 --min-pass 0.9 | tee eval-audio.txt
+          { echo '```'; tail -n 40 eval.txt; echo; tail -n 20 eval-audio.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stop the development stack
         if: always()

@@ -150,6 +150,12 @@ fn strip_prefix(word: &str) -> Option<&str> {
     }
 }
 
+/// Sentence marks out ("עזרה אחת עשרה." → "עזרה אחת עשרה"), the comma between street and city
+/// kept.
+fn without_punctuation(text: &str) -> String {
+    text.chars().filter(|c| !matches!(c, '.' | '?' | '!' | '…')).collect::<String>().trim().to_string()
+}
+
 fn distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -735,7 +741,7 @@ impl Gazetteer {
         if matches!(&first, Lookup::Found(a) if a.street.is_some()) {
             return first;
         }
-        let digits = crate::hebrew::with_digits(text);
+        let digits = crate::hebrew::with_digits(&without_punctuation(text));
         if digits == text {
             return first;
         }
@@ -771,7 +777,9 @@ impl Gazetteer {
         if matches!(&first, Lookup::Found(a) if a.street.is_some()) {
             return Some(first);
         }
-        let digits = crate::hebrew::with_digits(street);
+        // A recognizer's punctuation kept its number words from being read as digits ("עזרה
+        // אחת עשרה." was no street of בני ברק, "עזרה 11" is עזרא 11).
+        let digits = crate::hebrew::with_digits(&without_punctuation(street));
         if digits == street {
             return Some(first);
         }
@@ -1180,6 +1188,20 @@ mod tests {
         assert_eq!(near.first().map(String::as_str), Some("הנביאים"), "a prefix is no distance");
         assert_eq!(g.street_candidates("אלעד", "ב... זה קח", 700, 150).len(), 2, "a small city: every street");
         assert!(g.street_candidates("אין כזאת", "x", 700, 150).is_empty());
+    }
+
+    #[test]
+    fn number_words_with_the_recognizers_full_stop_are_a_house_number() {
+        // "עזרא 11" came back "עזרה אחת עשרה." and was no street of בני ברק.
+        let g = Gazetteer::from_tsv(
+            "6100	בני ברק	825	עזרא	official
+6100	בני ברק	998	הרב עטיה עזרה	official
+",
+        );
+        let a = found(g.resolve_within("עזרה אחת עשרה.", "בני ברק").unwrap());
+        assert_eq!((a.street.as_deref(), a.number.as_deref()), (Some("עזרא"), Some("11")));
+        let a = found(g.resolve("עזרה אחת עשרה, בני ברק."));
+        assert_eq!(a.street.as_deref(), Some("עזרא"));
     }
 
     #[test]
