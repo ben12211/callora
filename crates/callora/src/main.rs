@@ -1040,6 +1040,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         whatsapp: env("WHATSAPP_URL").zip(env("WHATSAPP_TOKEN").filter(|t| t.len() >= 16)),
         library_dir: Some(library_dir.clone()),
         library_model: env("ELEVENLABS_LIBRARY_MODEL"),
+        eleven_agents: env("ELEVENLABS_API_KEY").map(|key| (key, env("ELEVENLABS_API_BASE_URL"))),
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
     // A voice chosen on the settings page replaces the business's own.

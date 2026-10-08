@@ -137,6 +137,14 @@ export type AgentModelData = {
   models: { id: string; provider: "gemini" | "openai" }[];
 };
 
+/** Who answers the phone: Callora's agent, or an agent built on ElevenLabs. */
+export type CallModeData = {
+  /** The server has an ElevenLabs key, so the option can be chosen. */
+  available: boolean;
+  elevenlabs: boolean;
+  agent_id: string;
+};
+
 export type SettingsData = {
   businesses: { id: string; name: string; desk: DeskSettings; price_bot: PriceBotSettings | null; voice: VoiceSettings }[];
   music: string[];
@@ -146,6 +154,7 @@ export type SettingsData = {
   voice_switching: boolean;
   /** None when the server has no key for the agent's model. */
   agent: AgentModelData | null;
+  call_mode: CallModeData;
 };
 
 export type Session = { businesses: { id: string; name: string }[]; database: boolean };

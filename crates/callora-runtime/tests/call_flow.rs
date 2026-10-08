@@ -166,6 +166,16 @@ async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
 }
 
 async fn start_server_cfg(agent: Option<Arc<dyn LanguageModel>>, session: SessionConfig) -> Harness {
+    start_server_full(agent, session, None, Default::default()).await
+}
+
+/// The server with an ElevenLabs API (its base URL) and the owner's choice of who answers.
+async fn start_server_full(
+    agent: Option<Arc<dyn LanguageModel>>,
+    session: SessionConfig,
+    eleven: Option<String>,
+    mode: callora_runtime::settings::CallModeSettings,
+) -> Harness {
     let env = |k: &str| {
         (k == "TAXI_PHONE_NUMBERS")
             .then(|| NUMBER.to_string())
@@ -194,7 +204,11 @@ async fn start_server_cfg(agent: Option<Arc<dyn LanguageModel>>, session: Sessio
         store: Arc::new(NullStore),
         whisper: Arc::new(NoWhisper),
         metrics: metrics.clone(),
-        settings: Default::default(),
+        settings: {
+            let store = callora_runtime::settings::SettingsStore::default();
+            store.set_call_mode(mode);
+            Arc::new(store)
+        },
         desk: None,
     };
     let mut libraries = HashMap::new();
@@ -212,6 +226,7 @@ async fn start_server_cfg(agent: Option<Arc<dyn LanguageModel>>, session: Sessio
         whatsapp: None,
         library_dir: None,
         library_model: None,
+        eleven_agents: eleven.map(|base| ("xi-test-key".to_string(), Some(base))),
     };
     let state = AppState::new(registry, libraries, services, session, settings, None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -272,6 +287,77 @@ async fn voice_webhook_requires_a_valid_signature_and_returns_a_stream() {
     let body = ok.text().await.unwrap();
     assert!(body.contains("<Connect><Stream url=\"wss://calls.example.test/webhooks/twilio/media\">"), "{body}");
     assert!(body.contains("<Parameter name=\"token\""));
+}
+
+/// A stand-in for ElevenLabs' register-call: answers with `reply` and remembers what it was asked.
+async fn fake_elevenlabs(reply: (u16, String)) -> (String, Arc<Mutex<Vec<(Value, Option<String>)>>>) {
+    use axum::http::{HeaderMap, StatusCode};
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let app = axum::Router::new().route(
+        "/v1/convai/twilio/register-call",
+        axum::routing::post(move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+            let log = log.clone();
+            let reply = reply.clone();
+            async move {
+                let key = headers.get("xi-api-key").and_then(|v| v.to_str().ok()).map(str::to_string);
+                log.lock().push((body, key));
+                (StatusCode::from_u16(reply.0).unwrap(), reply.1)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), seen)
+}
+
+async fn voice_call(h: &Harness) -> String {
+    let mut params = BTreeMap::new();
+    params.insert("CallSid".to_string(), "CA-eleven".to_string());
+    params.insert("To".to_string(), NUMBER.to_string());
+    params.insert("From".to_string(), "+972501111111".to_string());
+    let sig = twilio::signature(TOKEN, &format!("https://calls.example.test{}", twilio::VOICE_PATH), &params);
+    let url = format!("http://{}{}", h.addr, twilio::VOICE_PATH);
+    let ok = reqwest::Client::new().post(&url).header("X-Twilio-Signature", sig).form(&params).send().await.unwrap();
+    assert_eq!(ok.status(), 200);
+    ok.text().await.unwrap()
+}
+
+#[tokio::test]
+async fn a_call_goes_to_the_elevenlabs_agent_when_the_owner_chose_it() {
+    let twiml =
+        "<?xml version=\"1.0\"?><Response><Connect><Stream url=\"wss://elevenlabs.test/s\"/></Connect></Response>";
+    let (base, seen) = fake_elevenlabs((200, twiml.to_string())).await;
+    let mode = callora_runtime::settings::CallModeSettings { elevenlabs: true, agent_id: "agent_abc123".into() };
+    let h = start_server_full(None, SessionConfig::default(), Some(base), mode).await;
+    let body = voice_call(&h).await;
+    assert_eq!(body, twiml, "ElevenLabs' TwiML is what Twilio gets");
+    let seen = seen.lock();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0["agent_id"], "agent_abc123");
+    assert_eq!(seen[0].0["from_number"], "+972501111111");
+    assert_eq!(seen[0].0["to_number"], NUMBER);
+    assert_eq!(seen[0].1.as_deref(), Some("xi-test-key"));
+}
+
+#[tokio::test]
+async fn when_elevenlabs_does_not_take_the_call_callora_answers() {
+    let (base, seen) = fake_elevenlabs((500, "down".to_string())).await;
+    let mode = callora_runtime::settings::CallModeSettings { elevenlabs: true, agent_id: "agent_abc123".into() };
+    let h = start_server_full(None, SessionConfig::default(), Some(base), mode).await;
+    let body = voice_call(&h).await;
+    assert!(body.contains("<Connect><Stream url=\"wss://calls.example.test/webhooks/twilio/media\">"), "{body}");
+    assert_eq!(seen.lock().len(), 1, "it was tried first");
+}
+
+#[tokio::test]
+async fn callora_answers_unless_the_owner_chose_elevenlabs() {
+    let (base, seen) = fake_elevenlabs((200, "<Response/>".to_string())).await;
+    let h = start_server_full(None, SessionConfig::default(), Some(base), Default::default()).await;
+    let body = voice_call(&h).await;
+    assert!(body.contains("<Connect><Stream url=\"wss://calls.example.test/webhooks/twilio/media\">"), "{body}");
+    assert!(seen.lock().is_empty(), "ElevenLabs is never asked");
 }
 
 #[tokio::test]

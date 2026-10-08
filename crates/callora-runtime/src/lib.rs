@@ -5,6 +5,7 @@ pub mod agent_model;
 pub mod barge;
 pub mod dashboard;
 pub mod desk;
+pub mod eleven_agents;
 pub mod metrics;
 pub mod ports;
 pub mod pricing;

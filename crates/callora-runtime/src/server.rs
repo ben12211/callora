@@ -52,6 +52,9 @@ pub struct ServerSettings {
     pub library_dir: Option<std::path::PathBuf>,
     /// The model libraries are made with, when not the business's (`ELEVENLABS_LIBRARY_MODEL`).
     pub library_model: Option<String>,
+    /// The ElevenLabs API key and base URL, for handing calls to an ElevenLabs agent; none, no
+    /// such option on the settings page.
+    pub eleven_agents: Option<(String, Option<String>)>,
 }
 
 /// A voice library being built in a voice the owner chose.
@@ -77,6 +80,8 @@ pub struct AppState {
     whispers: Arc<Whispers>,
     sessions: crate::dashboard::Sessions,
     pub whatsapp: Option<Arc<crate::whatsapp::Service>>,
+    /// The ElevenLabs Agents platform, when the owner can hand calls to it.
+    pub eleven_agents: Option<Arc<crate::eleven_agents::ElevenAgents>>,
 }
 
 impl AppState {
@@ -101,6 +106,10 @@ impl AppState {
             services.desk =
                 Some(Arc::new(crate::desk::Desk::new(settings.public_base_url.clone(), services.telephony.clone())));
         }
+        let eleven_agents = settings
+            .eleven_agents
+            .clone()
+            .map(|(key, base)| Arc::new(crate::eleven_agents::ElevenAgents::new(reqwest::Client::new(), key, base)));
         Arc::new(Self {
             registry,
             libraries: parking_lot::RwLock::new(libraries),
@@ -113,6 +122,7 @@ impl AppState {
             whispers,
             sessions,
             whatsapp,
+            eleven_agents,
         })
     }
 }
@@ -267,6 +277,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/settings/{business}/price-bot", axum::routing::put(api_save_price_bot))
         .route("/api/settings/{business}/voice", axum::routing::put(api_save_voice))
         .route("/api/settings/agent-model", axum::routing::put(api_save_agent_model))
+        .route("/api/settings/call-mode", axum::routing::put(api_save_call_mode))
         .route("/api/settings/{business}/price-bot/test", post(api_test_price_bot))
         .route("/api/businesses", get(api_businesses))
         .route("/api/calls", get(api_calls))
@@ -352,6 +363,12 @@ async fn voice(
         return xml(twilio::twiml_say_hangup("This number is not available.", "en-US"));
     }
 
+    // The owner may have handed the phone to an ElevenLabs agent; if it does not answer,
+    // Callora's own agent takes the call below.
+    if let Some(twiml) = elevenlabs_twiml(&s, &call_sid, params.get("From").map_or("", String::as_str), &to).await {
+        return xml(twiml);
+    }
+
     // Start the customer lookup now: the media stream connects a few hundred ms later,
     // and by then the greeting can already know who is calling.
     let mut customer_rx = None;
@@ -405,6 +422,29 @@ async fn voice(
         twilio::MEDIA_PATH
     );
     xml(twilio::twiml_stream(&media_url, &token))
+}
+
+/// The TwiML that connects the call to the ElevenLabs agent the owner chose, or none: not
+/// chosen, not available, or ElevenLabs did not answer (then Callora's agent takes the call).
+async fn elevenlabs_twiml(s: &AppState, call_sid: &str, from: &str, to: &str) -> Option<String> {
+    let mode = s.services.settings.call_mode();
+    if !mode.elevenlabs {
+        return None;
+    }
+    let Some(agents) = &s.eleven_agents else {
+        tracing::warn!(call = %call_sid, "ElevenLabs is chosen to answer but the server has no ElevenLabs key");
+        return None;
+    };
+    match agents.register_call(mode.agent_id.trim(), from, to).await {
+        Ok(twiml) => {
+            tracing::info!(call = %call_sid, "the call goes to the ElevenLabs agent");
+            Some(twiml)
+        }
+        Err(e) => {
+            tracing::warn!(call = %call_sid, error = %e, "ElevenLabs did not take the call; Callora's agent answers");
+            None
+        }
+    }
 }
 
 fn twiml_unavailable() -> String {
@@ -799,8 +839,45 @@ async fn api_settings(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Res
         "whatsapp": s.whatsapp.is_some(),
         "voice_switching": s.settings.library_dir.is_some() && s.services.tts.is_some(),
         "agent": s.services.settings.agent_control().map(|c| c.view()),
+        "call_mode": {
+            "available": s.eleven_agents.is_some(),
+            "elevenlabs": s.services.settings.call_mode().elevenlabs,
+            "agent_id": s.services.settings.call_mode().agent_id,
+        },
     }))
     .into_response()
+}
+
+/// Choose who answers the phone: Callora's own agent, or an ElevenLabs agent (its id is checked
+/// with ElevenLabs first). Saved, and used by the calls that come next.
+async fn api_save_call_mode(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut mode): Json<crate::settings::CallModeSettings>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    mode.agent_id = mode.agent_id.trim().to_string();
+    let problems = |p: Vec<String>| (StatusCode::BAD_REQUEST, Json(json!({ "problems": p }))).into_response();
+    if mode.elevenlabs {
+        let Some(agents) = &s.eleven_agents else {
+            return problems(vec!["אין בשרת מפתח של ElevenLabs".into()]);
+        };
+        if !mode.problems().is_empty() {
+            return problems(mode.problems());
+        }
+        if let Err(problem) = agents.check_agent(&mode.agent_id).await {
+            return problems(vec![problem]);
+        }
+    }
+    if let Err(e) = s.services.settings.save_call_mode(pool, mode.clone()).await {
+        tracing::error!(error = %e, "saving who answers the phone failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    tracing::info!(elevenlabs = mode.elevenlabs, "who answers the phone was changed");
+    Json(json!({ "elevenlabs": mode.elevenlabs, "agent_id": mode.agent_id })).into_response()
 }
 
 /// Change the agent's model: tried with a small request, then used for the calls' next turns and
