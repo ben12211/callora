@@ -66,6 +66,14 @@ const SECOND_HEARING_WAIT: Duration = Duration::from_millis(1800);
 /// On noisy clips, someone talking near the caller fell under it 9 times in 12; on 542 utterances
 /// of past calls, 8 of the callers' own did.
 const DISTANT_RATIO: f32 = 0.3;
+/// Lost audio within an utterance from which the agent is told words may be missing.
+const LINE_LOST_NOTE_MS: u64 = 200;
+/// A frame with this share of its samples at the top of the scale is clipped.
+const CLIPPED_SHARE: f32 = 0.1;
+/// An utterance with this share of clipped voiced frames is distorted.
+const DISTORTED_SHARE: f32 = 0.2;
+/// A word the recognizer gives less than this probability is told to the agent as unsure.
+const UNSURE_BELOW: f32 = 0.5;
 /// Speech that begins this soon after the agent stopped may still be its echo.
 const ECHO_TAIL: Duration = Duration::from_millis(1500);
 /// Words begun before the agent's reply finish the previous answer only when they follow it
@@ -191,6 +199,8 @@ pub struct Services {
 pub enum Inbound {
     /// μ-law from the caller.
     Audio(Bytes),
+    /// The caller's audio skipped this many ms (the line cut out).
+    Gap(u64),
     /// The media stream ended.
     Stop,
 }
@@ -386,6 +396,10 @@ pub struct Session {
     caller_levels: Vec<f32>,
     /// The words of the coming transcript the recognizer was unsure of.
     unsure: Vec<(String, f32)>,
+    /// The current utterance: audio the line lost (ms), and its voiced frames distorted by
+    /// clipping (wind on the microphone, shouting).
+    line_lost_ms: u64,
+    clipped_frames: u32,
     /// The caller's current speech began while the agent was talking or just after: it may be
     /// the agent's own voice coming back through a speakerphone.
     speech_over_agent: bool,
@@ -526,6 +540,8 @@ impl Session {
             utterance_level: 0.0,
             caller_levels: Vec::new(),
             unsure: Vec::new(),
+            line_lost_ms: 0,
+            clipped_frames: 0,
             speech_over_agent: false,
             overlap: false,
             priced: None,
@@ -627,6 +643,7 @@ impl Session {
                 biased;
                 msg = inbound.recv() => match msg {
                     Some(Inbound::Audio(frame)) => s.on_audio(frame),
+                    Some(Inbound::Gap(ms)) => s.on_line_gap(ms),
                     Some(Inbound::Stop) | None => break Ending::CallerHungUp,
                 },
                 Some(e) = pl_rx.recv() => {

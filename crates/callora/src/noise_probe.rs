@@ -52,7 +52,7 @@ struct Clip {
     truth: String,
     other: String,
     heard: Vec<String>,
-    unsure: Vec<String>,
+    unsure: Vec<(String, f32)>,
     end_delay_ms: Option<i64>,
 }
 
@@ -109,7 +109,9 @@ async fn hear(
                         break;
                     }
                     Ok(Some(SttEvent::Partial(_))) => {}
-                    Ok(Some(SttEvent::Unsure(u))) => unsure.extend(u.into_iter().flat_map(|(w, _)| words(&w))),
+                    Ok(Some(SttEvent::Unsure(u))) => {
+                        unsure.extend(u.into_iter().flat_map(|(w, p)| words(&w).into_iter().map(move |w| (w, p))))
+                    }
                     Ok(Some(SttEvent::Error(e))) => anyhow::bail!("recognition error: {e}"),
                     _ => break,
                 }
@@ -187,18 +189,22 @@ pub async fn run(
             }
             // Unsure words: how many were wrong (not the caller's), and how many wrong words were
             // flagged.
-            let (mut flagged, mut flagged_wrong, mut wrong) = (0, 0, 0);
-            for c in clips {
-                let truth = words(&c.truth);
-                let wrong_words: Vec<&String> = c.heard.iter().filter(|w| !truth.contains(w)).collect();
-                wrong += wrong_words.len();
-                flagged += c.unsure.len();
-                flagged_wrong += c.unsure.iter().filter(|u| !truth.contains(u)).count();
-            }
-            if flagged > 0 {
-                println!(
-                    "{kind:>9}: unsure words {flagged}, of them wrong {flagged_wrong}; wrong words heard {wrong}, of them flagged unsure {flagged_wrong}"
-                );
+            let wrong: usize =
+                clips.iter().map(|c| c.heard.iter().filter(|w| !words(&c.truth).contains(w)).count()).sum();
+            for below in [0.5f32, 0.7, 0.8, 0.9, 0.95] {
+                let (mut flagged, mut flagged_wrong) = (0, 0);
+                for c in clips {
+                    let truth = words(&c.truth);
+                    for (w, _) in c.unsure.iter().filter(|(_, p)| *p < below) {
+                        flagged += 1;
+                        flagged_wrong += usize::from(!truth.contains(w));
+                    }
+                }
+                if flagged > 0 {
+                    println!(
+                        "{kind:>9}: unsure under {below}: {flagged} words, {flagged_wrong} of them wrong | {flagged_wrong} of {wrong} wrong words flagged"
+                    );
+                }
             }
             delays.sort_unstable();
             let p50 = delays.get(delays.len() / 2).copied().unwrap_or(0);

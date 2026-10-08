@@ -17,6 +17,9 @@ impl Session {
         if self.vad.is_speaking() && voice.is_none_or(|p| p >= 0.3) {
             self.voiced_level.0 += self.vad.last_rms;
             self.voiced_level.1 += 1;
+            if clipped(&frame) {
+                self.clipped_frames += 1;
+            }
         }
         self.keep_audio(&frame, vad_event.as_ref());
         match vad_event {
@@ -32,6 +35,8 @@ impl Session {
                 self.speech_count += 1;
                 self.utterance_heard = false;
                 self.voiced_level = (self.vad.last_rms, 1);
+                self.line_lost_ms = 0;
+                self.clipped_frames = 0;
                 self.voiced_ms = 0;
                 self.barge_words = (0, false);
                 self.barge_hint = "noise";
@@ -289,7 +294,7 @@ impl Session {
                 }
                 self.last_partial = text;
             }
-            SttEvent::Unsure(words) => self.unsure = words,
+            SttEvent::Unsure(words) => self.unsure = words.into_iter().filter(|(_, p)| *p < UNSURE_BELOW).collect(),
             SttEvent::Final(text) => {
                 self.stt_reconnects = 0;
                 if !text.trim().is_empty() {
@@ -357,6 +362,14 @@ impl Session {
         ours * 10 >= heard.len() * 8
     }
 
+    /// The caller's audio skipped: lost words when it happens while they speak.
+    pub(super) fn on_line_gap(&mut self, ms: u64) {
+        tracing::warn!(call = %self.info.call_sid, ms, speaking = self.vad.is_speaking(), "the caller's audio skipped");
+        if self.vad.is_speaking() {
+            self.line_lost_ms += ms;
+        }
+    }
+
     /// The last utterance was much quieter than the caller's own voice (two utterances of it
     /// heard first).
     pub(super) fn is_distant(&self) -> bool {
@@ -382,6 +395,16 @@ impl Session {
         }
         self.engine.state.distant_voice = self.is_distant();
         self.engine.state.unsure_words = std::mem::take(&mut self.unsure);
+        let distorted =
+            self.voiced_level.1 >= 10 && self.clipped_frames as f32 >= self.voiced_level.1 as f32 * DISTORTED_SHARE;
+        self.engine.state.line_trouble = match (self.line_lost_ms >= LINE_LOST_NOTE_MS, distorted) {
+            (true, _) => Some(format!("the line cut out for {} ms while the caller spoke", self.line_lost_ms)),
+            (false, true) => Some("the caller's audio was distorted (wind on the microphone or shouting)".into()),
+            _ => None,
+        };
+        if let Some(t) = &self.engine.state.line_trouble {
+            tracing::info!(call = %self.info.call_sid, trouble = %t, "the caller's audio was damaged");
+        }
         if !self.engine.state.unsure_words.is_empty() {
             tracing::info!(call = %self.info.call_sid, unsure = ?self.engine.state.unsure_words, "words the recognizer was unsure of");
         }
@@ -715,9 +738,26 @@ pub(super) fn is_unfinished(text: &str) -> bool {
     t.ends_with("...") || t.ends_with('…') || t.ends_with('-') || lone_letter
 }
 
+/// A frame whose samples sit at the top of the scale: the microphone overloaded.
+fn clipped(frame: &[u8]) -> bool {
+    let top = frame.iter().filter(|&&b| callora_audio::mulaw::decode(b).unsigned_abs() >= 30_000).count();
+    top as f32 >= frame.len() as f32 * CLIPPED_SHARE
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_unfinished;
+    use super::{clipped, is_unfinished};
+
+    #[test]
+    fn a_frame_at_the_top_of_the_scale_is_clipped() {
+        let top = callora_audio::mulaw::encode(i16::MAX);
+        let half = callora_audio::mulaw::encode(8000);
+        assert!(clipped(&[top; 160]));
+        assert!(!clipped(&[half; 160]));
+        let mut some = [half; 160];
+        some[..10].fill(top);
+        assert!(!clipped(&some), "a few peaks are no distortion");
+    }
 
     #[test]
     fn broken_off_sentences_are_recognised() {

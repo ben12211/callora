@@ -263,6 +263,9 @@ pub struct CallState {
     /// Words of this turn the recognizer was unsure of, with how sure it was.
     #[serde(default)]
     pub unsure_words: Vec<(String, f32)>,
+    /// This turn's audio was damaged: what happened, for the agent.
+    #[serde(default)]
+    pub line_trouble: Option<String>,
     /// This turn's words began before the agent's last reply started to play: they finish
     /// the caller's answer to the question before it ("דוד" ... "אביטבול").
     #[serde(default)]
@@ -336,6 +339,7 @@ impl CallState {
             second_hearing: None,
             distant_voice: false,
             unsure_words: Vec::new(),
+            line_trouble: None,
             continues_answer: false,
             address_form: AddressForm::Unknown,
             caller_phone: None,

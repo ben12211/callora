@@ -3315,3 +3315,13 @@ fn a_far_voice_is_told_to_the_agent() {
     let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "קו ארבעים ושמונה");
     assert!(request.user.contains("FAR VOICE"), "{}", request.user);
 }
+
+#[test]
+fn unsure_words_and_a_bad_line_are_told_to_the_agent() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.state.unsure_words = vec![("זכאי".into(), 0.3)];
+    call.engine.state.line_trouble = Some("the line cut out for 400 ms while the caller spoke".into());
+    let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "בן זכאי 45");
+    assert!(request.user.contains("UNSURE") && request.user.contains("\"זכאי\" (30%)"), "{}", request.user);
+    assert!(request.user.contains("BAD LINE: the line cut out for 400 ms"), "{}", request.user);
+}

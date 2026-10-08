@@ -284,6 +284,9 @@ struct PendingCall {
     at: std::time::Instant,
 }
 
+/// Audio missing from the caller's stream for this long is the line cutting out.
+const LINE_GAP_MS: u64 = 100;
+
 pub fn router(state: Arc<AppState>) -> Router {
     let web_dir = state.settings.web_dir.clone();
     let app = Router::new()
@@ -585,11 +588,19 @@ async fn media_socket(s: Arc<AppState>, socket: WebSocket) {
         }
     });
     let reader = tokio::spawn(async move {
+        // Where the next frame should start: audio missing before a frame is the line cutting out.
+        let mut next_at: Option<u64> = None;
         while let Some(Ok(msg)) = stream.next().await {
             let Message::Text(text) = msg else { continue };
             match serde_json::from_str::<StreamMessage>(&text) {
                 Ok(StreamMessage::Media { media }) if media.track.as_deref().is_none_or(|t| t == "inbound") => {
                     if let Some(audio) = media.audio() {
+                        if let Some(at) = media.timestamp_ms() {
+                            if let Some(gap) = next_at.map(|n| at.saturating_sub(n)).filter(|g| *g >= LINE_GAP_MS) {
+                                let _ = in_tx.try_send(Inbound::Gap(gap));
+                            }
+                            next_at = Some(at + audio.len() as u64 / 8);
+                        }
                         let _ = in_tx.try_send(Inbound::Audio(audio));
                     }
                 }

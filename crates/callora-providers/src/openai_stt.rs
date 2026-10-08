@@ -129,10 +129,10 @@ fn append(audio: &[u8]) -> String {
     json!({ "type": "input_audio_buffer.append", "audio": STANDARD.encode(pcm24k(audio)) }).to_string()
 }
 
-/// A word counts as unsure under this probability.
-pub const UNSURE_BELOW: f32 = 0.5;
+/// Words under this probability are sent (the runtime decides which count as unsure).
+pub const UNSURE_BELOW: f32 = 0.98;
 
-/// The words of a completed transcript the recognizer was unsure of: each word's
+/// The words of a completed transcript the recognizer was not sure of: each word's
 /// probability is its least likely token's.
 pub fn unsure_words(v: &Value) -> Vec<(String, f32)> {
     let Some(tokens) = v.get("logprobs").and_then(Value::as_array) else { return Vec::new() };
@@ -287,7 +287,7 @@ mod tests {
     fn unsure_words_are_the_ones_with_an_unlikely_token() {
         let t = |token: &str, p: f64| json!({ "token": token, "logprob": p.ln() });
         let v = json!({ "logprobs": [t("בן", 0.99), t(" ז", 0.3), t("כאי", 0.9), t(" ארבעים", 0.95), t(" וחמש", 0.97), t(".", 0.99)] });
-        let u = unsure_words(&v);
+        let u: Vec<(String, f32)> = unsure_words(&v).into_iter().filter(|(_, p)| *p < 0.5).collect();
         assert_eq!(u.len(), 1, "{u:?}");
         assert_eq!(u[0].0, "זכאי");
         assert!((u[0].1 - 0.3).abs() < 1e-3);

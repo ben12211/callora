@@ -1398,3 +1398,34 @@ async fn the_agents_own_words_coming_back_are_not_an_answer() {
     collect(&mut ws, Duration::from_millis(600)).await;
     assert_eq!(agent.requests.lock().len(), 2, "the answer is");
 }
+
+fn timed_frame(audio: &[u8], at_ms: u64) -> String {
+    json!({ "event": "media", "streamSid": "MZ1", "media": { "track": "inbound", "timestamp": at_ms.to_string(),
+            "payload": base64::engine::general_purpose::STANDARD.encode(audio) } })
+    .to_string()
+}
+
+#[tokio::test]
+async fn words_said_while_the_line_cut_out_are_told_to_the_agent() {
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([json!({ "say": "מאיפה לאן?", "action": "none", "task": "book_ride", "fields": [] })]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let mut ws = open_call(&h, "CA-line").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    let loud: Vec<u8> = (0..160).map(|i| if i % 2 == 0 { 0x10 } else { 0x90 }).collect();
+    let mut at = 0;
+    for i in 0..60 {
+        if i == 20 {
+            at += 400; // 400 ms of the caller's audio never arrived
+        }
+        let audio = if i < 30 { loud.clone() } else { vec![0xFF; 160] };
+        ws.send(Message::Text(timed_frame(&audio, at).into())).await.unwrap();
+        at += 20;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.stt.say("אני רוצה מונית מבאר").await;
+    collect(&mut ws, Duration::from_millis(500)).await;
+    let requests = agent.requests.lock();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].user.contains("BAD LINE") && requests[0].user.contains("400 ms"), "{}", requests[0].user);
+}

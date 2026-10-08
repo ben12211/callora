@@ -510,6 +510,12 @@ UNSURE: the recognizer was not sure of {}. If one of them is a detail you need (
             words.join(", ")
         ));
     }
+    if let Some(trouble) = &state.line_trouble {
+        u.push_str(&format!(
+            "\nBAD LINE: {trouble}, so words may be missing or wrong. If what you heard is incomplete or makes no \
+             sense, say the line broke up (\"הקו נקטע לרגע\") and ask for the missing detail again; do not guess it."
+        ));
+    }
     if state.distant_voice {
         u.push_str(
             "

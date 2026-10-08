@@ -186,6 +186,9 @@ pub struct MediaPayload {
     #[serde(default)]
     pub track: Option<String>,
     pub payload: String,
+    /// Milliseconds since the stream started, as Twilio writes it (a string).
+    #[serde(default)]
+    pub timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -196,6 +199,10 @@ pub struct MarkInfo {
 impl MediaPayload {
     pub fn audio(&self) -> Option<Bytes> {
         STANDARD.decode(&self.payload).ok().map(Bytes::from)
+    }
+
+    pub fn timestamp_ms(&self) -> Option<u64> {
+        self.timestamp.as_deref()?.parse().ok()
     }
 }
 
