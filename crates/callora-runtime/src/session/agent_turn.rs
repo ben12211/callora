@@ -320,8 +320,32 @@ impl Session {
             p.partial_phrase = Some(text);
             return;
         }
-        p.spoken.push(text.clone());
+        // The very question it asked last, again: "סליחה, לא שמעתי טוב." first, so it does not
+        // sound like a machine stuck on one line (15 times in 74 recorded calls).
+        let first = p.spoken.is_empty();
+        if first && self.repeats_last_question(&text) {
+            if let Some(sorry) = self.engine.render_response("did_not_catch").map(|plan| plan.text()) {
+                tracing::info!(call = %self.info.call_sid, question = %text, "the same question again: said it did not catch the answer");
+                if let Some(p) = self.pending_agent.as_mut() {
+                    p.spoken.push(sorry.clone());
+                }
+                self.say_now(&sorry);
+            }
+        }
+        if let Some(p) = self.pending_agent.as_mut() {
+            p.spoken.push(text.clone());
+        }
         self.say_now(&text);
+    }
+
+    /// The agent's last words before the caller's were this very question.
+    pub(super) fn repeats_last_question(&self, text: &str) -> bool {
+        let asks = text.trim_end().ends_with('?');
+        let text = callora_core::text::normalize(text);
+        asks && !text.is_empty()
+            && self.engine.state.history.iter().rev().find(|t| t.speaker == Speaker::Agent).is_some_and(|t| {
+                t.text.trim_end().ends_with('?') && callora_core::text::normalize(&t.text).ends_with(&text)
+            })
     }
 
     pub(super) fn continues_a_phrase(&self, text: &str) -> bool {

@@ -1563,3 +1563,95 @@ async fn an_answer_in_the_agents_own_words_after_it_spoke_is_kept() {
     collect(&mut ws, Duration::from_millis(600)).await;
     assert_eq!(agent.requests.lock().len(), 2, "the answer reaches the agent");
 }
+
+#[tokio::test]
+async fn the_same_question_again_says_first_it_did_not_catch_the_answer() {
+    // 15 of 74 recorded calls heard the very same question twice in a row.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "action": "none", "fields": [{ "slot": "pickup", "value": "בן זכאי 45, אלעד" },
+                { "slot": "destination", "value": "רבי עקיבא 2, בני ברק" }], "asks": ["passengers"],
+                "say": "כמה נוסעים?", "task": "book_ride" }),
+        json!({ "action": "none", "fields": [], "asks": ["passengers"], "say": "כמה נוסעים?", "task": "book_ride" }),
+    ]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let mut ws = open_call(&h, "CA-same-q").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    h.stt.say("אני רוצה מונית מבן זכאי 45 באלעד לרבי עקיבא 2 בבני ברק").await;
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+    h.stt.say("אהרון").await;
+    collect(&mut ws, Duration::from_millis(800)).await;
+    let records = RECORDS.lock();
+    let id = records
+        .iter()
+        .find_map(|r| match r {
+            CallRecord::Started { info } if info.call_sid == "CA-same-q" => Some(info.call_id),
+            _ => None,
+        })
+        .expect("the call");
+    let said: Vec<&str> = records
+        .iter()
+        .filter_map(|r| match r {
+            CallRecord::Turn { call_id, speaker, text, .. } if *call_id == id && speaker == "agent" => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let end = said[said.len().saturating_sub(2)..].join(" ");
+    assert!(end.contains("לא שמעתי טוב. כמה נוסעים"), "{said:?}");
+}
+
+/// A second hearing that hears a number and keeps what it was asked.
+#[derive(Default)]
+struct NumberHearing {
+    asked: Mutex<Vec<(String, Vec<String>)>>,
+}
+
+#[async_trait]
+impl callora_runtime::ports::Transcriber for NumberHearing {
+    async fn transcribe(&self, _mulaw: &[u8], _language: &str, _keyterms: &[String]) -> anyhow::Result<String> {
+        anyhow::bail!("asked with its question")
+    }
+    async fn hear(&self, _mulaw: &[u8], _language: &str, question: &str, names: &[String]) -> anyhow::Result<String> {
+        self.asked.lock().push((question.to_string(), names.to_vec()));
+        Ok("שתיים".into())
+    }
+}
+
+#[tokio::test]
+async fn a_passengers_answer_with_no_number_is_heard_again() {
+    // The call of 18:56: "שתיים" to "כמה נוסעים?" was heard "ביי." and the call hung up.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "action": "none", "fields": [{ "slot": "pickup", "value": "בן זכאי 45, אלעד" },
+                { "slot": "destination", "value": "רבי עקיבא 2, בני ברק" }], "asks": ["passengers"],
+                "say": "כמה נוסעים?", "task": "book_ride" }),
+        json!({ "action": "none", "fields": [{ "slot": "passengers", "value": "2" }], "asks": ["customer_name"],
+                "say": "על שם מי?", "task": "book_ride" }),
+    ]);
+    let gazetteer = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         6100\tבני ברק\t301\tרבי עקיבא\tofficial\n",
+    ));
+    let hearing = Arc::new(NumberHearing::default());
+    let h = start_server_inner(
+        Some(agent.clone()),
+        SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() },
+        None,
+        Default::default(),
+        Some((gazetteer, hearing.clone())),
+    )
+    .await;
+    let mut ws = open_call(&h, "CA-two").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    speak(&mut ws, &h, "מבן זכאי 45 באלעד לרבי עקיבא 2 בבני ברק").await;
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+    speak(&mut ws, &h, "ביי.").await;
+    collect(&mut ws, Duration::from_millis(600)).await;
+    let asked = hearing.asked.lock().clone();
+    assert_eq!(asked.len(), 1, "heard again");
+    assert!(asked[0].0.contains("passengers") && asked[0].1.contains(&"שתיים".to_string()), "{asked:?}");
+    let requests = agent.requests.lock();
+    assert!(requests[1].user.contains("SECOND HEARING") && requests[1].user.contains("שתיים"), "{}", requests[1].user);
+}

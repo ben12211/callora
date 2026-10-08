@@ -177,8 +177,10 @@ impl Engine {
         let run = self.state.run.as_ref()?;
         // Also while a street that was not found is being cleared up ("יש כתובת של המקום?"
         // asks nothing by name): the answer is still a street of that city.
+        // Only while nothing else is asked: after "כמה נוסעים?" the answer is a number.
         let clearing = |slot: &String| {
-            (self.state.place_rejections.contains_key(slot) || self.state.doubted_streets.contains(slot))
+            self.state.last_asks.is_empty()
+                && (self.state.place_rejections.contains_key(slot) || self.state.doubted_streets.contains(slot))
                 && !run.slots.contains_key(slot)
         };
         self.pipeline_of(run)
@@ -725,9 +727,9 @@ impl Engine {
                 );
                 self.state.goodbye_doubted = true;
                 self.agent_say(&mut out, None, "", spoken);
-                if self.business.response("goodbye_unclear").is_some() {
+                if self.business.response("did_not_catch").is_some() {
                     let ctx = self.render_ctx(None);
-                    self.say(&mut out, "goodbye_unclear", ctx, true);
+                    self.say(&mut out, "did_not_catch", ctx, true);
                 }
                 let slot = self.expected_slot();
                 match slot {

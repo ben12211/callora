@@ -186,6 +186,12 @@ impl Session {
         if self.engine.awaiting_city() && g.towns_named(transcript).is_empty() {
             return Some(("which town or city, from where and to where".into(), g.town_names(20)));
         }
+        // "כמה נוסעים?" answered with no number at all: "שתיים" was heard "ביי." and the call
+        // hung up. The audio model, told a number is expected, heard "שתיים".
+        if self.engine.state.last_asks.iter().any(|s| s == "passengers") && !has_a_number(transcript) {
+            let numbers = PASSENGER_WORDS.iter().map(|w| w.to_string()).collect();
+            return Some(("how many passengers (a number)".into(), numbers));
+        }
         None
     }
 
@@ -740,6 +746,35 @@ pub(super) fn is_unfinished(text: &str) -> bool {
         .last()
         .is_some_and(|w| w.chars().count() == 1 && w.chars().all(|c| ('א'..='ת').contains(&c)));
     t.ends_with("...") || t.ends_with('…') || t.ends_with('-') || lone_letter
+}
+
+/// How a number of passengers is said.
+const PASSENGER_WORDS: [&str; 16] = [
+    "אחד",
+    "אחת",
+    "שניים",
+    "שתיים",
+    "שלושה",
+    "שלוש",
+    "ארבעה",
+    "ארבע",
+    "חמישה",
+    "חמש",
+    "שישה",
+    "שש",
+    "שבעה",
+    "שבע",
+    "שמונה",
+    "רק אני",
+];
+
+/// A digit or a number word in the words heard.
+fn has_a_number(text: &str) -> bool {
+    text.chars().any(|c| c.is_ascii_digit())
+        || callora_core::text::normalize(text).split_whitespace().any(|w| {
+            PASSENGER_WORDS.iter().any(|n| w == *n || w.strip_prefix('ו') == Some(n))
+                || matches!(w, "תשעה" | "תשע" | "עשרה" | "עשר" | "לבד" | "שנינו" | "שלושתנו")
+        })
 }
 
 /// "אני רוצה", "צריך": the start of a request the caller paused in. Only filler words, so it

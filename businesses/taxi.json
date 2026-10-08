@@ -488,7 +488,7 @@
     "still_there": {"variants": ["הלו, שומעים אותי?", "הלו? אני פה."]},
     "still_waiting": { "variants": ["אני עדיין פה, אפשר לקחת את הזמן.", "אני פה, מחכה."] },
     "noisy_line": { "variants": ["סליחה, יש קצת רעש בקו."] },
-    "goodbye_unclear": { "variants": ["סליחה, לא שמעתי טוב."] },
+    "did_not_catch": { "variants": ["סליחה, לא שמעתי טוב."] },
     "i_hear_you": { "variants": ["כן, אני פה.", "כן, שומעים."], "delivery": "quick" },
     "wait_ack": { "variants": ["בטח, אני מחכה.", "אין בעיה, אני מחכה."], "delivery": "quick" },
 

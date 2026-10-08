@@ -52,6 +52,10 @@ pub struct OpenAi {
     temperature: Option<f32>,
     /// Which provider this is, for logs and errors.
     label: &'static str,
+    /// OpenAI's processing tier ("priority": served first, at a higher price). On the agent's
+    /// prompt its first words came at 0.92 s instead of 1.35 s (median of 10), and the slowest
+    /// at 1.28 s instead of 2.82 s.
+    service_tier: Option<String>,
 }
 
 impl OpenAi {
@@ -67,7 +71,14 @@ impl OpenAi {
             model,
             reasoning_effort: None,
             label: "openai",
+            service_tier: None,
         }
+    }
+
+    /// The processing tier to ask for (OpenAI only; "default" or "none" asks for none).
+    pub fn with_service_tier(mut self, tier: Option<String>) -> Self {
+        self.service_tier = tier.filter(|t| !matches!(t.trim(), "" | "default" | "none" | "auto"));
+        self
     }
 
     /// The conversation agent's model. A reasoning model gets `reasoning_effort` (default
@@ -143,6 +154,9 @@ impl OpenAi {
         }
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
+        }
+        if let Some(tier) = self.service_tier.as_ref().filter(|_| self.label == "openai") {
+            body["service_tier"] = json!(tier);
         }
         body
     }
@@ -389,5 +403,21 @@ mod tests {
         for m in ["gpt-4o", "gpt-4.1", "gpt-4o-mini", "gemini-3.8-flash", "llama-3"] {
             assert!(!is_reasoning_model(m), "{m}");
         }
+    }
+
+    #[test]
+    fn the_priority_tier_is_asked_only_when_set_and_only_of_openai() {
+        let r = request();
+        let http = reqwest::Client::new();
+        let plain = OpenAi::agent(http.clone(), "k".into(), None, Some("gpt-6-luna".into()), None);
+        assert!(plain.body(&r).get("service_tier").is_none());
+        let fast = OpenAi::agent(http.clone(), "k".into(), None, Some("gpt-6-luna".into()), None)
+            .with_service_tier(Some("priority".into()));
+        assert_eq!(fast.body(&r)["service_tier"], "priority");
+        let off = OpenAi::agent(http.clone(), "k".into(), None, Some("gpt-6-luna".into()), None)
+            .with_service_tier(Some("default".into()));
+        assert!(off.body(&r).get("service_tier").is_none());
+        let gemini = OpenAi::gemini(http, "k".into(), None, None, None).with_service_tier(Some("priority".into()));
+        assert!(gemini.body(&r).get("service_tier").is_none());
     }
 }
