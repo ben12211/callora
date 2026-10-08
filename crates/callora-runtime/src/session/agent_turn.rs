@@ -322,7 +322,12 @@ impl Session {
         }
         // The very question it asked last, again: "סליחה, לא שמעתי טוב." first, so it does not
         // sound like a machine stuck on one line (15 times in 74 recorded calls).
-        let first = p.spoken.is_empty();
+        // Only when the answer gave nothing: a question after details were taken moves on, even
+        // when it is the greeting's own ("לאן נוסעים?" after the pickup).
+        // And only a question asked by name both times (the greeting's asks nothing by name).
+        let asked_again =
+            !self.engine.state.last_asks.is_empty() && p.asks.iter().any(|a| self.engine.state.last_asks.contains(a));
+        let first = p.spoken.is_empty() && p.fields.is_empty() && asked_again;
         if first && self.repeats_last_question(&text) {
             if let Some(sorry) = self.engine.render_response("did_not_catch").map(|plan| plan.text()) {
                 tracing::info!(call = %self.info.call_sid, question = %text, "the same question again: said it did not catch the answer");
