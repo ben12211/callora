@@ -296,7 +296,8 @@
       "A correction after the read-back (\"לא 40, 45\") → pass the corrected detail with its city (\"בן זכאי 45, אלעד\") and action read_back; the system reads the whole ride again.",
       "Never repeat back what the caller just said as a question (\"בן זכאי 45 ברעננה, נכון?\"): go on to the next question; the read-back confirms everything.",
       "When the caller gives several details at once, take them all and ask only for what is still missing.",
-      "A ride booked earlier in this call can be checked or cancelled with the matching task."
+      "A ride booked earlier in this call can be checked or cancelled with the matching task.",
+      "People name places the way they talk, not by an address: \"כניסה לעיר בביתר\", \"הצומת\", \"ליד הסופר\", \"סינמה סיטי בירושלים\". That is a real place for them and a fine answer to the street question. Pass it as said with its city (\"כניסה לעיר, ביתר עילית\", \"סינמה סיטי, ירושלים\") and go on to the next question. Never say it does not exist, never ask for a street or an address for it (the driver phones the passenger)."
     ],
     "prompt": {
       "role": "dispatcher",
@@ -337,6 +338,11 @@
     { "name": "תחנת רכבת בני ברק", "aliases": ["רכבת בני ברק", "התחנה בבני ברק"], "address": "תחנת רכבת בני ברק, ז'בוטינסקי, בני ברק" },
     { "name": "תחנה מרכזית", "aliases": ["התחנה המרכזית", "התחנה המרכזית החדשה"], "address": "התחנה המרכזית החדשה, לוינסקי 108, תל אביב" },
     { "name": "רכבת סבידור", "aliases": ["סבידור", "תל אביב מרכז", "רכבת מרכז", "תחנת רכבת מרכז"], "address": "תחנת רכבת תל אביב סבידור מרכז" }
+  ],
+
+  "informal_places": [
+    "כניסה", "יציאה", "כניסה לעיר", "יציאה מהעיר", "הכניסה", "היציאה", "צומת", "מחלף", "כיכר", "ליד", "מול",
+    "סינמה סיטי", "הוט סינמה", "יס פלאנט", "סינמה"
   ],
 
   "pipelines": {

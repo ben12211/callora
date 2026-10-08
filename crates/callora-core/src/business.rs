@@ -88,6 +88,7 @@ pub struct Business {
     pub hello: PhraseSet,
     pub nothing: PhraseSet,
     pub transfer: PhraseSet,
+    pub informal_places: PhraseSet,
     pub meta: Vec<CompiledMeta>,
     pub intent_keywords: Vec<(String, PhraseSet)>,
     pub slots: BTreeMap<SlotId, CompiledSlot>,
@@ -100,6 +101,12 @@ pub struct Business {
 }
 
 impl Business {
+    /// Whether a place's name is one people say as they talk ("כניסה לעיר", "סינמה סיטי"), with
+    /// no street address to look up or to ask for.
+    pub fn is_informal_place(&self, name: &str) -> bool {
+        self.informal_places.find(&crate::text::normalize(name)).is_some()
+    }
+
     /// Words that announce a transfer to a person ("רגע, מעביר למוקדן"), said only with one.
     pub fn announces_transfer(&self, text: &str) -> bool {
         self.transfer.find(&crate::text::normalize(text)).is_some()
@@ -176,6 +183,7 @@ impl Business {
         let hello = phrase("lexicon.hello".into(), &config.lexicon.hello, false);
         let nothing = phrase("lexicon.nothing".into(), &config.lexicon.nothing, false);
         let transfer = phrase("lexicon.transfer".into(), &config.lexicon.transfer, false);
+        let informal_places = phrase("informal_places".into(), &config.informal_places, true);
 
         let mut meta = Vec::new();
         for (key, m) in &config.meta_intents {
@@ -298,6 +306,7 @@ impl Business {
             hello,
             nothing,
             transfer,
+            informal_places,
             meta,
             intent_keywords,
             slots,

@@ -3204,3 +3204,39 @@ fn where_to_is_vocalized_for_the_voice_so_no_pause_follows_it() {
     let other = callora_core::speech::prepare_for_tts("ולאן נוסעים?", "he-IL", &b.pronouncer);
     assert_eq!(other, "ולאן נוסעים?", "whole words only");
 }
+
+#[test]
+fn a_place_named_as_people_say_it_is_taken_without_asking_for_an_address() {
+    // "מכניסה לעיר בביתר לסינמה סיטי בירושלים": neither is an address. Both are taken as
+    // said, with their city, marked for the driver; no "יש כתובת של המקום?" for either.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "3000	ירושלים	120	שדרות שזר	official
+3000	ירושלים	121	יפו	official
+         2600	ביתר עילית	130	הרב קוק	official
+2600	ביתר עילית	131	הרמב\"ן	official
+",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    let d = call.engine.on_agent_turn(
+        "צריך מונית מכניסה לעיר בביתר לסינמה סיטי בירושלים",
+        decide(
+            AgentAction::None,
+            "כמה נוסעים?",
+            Some("book_ride"),
+            &[("pickup", "כניסה לעיר, ביתר עילית"), ("destination", "סינמה סיטי, ירושלים")],
+        ),
+        "",
+    );
+    assert!(!spoken(&d).contains("כתובת"), "no address asked for: {}", spoken(&d));
+    for (slot, name) in [("pickup", "כניסה לעיר, ביתר עילית"), ("destination", "סינמה סיטי, ירושלים")]
+    {
+        match call.slot(slot) {
+            Some(SlotValue::Place { spoken, address, .. }) => {
+                assert_eq!(spoken, name);
+                assert!(address.as_deref().is_some_and(|a| a.contains("לתאם עם הנוסע")), "{address:?}");
+            }
+            other => panic!("{slot}: {other:?}"),
+        }
+    }
+}

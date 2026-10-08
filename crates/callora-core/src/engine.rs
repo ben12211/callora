@@ -1741,6 +1741,7 @@ impl Engine {
             // address (a live caller was asked three times, then booked on a street that is not there).
             Lookup::NoStreet { city, heard, closest }
                 if (said.chars().any(|c| c.is_ascii_digit()) || (precise && !closest.is_empty()))
+                    && !self.business.is_informal_place(&heard)
                     && !give_up
                     && self.state.doubted_streets.insert(slot.to_string()) =>
             {
@@ -1811,7 +1812,9 @@ impl Engine {
             }
             // "קניון הזהב, אלעד": neither a street nor a place on the list. Ask for its
             // address once; if the caller has none, it is taken as said, marked for the driver.
-            Lookup::NoStreet { city, heard, closest } if self.state.doubted_streets.insert(slot.to_string()) => {
+            Lookup::NoStreet { city, heard, closest }
+                if !self.business.is_informal_place(&heard) && self.state.doubted_streets.insert(slot.to_string()) =>
+            {
                 let hint = if closest.is_empty() {
                     String::new()
                 } else {

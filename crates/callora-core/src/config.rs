@@ -45,6 +45,11 @@ pub struct BusinessConfig {
     pub slots: BTreeMap<SlotId, SlotConfig>,
     #[serde(default)]
     pub places: Vec<PlaceConfig>,
+    /// Words that mark a spot named the way people talk, with no address behind it ("כניסה
+    /// לעיר", "הצומת", "סינמה סיטי"): such a place is taken as the caller said it, with its
+    /// city, and the caller is not asked for an address it does not have.
+    #[serde(default)]
+    pub informal_places: Vec<String>,
     /// Words the speech recognizer should expect, such as the cities and streets of the
     /// service area. Known place names and aliases are added automatically.
     #[serde(default)]
