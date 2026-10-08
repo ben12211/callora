@@ -1965,6 +1965,27 @@ impl Engine {
             && words <= 2
     }
 
+    /// What went wrong in the call so far, for its health record: a booking with details given
+    /// and never sent, the same question twice in a row.
+    pub fn health(&self) -> Vec<&'static str> {
+        let mut problems = Vec::new();
+        let sent = self.state.completed.iter().any(|c| c.outcome == "success");
+        if !sent && self.state.run.as_ref().is_some_and(|r| !r.slots.is_empty()) {
+            problems.push("booking_left_unfinished");
+        }
+        let questions: Vec<String> = self
+            .state
+            .history
+            .iter()
+            .filter(|t| t.speaker == Speaker::Agent && t.text.trim_end().ends_with('?'))
+            .map(|t| crate::text::normalize(&t.text))
+            .collect();
+        if questions.windows(2).any(|w| w[0] == w[1]) {
+            problems.push("same_question_twice");
+        }
+        problems
+    }
+
     /// The agent's last words before the caller's were a question.
     fn last_agent_asked(&self) -> bool {
         self.state

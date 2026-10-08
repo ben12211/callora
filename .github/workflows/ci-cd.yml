@@ -33,11 +33,11 @@ env:
   IMAGE_NAME: ${{ vars.DOCKER_HUB_USERNAME }}/callora
 
 jobs:
-  # Only on pull requests for now: deploys skip it to ship faster, and `./dev check` runs
-  # locally before each commit instead.
+  # On pull requests and on every push to main: a release waits for it. Shipping without it
+  # let regressions reach live calls (a misheard "ביי" ending bookings, questions out of order).
   quality:
     name: Format, lint, test and validate
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -79,9 +79,31 @@ jobs:
               print(f, [d['kind'] + '/' + d['metadata']['name'] for d in docs])
           PY
 
+      # The agent with the real model on the recorded conversations (evaluation/agent): a release
+      # that answers fewer than 90% of them right does not ship. Costs a few cents of tokens.
+      - name: Agent eval gate
+        if: github.event_name == 'push'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+          AGENT_BACKUP_MODEL: ${{ vars.AGENT_BACKUP_MODEL }}
+          AGENT_REASONING_EFFORT: ${{ vars.AGENT_REASONING_EFFORT }}
+        run: |
+          [[ -n "$OPENAI_API_KEY" ]] || { echo 'OPENAI_API_KEY is not set'; exit 1; }
+          {
+            echo "OPENAI_API_KEY=$OPENAI_API_KEY"
+            for v in AGENT_MODEL AGENT_BACKUP_MODEL AGENT_REASONING_EFFORT; do
+              if [[ -n "${!v}" ]]; then echo "$v=${!v}"; fi
+            done
+          } > .env
+          ./dev callora eval --repeat 1 --min-pass 0.9 | tee eval.txt
+          { echo '```'; tail -n 40 eval.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Stop the development stack
         if: always()
-        run: ./dev clean
+        run: |
+          rm -f .env
+          ./dev clean
 
   image:
     name: Publish ARM64 image
@@ -225,8 +247,10 @@ jobs:
   deploy:
     name: Deploy production
     # Calls do not wait for WhatsApp: a failed WhatsApp image leaves it out of this release.
-    if: always() && needs.image.result == 'success' && needs.host.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
-    needs: [image, host, whatsapp-image]
+    # A push ships only when the tests and the agent eval passed; a manual deploy from the
+    # Actions tab (quality skipped) is the owner's own call.
+    if: always() && (needs.quality.result == 'success' || needs.quality.result == 'skipped') && needs.image.result == 'success' && needs.host.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'deploy' || inputs.mode == 'reset')
+    needs: [quality, image, host, whatsapp-image]
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: production

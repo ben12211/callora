@@ -112,6 +112,9 @@ pub struct Metrics {
     pub barge_in_suppressed: LabeledCounter,
     /// Gaps over the warning threshold (`seam` between items, `underrun` inside one).
     pub audio_gaps: LabeledCounter,
+    /// Calls by what went wrong in them (`booking_left_unfinished`, `same_question_twice`,
+    /// `caller_hung_up_mid_booking`, `slow_turns`, ...).
+    pub call_problems: LabeledCounter,
     /// Interruptions that let the agent finish a nearly finished sentence.
     pub sentence_end_protected_total: AtomicU64,
     /// Audio segments by source: cached / template / tts.
@@ -206,6 +209,12 @@ impl Metrics {
             &mut out,
         );
         self.audio_gaps.render("callora_audio_gaps_total", "Audio gaps over the warning threshold.", "kind", &mut out);
+        self.call_problems.render(
+            "callora_call_problems_total",
+            "Calls by what went wrong in them.",
+            "problem",
+            &mut out,
+        );
         g(
             &mut out,
             "callora_sentence_end_protected_total",

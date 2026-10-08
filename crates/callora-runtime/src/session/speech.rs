@@ -216,6 +216,9 @@ impl Session {
                         reply_from_voice_end_ms = ms(c.voice_end, at),
                         "turn timing (from the end of the caller's speech)"
                     );
+                    if ms(c.voice_end, at) > SLOW_TURN_MS {
+                        self.slow_turns += 1;
+                    }
                 }
             }
             PlayoutEvent::Cancelled { ids, remaining_ms } => {

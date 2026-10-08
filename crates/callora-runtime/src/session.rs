@@ -66,6 +66,8 @@ const SECOND_HEARING_WAIT: Duration = Duration::from_millis(1800);
 /// On noisy clips, someone talking near the caller fell under it 9 times in 12; on 542 utterances
 /// of past calls, 8 of the callers' own did.
 const DISTANT_RATIO: f32 = 0.3;
+/// A reply that began this long after the caller's voice ended is a slow turn (call health).
+const SLOW_TURN_MS: u64 = 3500;
 /// Lost audio within an utterance from which the agent is told words may be missing.
 const LINE_LOST_NOTE_MS: u64 = 200;
 /// A frame with this share of its samples at the top of the scale is clipped.
@@ -397,6 +399,8 @@ pub struct Session {
     caller_levels: Vec<f32>,
     /// The next final transcript is held words released as they are (not held again).
     releasing_unfinished: bool,
+    /// Turns whose reply began more than SLOW_TURN_MS after the caller's voice ended.
+    slow_turns: u32,
     /// The words of the coming transcript the recognizer was unsure of.
     unsure: Vec<(String, f32)>,
     /// The current utterance: audio the line lost (ms), and its voiced frames distorted by
@@ -544,6 +548,7 @@ impl Session {
             caller_levels: Vec::new(),
             unsure: Vec::new(),
             releasing_unfinished: false,
+            slow_turns: 0,
             line_lost_ms: 0,
             clipped_frames: 0,
             speech_over_agent: false,
@@ -701,6 +706,24 @@ impl Session {
         });
         metrics.calls_active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(call = %s.info.call_sid, ?ending, turns = s.engine.state.turns, "call ended");
+        // What went wrong in this call, counted and logged: problems are seen without anyone
+        // calling to find them.
+        let mut problems = s.engine.health();
+        let unfinished = problems.contains(&"booking_left_unfinished");
+        match ending {
+            Ending::CallerHungUp if unfinished => problems.push("caller_hung_up_mid_booking"),
+            Ending::AgentHungUp if unfinished => problems.push("agent_hung_up_mid_booking"),
+            _ => {}
+        }
+        if s.slow_turns > 0 {
+            problems.push("slow_turns");
+        }
+        for p in &problems {
+            metrics.call_problems.inc(p);
+        }
+        if !problems.is_empty() {
+            tracing::warn!(call = %s.info.call_sid, ?problems, slow_turns = s.slow_turns, "call health: problems in this call");
+        }
         ending
     }
 

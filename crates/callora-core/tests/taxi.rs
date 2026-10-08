@@ -3425,3 +3425,19 @@ fn a_lone_goodbye_in_the_middle_of_a_booking_is_asked_about_once() {
         call.engine.on_agent_turn("ביי", decide(AgentAction::EndCall, "תודה, יום טוב!", Some("book_ride"), &[]), "");
     assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{d:?}");
 }
+
+#[test]
+fn a_calls_health_names_what_went_wrong() {
+    let (mut call, _) = Call::new(business(&[]));
+    assert!(call.engine.health().is_empty());
+    call.engine.state.remember(callora_core::state::Speaker::Agent, "כמה נוסעים?");
+    call.engine.state.remember(callora_core::state::Speaker::Caller, "אהה");
+    call.engine.state.remember(callora_core::state::Speaker::Agent, "כמה נוסעים?");
+    assert!(call.engine.health().contains(&"same_question_twice"));
+    let mut call = read_back_ride();
+    assert!(call.engine.health().contains(&"booking_left_unfinished"), "details given, nothing sent");
+    let d = call.engine.on_agent_turn("כן", decide(AgentAction::Submit, "", None, &[]), "");
+    let (run_id, _, _) = action(&d).expect("sent");
+    call.engine.on_action_result(run_id, Ok(serde_json::json!({ "ride_id": "R-1" })));
+    assert!(!call.engine.health().contains(&"booking_left_unfinished"), "{:?}", call.engine.health());
+}
