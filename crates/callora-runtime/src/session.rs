@@ -62,6 +62,12 @@ const NO_WORDS_WAIT: Duration = Duration::from_millis(2000);
 /// The longest a turn waits for its second hearing before the agent goes on without it. The
 /// audio hearing takes about a second (p90 1.4 s on 161 street answers).
 const SECOND_HEARING_WAIT: Duration = Duration::from_millis(1800);
+/// Words this much quieter than the caller's own voice so far are probably someone near them.
+/// On noisy clips, someone talking near the caller fell under it 9 times in 12; on 542 utterances
+/// of past calls, 8 of the callers' own did.
+const DISTANT_RATIO: f32 = 0.3;
+/// Speech that begins this soon after the agent stopped may still be its echo.
+const ECHO_TAIL: Duration = Duration::from_millis(1500);
 /// Words begun before the agent's reply finish the previous answer only when they follow it
 /// closely ("דוד" ... "אביטבול"), not after a long pause.
 const CONTINUATION_GAP: Duration = Duration::from_millis(2500);
@@ -370,6 +376,17 @@ pub struct Session {
     /// reply: an utterance begun before the reply answers the question before it.
     speech_started_at: Option<Instant>,
     reply_started_at: Option<Instant>,
+    /// When the agent's audio last stopped playing.
+    agent_idle_at: Option<Instant>,
+    /// The voiced frames of the current utterance: their summed RMS and count.
+    voiced_level: (f32, u32),
+    /// The last utterance's voice level (mean RMS of its voiced frames).
+    utterance_level: f32,
+    /// The levels of the caller's own utterances so far (the ones that were words).
+    caller_levels: Vec<f32>,
+    /// The caller's current speech began while the agent was talking or just after: it may be
+    /// the agent's own voice coming back through a speakerphone.
+    speech_over_agent: bool,
     /// The next agent request is told the caller's words overlap its last reply.
     overlap: bool,
     /// The route whose price list was asked ahead of the caller.
@@ -502,6 +519,11 @@ impl Session {
             speech_ended_at: None,
             speech_started_at: None,
             reply_started_at: None,
+            agent_idle_at: None,
+            voiced_level: (0.0, 0),
+            utterance_level: 0.0,
+            caller_levels: Vec::new(),
+            speech_over_agent: false,
             overlap: false,
             priced: None,
             barge_in_started: None,

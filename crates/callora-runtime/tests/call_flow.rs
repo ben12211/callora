@@ -1372,3 +1372,29 @@ async fn a_street_the_stream_heard_right_is_not_heard_again() {
     assert!(hearing.asked.lock().is_empty(), "no second of waiting for a street already found");
     assert_eq!(agent.requests.lock().len(), 2);
 }
+
+#[tokio::test]
+async fn the_agents_own_words_coming_back_are_not_an_answer() {
+    // On a speakerphone the agent's voice reaches the caller's microphone: "לאן בבני ברק?"
+    // came back as the caller's words.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "say": "לאן בבני ברק?", "action": "none", "task": "book_ride",
+                "fields": [{ "slot": "destination", "value": "בני ברק" }] }),
+        json!({ "say": "כמה נוסעים?", "action": "none", "task": "book_ride",
+                "fields": [{ "slot": "destination", "value": "רבי עקיבא 2, בני ברק" }] }),
+    ]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let mut ws = open_call(&h, "CA-echo").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    speak(&mut ws, &h, "צריך מונית לבני ברק").await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    // While the reply plays, its own words come back.
+    speak(&mut ws, &h, "לאן בבני ברק").await;
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+    assert_eq!(agent.requests.lock().len(), 1, "the echo is not sent to the agent");
+    // A real answer that repeats the city is the caller's.
+    speak(&mut ws, &h, "בבני ברק, רבי עקיבא שתיים").await;
+    collect(&mut ws, Duration::from_millis(600)).await;
+    assert_eq!(agent.requests.lock().len(), 2, "the answer is");
+}

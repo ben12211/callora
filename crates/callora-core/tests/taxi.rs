@@ -3304,3 +3304,14 @@ fn a_place_named_as_people_say_it_is_taken_without_asking_for_an_address() {
         }
     }
 }
+
+#[test]
+fn a_far_voice_is_told_to_the_agent() {
+    // At a bus stop, words much quieter than the caller's own voice are probably someone near them.
+    let (mut call, _) = Call::new(business(&[]));
+    let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "קו ארבעים ושמונה");
+    assert!(!request.user.contains("FAR VOICE"));
+    call.engine.state.distant_voice = true;
+    let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "קו ארבעים ושמונה");
+    assert!(request.user.contains("FAR VOICE"), "{}", request.user);
+}

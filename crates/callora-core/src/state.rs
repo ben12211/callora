@@ -256,6 +256,10 @@ pub struct CallState {
     /// This turn's second transcript of the caller's words (see the runtime's second hearing).
     #[serde(default)]
     pub second_hearing: Option<String>,
+    /// This turn's words were much quieter than the caller's own voice so far: maybe someone
+    /// near the caller (at a bus stop, in a cafe), not the caller.
+    #[serde(default)]
+    pub distant_voice: bool,
     /// This turn's words began before the agent's last reply started to play: they finish
     /// the caller's answer to the question before it ("דוד" ... "אביטבול").
     #[serde(default)]
@@ -327,6 +331,7 @@ impl CallState {
             number_asked: BTreeSet::new(),
             place_rejections: BTreeMap::new(),
             second_hearing: None,
+            distant_voice: false,
             continues_answer: false,
             address_form: AddressForm::Unknown,
             caller_phone: None,

@@ -14,6 +14,10 @@ impl Session {
         }
         let voice = self.denoiser.as_mut().map(|d| d.push(&frame).voice);
         let vad_event = self.vad.push_with(&frame, voice);
+        if self.vad.is_speaking() && voice.is_none_or(|p| p >= 0.3) {
+            self.voiced_level.0 += self.vad.last_rms;
+            self.voiced_level.1 += 1;
+        }
         self.keep_audio(&frame, vad_event.as_ref());
         match vad_event {
             Some(VadEvent::SpeechStarted) => {
@@ -22,9 +26,12 @@ impl Session {
                 self.cancel_no_words();
                 self.silence_generation += 1;
                 self.speech_started_at = Some(Instant::now());
+                self.speech_over_agent =
+                    self.agent_busy() || self.agent_idle_at.is_some_and(|t| t.elapsed() < ECHO_TAIL);
                 self.speech_gap = self.last_speech_end.map(|t| t.elapsed());
                 self.speech_count += 1;
                 self.utterance_heard = false;
+                self.voiced_level = (self.vad.last_rms, 1);
                 self.voiced_ms = 0;
                 self.barge_words = (0, false);
                 self.barge_hint = "noise";
@@ -43,6 +50,7 @@ impl Session {
             }
             Some(VadEvent::SpeechEnded) => {
                 let now = Instant::now();
+                self.utterance_level = self.voiced_level.0 / self.voiced_level.1.max(1) as f32;
                 self.speech_ended_at = Some(now);
                 self.last_speech_end = Some(now);
                 if std::mem::take(&mut self.barge_pending) {
@@ -323,6 +331,42 @@ impl Session {
         }
     }
 
+    /// Words that are the agent's own, heard back: on a speakerphone its voice reaches the
+    /// caller's microphone, and "לאן בבני ברק?" came back as the caller's answer. Two words at
+    /// least, nearly all of them in what the agent said last ("בני ברק, רבי עקיבא" to "לאן
+    /// בבני ברק?" has words of its own and is an answer).
+    pub(super) fn is_echo(&self, text: &str) -> bool {
+        let said: Vec<String> = self
+            .engine
+            .state
+            .history
+            .iter()
+            .rev()
+            .filter(|t| t.speaker == Speaker::Agent)
+            .take(2)
+            .flat_map(|t| {
+                callora_core::text::normalize(&t.text).split_whitespace().map(str::to_string).collect::<Vec<_>>()
+            })
+            .collect();
+        let heard: Vec<String> = callora_core::text::normalize(text).split_whitespace().map(str::to_string).collect();
+        if heard.len() < 2 || said.is_empty() {
+            return false;
+        }
+        let ours = heard.iter().filter(|w| said.contains(w)).count();
+        ours * 10 >= heard.len() * 8
+    }
+
+    /// The last utterance was much quieter than the caller's own voice (two utterances of it
+    /// heard first).
+    pub(super) fn is_distant(&self) -> bool {
+        if self.caller_levels.len() < 2 || self.utterance_level <= 0.0 {
+            return false;
+        }
+        let mut levels = self.caller_levels.clone();
+        levels.sort_by(f32::total_cmp);
+        self.utterance_level < levels[levels.len() / 2] * DISTANT_RATIO
+    }
+
     pub(super) fn on_final(&mut self, text: String) {
         if let Some(t) = self.finalize_sent_at.take() {
             self.services.metrics.stt_final.observe(t.elapsed().as_millis() as u64);
@@ -330,6 +374,24 @@ impl Session {
         let text = text.trim().to_string();
         if text.is_empty() {
             return;
+        }
+        if self.speech_over_agent && self.is_echo(&text) {
+            tracing::info!(call = %self.info.call_sid, heard = %text, "the agent's own words came back (a speakerphone): not the caller");
+            return;
+        }
+        self.engine.state.distant_voice = self.is_distant();
+        if self.engine.state.distant_voice {
+            tracing::info!(
+                call = %self.info.call_sid,
+                heard = %text,
+                level = self.utterance_level,
+                "much quieter than the caller's voice: maybe someone near them"
+            );
+        } else if self.utterance_level > 0.0 {
+            self.caller_levels.push(self.utterance_level);
+            if self.caller_levels.len() > 20 {
+                self.caller_levels.remove(0);
+            }
         }
         // "תודה" to "משהו נוסף?": the goodbye, without asking anyone.
         if !self.agent_busy() && self.pending_agent.is_none() && self.pending_llm.is_none() {

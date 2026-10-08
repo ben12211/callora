@@ -258,6 +258,7 @@ impl Session {
             }
             PlayoutEvent::Idle => {
                 self.speaking = false;
+                self.agent_idle_at = Some(Instant::now());
                 self.protecting = false;
                 if let Some(after) = self.after_speech.take() {
                     return Some(self.terminate(after).await);

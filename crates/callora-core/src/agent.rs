@@ -501,6 +501,12 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
              expected): \"{second}\". Where the two differ, go by the one that makes sense (usually this one)."
         ));
     }
+    if state.distant_voice {
+        u.push_str(
+            "
+FAR VOICE: these words were much quieter than the caller's own voice so far: maybe someone near              the caller, not the caller. Take details from them only if they plainly answer your last question;              otherwise pass no fields and ask your question again, briefly.",
+        );
+    }
     u
 }
 
