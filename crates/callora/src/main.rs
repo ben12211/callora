@@ -237,14 +237,14 @@ fn agent_model_env() -> AgentModelSettings {
 }
 
 /// The conversation agent: the primary model (default gemini-3.8-flash), hedged after
-/// AGENT_HEDGE_MS (default 1200) by the backup (default gpt-6-luna, `none` for no hedge) when
+/// AGENT_HEDGE_MS (default 700) by the backup (default gpt-6-luna, `none` for no hedge) when
 /// that provider's key is set; when both fail, AGENT_FALLBACK_MODEL, by default a model of the
 /// other provider (an outage of one provider must not end the calls). Run `callora eval
 /// --model <a> --model <b>` to compare models on the recorded conversations before changing
 /// any.
 fn agent_model_with(http: reqwest::Client, models: &AgentModelSettings) -> Option<Arc<dyn LanguageModel>> {
     let (primary, backup) = (models.primary.as_str(), models.backup.as_str());
-    let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(1200));
+    let hedge = std::time::Duration::from_millis(env("AGENT_HEDGE_MS").and_then(|v| v.parse().ok()).unwrap_or(700));
     let primary_model = agent_model_named(http.clone(), primary, models.effort.clone())?;
     let backup_model = (backup != NO_BACKUP).then(|| agent_model_named(http.clone(), backup, models.effort.clone()));
     let agent: Arc<dyn LanguageModel> = match backup_model {

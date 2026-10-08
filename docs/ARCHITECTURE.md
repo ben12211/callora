@@ -107,7 +107,7 @@ goes to a person.
 **The model.** Chat completions with strict JSON-schema output
 (`crates/callora-providers/src/openai.rs`). Default `gemini-3.8-flash` (thinking `low`,
 through Gemini's OpenAI-compatible endpoint), hedged by OpenAI's `gpt-6-luna`: if the primary has said nothing after
-`AGENT_HEDGE_MS` (1200), the backup gets the same request and whichever speaks first is
+`AGENT_HEDGE_MS` (700), the backup gets the same request and whichever speaks first is
 used. `AGENT_MODEL`, `AGENT_BACKUP_MODEL` and `AGENT_REASONING_EFFORT` change them; run
 the eval before doing so. Every reply's token counts are kept for the cost per call.
 

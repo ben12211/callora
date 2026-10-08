@@ -178,6 +178,32 @@ fn sound(s: &str) -> String {
         .collect()
 }
 
+/// A name as it sounds whatever its spelling: recognition writes "עזרה" for עזרא, "אזרא",
+/// "עזרע". ע is א, a final ה is א, ו and י inside a word are vowels, and the sound-alike
+/// letters are one (כ/ק, ט/ת, ס/ש). Unlike [`sound`], the letters that carry a vowel stay
+/// where they are, so short names keep enough letters to tell apart.
+fn spelling(s: &str) -> String {
+    s.split(' ')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let n = w.chars().count();
+            w.chars()
+                .enumerate()
+                .filter(|&(i, c)| i == 0 || !matches!(c, 'ו' | 'י'))
+                .map(|(i, c)| match c {
+                    'ע' => 'א',
+                    'ה' if i + 1 == n && n > 1 => 'א',
+                    'כ' => 'ק',
+                    'ט' => 'ת',
+                    'ש' => 'ס',
+                    c => c,
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// A street's consonants as an Ashkenazi speaker's name for it would be written: ת and ס one
 /// sound, "טש" the same as "ץ".
 fn ashkenazi(s: &str) -> String {
@@ -795,6 +821,17 @@ impl Gazetteer {
                 }
             }
         }
+        // "עזרה" in בני ברק is עזרא: the same name spelled another way. Only when one street of
+        // the city sounds so, and the name keeps three letters.
+        let heard_spelling = spelling(&candidates[0]);
+        if heard_spelling.chars().filter(|c| *c != ' ').count() >= 3 {
+            let mut fits = city.street_keys.iter().filter(|(k, _)| spelling(k) == heard_spelling).map(|(_, &si)| si);
+            if let Some(si) = fits.next() {
+                if fits.all(|other| other == si) {
+                    return found(Some(city.streets[si].clone()));
+                }
+            }
+        }
         // Ashkenazi speech ("אהרוינוביטש" for "אהרונוביץ", "שבעס" for "שבת"): the same
         // consonants once ת/ס and טש/ץ are one sound. Only when one street of the city fits.
         let heard_key = ashkenazi(&candidates[0]);
@@ -1081,6 +1118,22 @@ mod tests {
 ",
         );
         assert!(matches!(g.resolve("שוויצר 3, ירושלים"), Lookup::NoStreet { .. }));
+    }
+
+    #[test]
+    fn a_street_spelled_the_way_it_sounds_is_the_street() {
+        // The call of 13:36: "עזרה" for עזרא in בני ברק was booked as an unknown place.
+        let g = Gazetteer::from_tsv(
+            "6100\tבני ברק\t825\tעזרא\tofficial\n6100\tבני ברק\t302\tרבי עקיבא\tofficial\n\
+             6100\tבני ברק\t998\tהרב עטיה עזרה\tofficial\n6100\tבני ברק\t303\tחזון איש\tofficial\n",
+        );
+        assert_eq!(found(g.resolve_within("עזרה 11", "בני ברק").unwrap()).spoken(), "עזרא 11, בני ברק");
+        assert_eq!(found(g.resolve_within("אזרא", "בני ברק").unwrap()).street.as_deref(), Some("עזרא"));
+        assert_eq!(found(g.resolve_within("רבי עקיבה 12", "בני ברק").unwrap()).street.as_deref(), Some("רבי עקיבא"));
+        assert!(matches!(g.resolve_within("עזבה", "בני ברק"), Some(Lookup::NoStreet { .. })), "another name");
+        // Two streets that sound the same: neither is chosen.
+        let g = Gazetteer::from_tsv("6100\tבני ברק\t1\tעזרא\tofficial\n6100\tבני ברק\t2\tאזרה\tofficial\n");
+        assert!(matches!(g.resolve_within("עזרה", "בני ברק"), Some(Lookup::NoStreet { .. })));
     }
 
     #[test]

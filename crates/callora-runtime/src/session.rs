@@ -819,6 +819,9 @@ impl Session {
                     && self.unfinished.is_none()
                     && self.actions_in_flight == 0
                     && self.after_speech.is_none()
+                    // The recognizer has not answered yet: its words may still come. A slow
+                    // transcript (2.3 s) was answered "the line is noisy" and then cut it off.
+                    && self.finalize_sent_at.is_none()
                 {
                     self.cancel_no_words();
                     tracing::info!(call = %self.info.call_sid, "speech with no words; the line is noisy");

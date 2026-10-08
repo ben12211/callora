@@ -283,6 +283,13 @@ impl Session {
                 if !text.trim().is_empty() {
                     self.utterance_heard = true;
                     self.cancel_no_words();
+                } else if self.no_words_task.is_some()
+                    && self.finalize_sent_at.is_some()
+                    && self.speech_ended_at.is_some_and(|t| t.elapsed() >= NO_WORDS_WAIT)
+                {
+                    // Nothing, and later than the wait for it: no second wait on top.
+                    let (utterance, generation) = (self.speech_count, self.no_words_generation);
+                    let _ = self.events.send(Ev::NoWords { utterance, generation });
                 }
                 self.on_final(text);
                 self.swap_stt_if_ready();

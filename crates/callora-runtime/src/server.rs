@@ -244,6 +244,10 @@ fn with_last_ride(
     customer: Option<Customer>,
     last: Option<(serde_json::Value, chrono::DateTime<chrono::Utc>)>,
 ) -> Option<Customer> {
+    let customer = customer.map(|mut c| {
+        c.name = c.name.filter(|n| plausible_name(n));
+        c
+    });
     let Some((card, _)) = last else { return customer };
     let name = card["details"].as_array().and_then(|details| {
         details
@@ -251,7 +255,7 @@ fn with_last_ride(
             .find(|d| d["field"] == "customer_name")
             .and_then(|d| d["value"].as_str())
             .map(str::trim)
-            .filter(|v| !v.is_empty())
+            .filter(|v| plausible_name(v))
             .map(str::to_string)
     });
     let Some(name) = name else { return customer };
@@ -260,6 +264,17 @@ fn with_last_ride(
         c.name = Some(name);
     }
     Some(c)
+}
+
+/// A name a known caller can be booked under without being asked: a few words, none twice.
+/// Recognition once saved "דוד יוסף חיים משה יוסף חיים דוד משה", and every later ride of that
+/// caller went out under it, never asked.
+fn plausible_name(name: &str) -> bool {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let mut seen = std::collections::HashSet::new();
+    (1..=4).contains(&words.len())
+        && words.iter().all(|w| seen.insert(*w))
+        && name.chars().all(|c| c.is_alphabetic() || c.is_whitespace() || matches!(c, '-' | '\'' | '"' | '״' | '׳'))
 }
 
 struct PendingCall {
@@ -1246,5 +1261,20 @@ mod last_ride_tests {
         assert_eq!(c.name.as_deref(), Some("דוד"));
         assert!(c.data.is_empty() && c.places.is_empty(), "no addresses of the last ride");
         assert!(with_last_ride(None, None).is_none(), "no ride, no customer");
+    }
+
+    #[test]
+    fn a_garbled_name_is_not_used_the_caller_is_asked() {
+        let card = |name: &str| json!({ "details": [{ "field": "customer_name", "value": name }] });
+        let garbled = "דוד יוסף חיים משה יוסף חיים דוד משה";
+        let c = with_last_ride(None, Some((card(garbled), chrono::Utc::now()))).unwrap_or_default();
+        assert!(c.name.is_none(), "the call of 13:36 booked its ride under this");
+        let saved = Customer { name: Some(garbled.into()), ..Default::default() };
+        assert!(with_last_ride(Some(saved), None).and_then(|c| c.name).is_none(), "nor from the record");
+        for name in ["דוד", "יוסי כהן", "בן-דוד", "רבקה בת שבע לוי"] {
+            let c = with_last_ride(None, Some((card(name), chrono::Utc::now()))).expect("a customer");
+            assert_eq!(c.name.as_deref(), Some(name));
+        }
+        assert!(with_last_ride(None, Some((card("דוד 45"), chrono::Utc::now()))).and_then(|c| c.name).is_none());
     }
 }

@@ -54,6 +54,8 @@ struct ScriptedStt {
     finalizes: Arc<Mutex<usize>>,
     /// Every inbound audio byte the session handed to the recognizer.
     audio: Arc<Mutex<Vec<u8>>>,
+    /// When set, the next end of speech is transcribed this late (and empty) instead of at once.
+    slow_final: Arc<Mutex<Option<Duration>>>,
 }
 
 #[async_trait]
@@ -61,13 +63,24 @@ impl SpeechToText for ScriptedStt {
     async fn open(&self, _language: &str, _keyterms: &[String]) -> anyhow::Result<SttSession> {
         let (in_tx, mut in_rx) = mpsc::channel(1024);
         let (ev_tx, ev_rx) = mpsc::channel(16);
-        *self.events.lock() = Some(ev_tx);
+        *self.events.lock() = Some(ev_tx.clone());
         let finalizes = self.finalizes.clone();
         let audio = self.audio.clone();
+        let slow = self.slow_final.clone();
         tokio::spawn(async move {
             while let Some(i) = in_rx.recv().await {
                 match i {
-                    SttInput::Finalize => *finalizes.lock() += 1,
+                    SttInput::Finalize => {
+                        *finalizes.lock() += 1;
+                        // Like the real recognizers, every end of speech gets a transcript:
+                        // empty here (the test pushes words with `say`), and late when slow.
+                        let delay = slow.lock().take().unwrap_or(Duration::from_millis(50));
+                        let tx = ev_tx.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            let _ = tx.send(SttEvent::Final(String::new())).await;
+                        });
+                    }
                     SttInput::Audio(a) => audio.lock().extend_from_slice(&a),
                     _ => {}
                 }
@@ -820,6 +833,55 @@ async fn noise_call() -> (Harness, Ws) {
         ws.send(Message::Text(quiet_frame().into())).await.unwrap();
     }
     (h, ws)
+}
+
+#[tokio::test]
+async fn a_slow_transcript_is_waited_for_not_called_noise() {
+    // The call of 13:36: "בן זכאי ארבעים וחמש" took 2.3 s to transcribe, and at 2 s the agent
+    // said "סליחה, יש קצת רעש בקו" and asked the question it had just been answered.
+    let h = start_server().await;
+    let mut ws = open_call(&h, "CA-slow-final").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    h.stt.say("צריך מונית").await;
+    while !collect(&mut ws, Duration::from_millis(300)).await.0.is_empty() {}
+    *h.stt.slow_final.lock() = Some(Duration::from_secs(4));
+    for _ in 0..20 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    for _ in 0..40 {
+        ws.send(Message::Text(quiet_frame().into())).await.unwrap();
+    }
+    assert!(
+        collect(&mut ws, Duration::from_millis(2600)).await.0.is_empty(),
+        "the recognizer has not answered: no \"the line is noisy\""
+    );
+    h.stt.say("מירושלים").await;
+    assert!(!collect(&mut ws, Duration::from_millis(1400)).await.0.is_empty(), "the words get their next question");
+    assert!(
+        collect(&mut ws, Duration::from_millis(2500)).await.0.is_empty(),
+        "and the late empty transcript after them asks nothing"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_transcript_later_than_the_wait_is_noise_at_once() {
+    let h = start_server().await;
+    let mut ws = open_call(&h, "CA-late-empty").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    h.stt.say("צריך מונית").await;
+    while !collect(&mut ws, Duration::from_millis(300)).await.0.is_empty() {}
+    *h.stt.slow_final.lock() = Some(Duration::from_millis(2600));
+    for _ in 0..20 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    for _ in 0..40 {
+        ws.send(Message::Text(quiet_frame().into())).await.unwrap();
+    }
+    assert!(collect(&mut ws, Duration::from_millis(2300)).await.0.is_empty(), "words may still come");
+    assert!(
+        !collect(&mut ws, Duration::from_millis(1200)).await.0.is_empty(),
+        "nothing came: the question again, without a second two-second wait"
+    );
 }
 
 #[tokio::test]
