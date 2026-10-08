@@ -382,6 +382,8 @@ impl Session {
     }
 
     pub(super) fn on_final(&mut self, text: String) {
+        // Words already held once as unfinished and now answered as they are.
+        let releasing = std::mem::take(&mut self.releasing_unfinished);
         if let Some(t) = self.finalize_sent_at.take() {
             self.services.metrics.stt_final.observe(t.elapsed().as_millis() as u64);
         }
@@ -440,7 +442,7 @@ impl Session {
             let (u, _) = fast_path(&self.business, &self.engine.context(), &text);
             // "טוב", "תודה" are noise when nothing waits for them, and an answer when the
             // call waits for a short one.
-            if u.noise && !self.engine.takes_short_answer(&text) {
+            if u.noise && !self.engine.takes_short_answer(&text) && !begins_a_request(&text) {
                 return self.on_noise(&text);
             }
         }
@@ -533,7 +535,7 @@ impl Session {
             Some(start) => format!("{start} {text}"),
             None => text,
         };
-        if is_unfinished(&text) {
+        if (is_unfinished(&text) || begins_a_request(&text)) && !releasing {
             tracing::info!(call = %self.info.call_sid, caller = %text, "unfinished sentence; waiting for the rest");
             self.unfinished = Some(text);
             self.unfinished_generation += 1;
@@ -738,6 +740,13 @@ pub(super) fn is_unfinished(text: &str) -> bool {
     t.ends_with("...") || t.ends_with('…') || t.ends_with('-') || lone_letter
 }
 
+/// "אני רוצה", "צריך": the start of a request the caller paused in. Only filler words, so it
+/// was dropped as noise, and a live call was silent five seconds until "הלו, שומעים אותי?".
+pub(super) fn begins_a_request(text: &str) -> bool {
+    let last = text.trim_end_matches(['.', ',', '?', '!', '…', ' ']).split_whitespace().last().unwrap_or("");
+    matches!(last, "רוצה" | "רוצים" | "צריך" | "צריכה" | "צריכים" | "מבקש" | "מבקשת")
+}
+
 /// A frame whose samples sit at the top of the scale: the microphone overloaded.
 fn clipped(frame: &[u8]) -> bool {
     let top = frame.iter().filter(|&&b| callora_audio::mulaw::decode(b).unsigned_abs() >= 30_000).count();
@@ -746,7 +755,17 @@ fn clipped(frame: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{clipped, is_unfinished};
+    use super::{begins_a_request, clipped, is_unfinished};
+
+    #[test]
+    fn the_start_of_a_request_waits_for_the_rest() {
+        for t in ["אני רוצה.", "צריך", "אני צריכה,"] {
+            assert!(begins_a_request(t), "{t}");
+        }
+        for t in ["אני רוצה מונית", "תודה", "רוצה לבטל"] {
+            assert!(!begins_a_request(t), "{t}");
+        }
+    }
 
     #[test]
     fn a_frame_at_the_top_of_the_scale_is_clipped() {

@@ -209,15 +209,6 @@ pub fn system_prompt(b: &Business) -> String {
 
     let instant = phrase_ids(b);
     s.push_str("\nREPLY with JSON, every turn, the keys in this order:\n");
-    if reading {
-        s.push_str(
-            "- read: \"\" when the caller's words mean just what they say (most turns: then think no further). \
-             Otherwise ONE terse line in English, 12 words at most: what they really mean or want, and how they sound, \
-             using the earlier call. It is never said or shown to anyone.\n\
-             - tone: how the caller sounds in these words: neutral, friendly, joking, rushed, frustrated, sarcastic, \
-             confused or rude.\n",
-        );
-    }
     s.push_str(
         "- action: \"none\"; \"read_back\" when every required detail of the task is known and the caller has \
          nothing to add: the system then reads the details back and asks to confirm, so add no question of your \
@@ -273,6 +264,16 @@ pub fn system_prompt(b: &Business) -> String {
         eg(words.and_then(|w| w.next_question.as_ref())),
     ));
     s.push_str("- task: the task the caller is on now, or null.\n");
+    if reading {
+        // After the words, so the caller does not wait for them.
+        s.push_str(
+            "- read: \"\" when the caller's words mean just what they say (most turns). Otherwise ONE terse line in \
+             English, 12 words at most: what they really mean or want, and how they sound, using the earlier call. \
+             It is never said or shown to anyone.\n\
+             - tone: how the caller sounds in these words: neutral, friendly, joking, rushed, frustrated, sarcastic, \
+             confused or rude.\n",
+        );
+    }
 
     s.push_str(&format!(
         "\nRULES:\n\
@@ -535,13 +536,6 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
     // whether it moves on past an unanswered question, before any words arrive; a phrase
     // plays as soon as its id is complete, and `say` is spoken while it is still generated.
     let mut properties = serde_json::Map::new();
-    // The agent's read of the caller comes first, empty on most turns (a couple of tokens): the
-    // rest of the reply is decided on it, and it never reaches the caller.
-    if c.agent.as_ref().is_none_or(|a| a.reading) {
-        let tones: Vec<&str> = Tone::ALL.iter().map(|(name, _)| *name).collect();
-        properties.insert("read".into(), json!({ "type": "string" }));
-        properties.insert("tone".into(), json!({ "type": "string", "enum": tones }));
-    }
     properties.insert("action".into(), json!({ "type": "string", "enum": actions }));
     properties.insert(
         "fields".into(),
@@ -566,6 +560,14 @@ pub fn build_request(b: &Business, state: &CallState, transcript: &str) -> LlmRe
     }
     properties.insert("say".into(), json!({ "type": "string" }));
     properties.insert("task".into(), json!({ "type": ["string", "null"], "enum": tasks }));
+    // The agent's read of the caller, after the words: first, the caller waited for it (0.2 s a
+    // turn on 32 recorded turns, none answered worse without it). It never reaches the caller;
+    // the tone is kept for the turns after.
+    if c.agent.as_ref().is_none_or(|a| a.reading) {
+        let tones: Vec<&str> = Tone::ALL.iter().map(|(name, _)| *name).collect();
+        properties.insert("read".into(), json!({ "type": "string" }));
+        properties.insert("tone".into(), json!({ "type": "string", "enum": tones }));
+    }
     let required: Vec<String> = properties.keys().cloned().collect();
     let schema = json!({
         "type": "object",
@@ -909,10 +911,18 @@ mod tests {
         let keys: Vec<&str> = request.schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(keys, ["action", "fields", "asks", "phrase", "say", "task"]);
         assert!(!request.system.contains("- read:"), "{}", request.system);
-        // On, the prompt says how to read and answer, and the schema asks for the read first.
+        // On, the prompt says how to read and answer, and the schema asks for the read after the words.
         let on = Business::from_json(include_str!("../../../businesses/taxi.json"), "taxi.json", &|_| None).unwrap();
         let system = system_prompt(&on);
         assert!(system.contains("HOW TO LISTEN AND ANSWER") && system.contains("- read:"), "{system}");
+        let request = build_request(&on, &CallState::new("taxi"), "היי");
+        let keys: Vec<&str> = request.schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            ["action", "fields", "asks", "phrase", "say", "task", "read", "tone"],
+            "the words are not waited on"
+        );
+        assert!(system.find("- say:") < system.find("- read:"), "the prompt lists them in the same order");
     }
 
     #[test]

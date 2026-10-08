@@ -394,6 +394,8 @@ pub struct Session {
     utterance_level: f32,
     /// The levels of the caller's own utterances so far (the ones that were words).
     caller_levels: Vec<f32>,
+    /// The next final transcript is held words released as they are (not held again).
+    releasing_unfinished: bool,
     /// The words of the coming transcript the recognizer was unsure of.
     unsure: Vec<(String, f32)>,
     /// The current utterance: audio the line lost (ms), and its voiced frames distorted by
@@ -540,6 +542,7 @@ impl Session {
             utterance_level: 0.0,
             caller_levels: Vec::new(),
             unsure: Vec::new(),
+            releasing_unfinished: false,
             line_lost_ms: 0,
             clipped_frames: 0,
             speech_over_agent: false,
@@ -900,6 +903,7 @@ impl Session {
                         // Answer what there is; strip the trailing marks so it is not held again.
                         let text = text.trim_end_matches(['.', '…', '-', ' ']).to_string();
                         if !text.is_empty() {
+                            self.releasing_unfinished = true;
                             self.on_final(text);
                         }
                     }

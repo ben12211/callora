@@ -1429,3 +1429,31 @@ async fn words_said_while_the_line_cut_out_are_told_to_the_agent() {
     assert_eq!(requests.len(), 1);
     assert!(requests[0].user.contains("BAD LINE") && requests[0].user.contains("400 ms"), "{}", requests[0].user);
 }
+
+#[tokio::test]
+async fn a_paused_i_want_is_the_start_of_a_request_not_noise() {
+    // The call of 16:09: "אני רוצה." was dropped as noise, and the line was silent five seconds.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "say": "מאיפה לאן?", "action": "none", "task": "book_ride", "fields": [] }),
+        json!({ "say": "מאיפה לאן?", "action": "none", "task": "book_ride", "fields": [] }),
+    ]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let mut ws = open_call(&h, "CA-i-want").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    // The rest follows: one request with both.
+    h.stt.say("אני רוצה.").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    h.stt.say("להזמין מונית").await;
+    collect(&mut ws, Duration::from_millis(600)).await;
+    {
+        let requests = agent.requests.lock();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].user.contains("אני רוצה. להזמין מונית"), "{}", requests[0].user);
+    }
+    // Nothing follows: answered as it is, at once after the short wait, not dropped.
+    h.stt.say("אני רוצה.").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(2000)).await;
+    assert_eq!(agent.requests.lock().len(), 2, "answered");
+    assert!(!frames.is_empty(), "something is said");
+}
