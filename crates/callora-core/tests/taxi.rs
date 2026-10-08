@@ -2596,6 +2596,19 @@ fn the_booking_asks_in_its_order_whatever_the_agent_writes() {
 }
 
 #[test]
+fn the_first_question_of_a_call_keeps_the_order_too() {
+    // The call of 17:57: before any task, the agent asked "לאן צריך להגיע?" first; the caller
+    // answered with the pickup, and pickup and destination were mixed from there.
+    let (call, _) = Call::new(business(&[]));
+    assert_eq!(call.engine.out_of_order("זה רוצה בני ברק", &[], &["destination".into()]).as_deref(), Some("pickup"));
+    // A destination already said, the pickup is still first.
+    let fields = [("destination".to_string(), "בני ברק".to_string())];
+    assert_eq!(call.engine.out_of_order("רוצה לבני ברק", &fields, &["destination".into()]).as_deref(), Some("pickup"));
+    // The pickup asked first is in order.
+    assert_eq!(call.engine.out_of_order("צריך מונית", &[], &["pickup".into()]), None);
+}
+
+#[test]
 fn a_question_off_the_business_is_refused_and_its_answer_never_said() {
     // The call of 21:29: "כמה זה שמונה ועוד ארבעים?" got "ארבעים ושמונה", and the first prime
     // minister got "דוד בן־גוריון".

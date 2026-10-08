@@ -266,6 +266,21 @@ impl Engine {
             desk: self.desk,
         };
         probe.state.remember(Speaker::Caller, transcript);
+        // No task yet (the call's first turn): the agent names it only after its words, so the
+        // task is the one whose questions these are. "לאן צריך להגיע?" was asked before
+        // "מאיפה?" on a first turn, and the call went wrong from there.
+        if probe.state.run.is_none() {
+            let task = self.business.config.intents.iter().find_map(|i| {
+                let p = i.pipeline.as_ref()?;
+                let pipeline = self.business.pipeline(p)?;
+                (pipeline.strict_order && asks.iter().any(|a| pipeline.slots.iter().any(|s| &s.slot == a)))
+                    .then(|| (p.clone(), i.id.clone()))
+            });
+            if let Some((pipeline, intent)) = task {
+                probe.state.run = Some(probe.new_run(&pipeline, &intent));
+                probe.fill_from_other_tasks();
+            }
+        }
         let fields = probe.by_preposition(transcript, fields);
         let fields = probe.with_patterns(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);

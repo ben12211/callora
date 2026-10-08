@@ -204,6 +204,11 @@ async fn start_server_full(
     start_server_inner(agent, session, eleven, mode, None).await
 }
 
+thread_local! {
+    /// The business the next server in this test runs, when not the taxi file as it is.
+    static BUSINESS: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
 /// The streets list and a second hearing, for the turns that answer a street or a city.
 type Hearing = (Arc<callora_core::gazetteer::Gazetteer>, Arc<dyn callora_runtime::ports::Transcriber>);
 
@@ -219,7 +224,8 @@ async fn start_server_inner(
             .then(|| NUMBER.to_string())
             .or_else(|| (k == "ELEVENLABS_VOICE_ID").then(|| "voice".into()))
     };
-    let business = Business::from_json(TAXI, "taxi.json", &env).unwrap();
+    let json = BUSINESS.with(|b| b.borrow_mut().take()).unwrap_or_else(|| TAXI.to_string());
+    let business = Business::from_json(&json, "taxi.json", &env).unwrap();
     // Every pre-generable sentence is in the library: 0x55 audio, 3 frames each.
     let mut library = VoiceLibrary::empty();
     for e in library_entries(&business) {
@@ -1485,6 +1491,11 @@ async fn a_slow_agent_is_heard_thinking_but_not_every_turn() {
         json!({ "say": "", "phrase": "ask_route", "action": "none", "task": "book_ride", "fields": [] }),
         json!({ "say": "", "phrase": "ask_route", "action": "none", "task": "book_ride", "fields": [] }),
     ]);
+    // The taxi business has it off; a business with it on.
+    let mut b: Value = serde_json::from_str(TAXI).unwrap();
+    b["agent"]["thinking_filler"] = json!("ack_listening");
+    b["agent"]["filler_after_ms"] = json!(1500);
+    BUSINESS.with(|cell| *cell.borrow_mut() = Some(b.to_string()));
     let h = start_server_with(Some(Arc::new(SlowAgent(Duration::from_millis(2200), scripted.clone())))).await;
     let mut ws = open_call(&h, "CA-ack").await;
     collect(&mut ws, Duration::from_millis(400)).await;
@@ -1497,4 +1508,39 @@ async fn a_slow_agent_is_heard_thinking_but_not_every_turn() {
     h.stt.say("מאלעד, בעוד חצי שעה").await;
     let (frames, _) = collect(&mut ws, Duration::from_millis(1900)).await;
     assert!(frames.is_empty(), "not two turns in a row");
+}
+
+#[tokio::test]
+async fn the_first_question_is_the_pickup_even_when_the_agent_asks_the_destination() {
+    // The call of 17:57: on the first turn the agent asked "לאן צריך להגיע?" before "מאיפה?".
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([json!({ "action": "none", "fields": [], "asks": ["destination"],
+        "say": "לאן צריך להגיע?", "task": "book_ride" })]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let mut ws = open_call(&h, "CA-order-first").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    h.stt.say("זה רוצה בני ברק").await;
+    collect(&mut ws, Duration::from_millis(800)).await;
+    let records = RECORDS.lock();
+    let id = records
+        .iter()
+        .find_map(|r| match r {
+            CallRecord::Started { info } if info.call_sid == "CA-order-first" => Some(info.call_id),
+            _ => None,
+        })
+        .expect("the call");
+    let said: Vec<&str> = records
+        .iter()
+        .filter_map(|r| match r {
+            CallRecord::Turn { call_id, speaker, text, .. } if *call_id == id && speaker == "agent" => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let last = said.last().copied().unwrap_or("");
+    assert!(
+        !last.contains("לאן") && (last.contains("לאסוף") || last.contains("מאיפה") || last.contains("אוספים")),
+        "{said:?}"
+    );
 }
