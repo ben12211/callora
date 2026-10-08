@@ -213,8 +213,8 @@ async fn voice_library_builds_incrementally_and_loads() {
     let lib = VoiceLibrary::load(&dir, &b).unwrap();
     assert_eq!(lib.len(), expected);
     let clip = lib.get("normal", "אהלן, איך אפשר לעזור?").expect("greeting clip");
-    // Recorded as 160 bytes, played at the business's tempo (1.25): a quarter faster.
-    assert_eq!(clip.len(), 128);
+    // Recorded as 160 bytes, played at the business's tempo (1.1): a tenth faster.
+    assert_eq!(clip.len(), 145);
     assert!(lib.get("slow", "מאיפה לאסוף?").is_some());
 
     // New voice settings make every clip again, not only the changed sentences.

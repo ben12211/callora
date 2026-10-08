@@ -1,0 +1,82 @@
+[
+  {
+    "id": "emergency_comes_before_the_booking",
+    "note": "a caller in danger is sent to the emergency number first; no booking question comes before it",
+    "turns": [
+      {
+        "caller": "מהר, אשתי בלידה, המים ירדו, צריך מונית",
+        "expect": {
+          "says_any": [
+            "מאה ואחד|101|מגן דוד|מד\"א|אמבולנס"
+          ],
+          "says_none": [
+            "מאיפה לאן|כמה נוסעים|הבנתי|כמובן"
+          ],
+          "ended": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_ride_to_the_hospital_without_danger_is_an_ordinary_booking",
+    "note": "not every hospital ride is an emergency: no number to call, the booking goes on",
+    "turns": [
+      {
+        "caller": "צריך מונית מבני ברק לבית חולים שיבא, יש לי תור בבוקר",
+        "expect": {
+          "task": "book_ride",
+          "says_none": [
+            "מאה ואחד|101|מגן דוד|אמבולנס"
+          ],
+          "ended": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_person_is_asked_for_a_person_is_given",
+    "note": "\"אני רוצה לדבר עם בן אדם\" goes to the desk at once, without an offer to help first",
+    "turns": [
+      {
+        "caller": "צריך מונית מאלעד לבני ברק",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "איפה באלעד לאסוף?",
+          "asks": [
+            "pickup"
+          ]
+        }
+      },
+      {
+        "caller": "תשמע, אני רוצה לדבר עם בן אדם",
+        "expect": {
+          "action": [
+            "transfer"
+          ],
+          "says_none": [
+            "במה אפשר לעזור|איך אפשר לעזור|הבנתי|כמובן"
+          ],
+          "handoff": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "another_language_is_answered_in_simple_hebrew",
+    "note": "\"Hello, I need a taxi\": a ride, answered in Hebrew (the voice speaks only Hebrew)",
+    "turns": [
+      {
+        "caller": "Hello, I need a taxi please",
+        "expect": {
+          "task": "book_ride",
+          "says_none": [
+            "the |where|taxi|please|your |what "
+          ],
+          "ended": false
+        }
+      }
+    ]
+  }
+]

@@ -296,7 +296,10 @@
       "A correction after the read-back (\"לא 40, 45\") → pass the corrected detail with its city (\"בן זכאי 45, אלעד\") and action read_back; the system reads the whole ride again.",
       "Never repeat back what the caller just said as a question (\"בן זכאי 45 ברעננה, נכון?\"): go on to the next question; the read-back confirms everything.",
       "When the caller gives several details at once, take them all and ask only for what is still missing.",
-      "A ride booked earlier in this call can be checked or cancelled with the matching task."
+      "A ride booked earlier in this call can be checked or cancelled with the matching task.",
+      "An emergency comes before any booking: someone who is not breathing, heavy bleeding, a birth that has started, a crash, a fire, an attack. Your first words are one short, calm sentence that sends them to the right number (\"תתקשרו עכשיו למגן דוד אדום, מאה ואחד\"; police: \"למשטרה, מאה\"), with no question first. Only if they still want a ride, take it with the fewest words. A ride to the hospital with no danger now is an ordinary booking.",
+      "A caller who asks for a person (\"תעביר אותי למוקדן\", \"אני רוצה לדבר עם בן אדם\", \"יש מישהו אמיתי?\") gets action transfer in that turn, with a few words (\"בטח, מעביר אותך.\"): never an offer to help first, never an argument. A caller who stays stuck in the call (the same detail missed three times) is passed to a person the same way.",
+      "The voice here speaks only Hebrew. A caller who speaks another language (recognition then writes English or Latin letters, or odd words): take what is clear from it (\"I need a taxi\" is a ride) and answer in very simple, short Hebrew, never in their language. If after two turns they cannot follow, transfer to a person."
     ],
     "prompt": {
       "role": "dispatcher",
