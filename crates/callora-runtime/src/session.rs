@@ -196,6 +196,8 @@ pub struct Services {
     pub settings: Arc<crate::settings::SettingsStore>,
     /// Hands callers to the desk with hold music; set by the server.
     pub desk: Option<Arc<crate::desk::Desk>>,
+    /// Links a caller opens to send their location; set by the server.
+    pub locations: Option<Arc<crate::locations::LocationLinks>>,
 }
 
 #[derive(Debug)]
@@ -229,6 +231,11 @@ enum Ev {
     SecondHearing {
         id: u64,
         text: Option<String>,
+    },
+    /// The caller's position, sent from the texted location link.
+    Location {
+        lat: f64,
+        lon: f64,
     },
     Llm {
         turn: u64,
@@ -518,6 +525,11 @@ impl Session {
         let seed = info.call_id.as_u128() as u64;
         let mut engine = Engine::new(business.clone(), seed);
         engine.set_gazetteer(services.gazetteer.clone());
+        engine.set_location_links(
+            services.locations.is_some()
+                && services.telephony.sends_sms()
+                && info.from.as_ref().is_some_and(|f| !f.is_empty()),
+        );
         engine.set_caller_phone(info.from.clone());
         engine.set_desk(!services.settings.desk(&business).numbers.is_empty());
         let mut s = Session {
@@ -754,6 +766,15 @@ impl Session {
                     let _ = session.input.try_send(SttInput::Audio(frame));
                 }
                 self.stt = Some(session);
+            }
+            Ev::Location { lat, lon } => {
+                tracing::info!(call = %self.info.call_sid, lat, lon, "the caller sent their location");
+                if !self.agent_busy() || self.engine.state.location_link.is_some() {
+                    self.cancel_no_words();
+                    self.silence_generation += 1;
+                    let d = self.engine.on_location(lat, lon);
+                    self.execute(d);
+                }
             }
             Ev::SecondHearing { id, text } => {
                 if self.second_pending.as_ref().map(|(i, _)| *i) != Some(id) {

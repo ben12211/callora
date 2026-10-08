@@ -424,6 +424,13 @@ impl Session {
                 self.silence_generation += 1;
                 return self.execute(d);
             }
+            // "כן" to "שוב מבן זכאי 45 באלעד?": the last ride's place, at once.
+            if let Some(d) = self.engine.on_offer_answer(&text) {
+                tracing::info!(call = %self.info.call_sid, caller = %text, "caller");
+                self.interrupted = false;
+                self.silence_generation += 1;
+                return self.execute(d);
+            }
             if let Some(d) = self.engine.on_no_to_optional(&text) {
                 tracing::info!(call = %self.info.call_sid, caller = %text, "caller");
                 self.interrupted = false;

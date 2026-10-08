@@ -485,6 +485,18 @@ pub fn turn_message(b: &Business, state: &CallState, transcript: &str) -> String
             u.push_str(&format!("- {n}\n"));
         }
     }
+    // The caller's last ride, for an answer to its offer ("שוב מבן זכאי 45 באלעד?") that is
+    // more than a plain yes or no: "כן, אבל לירושלים".
+    if let Some(data) = state.customer.as_ref().map(|c| &c.data) {
+        let place = |k: &str| data.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        if let Some(pickup) = place("last_pickup") {
+            let to = place("last_destination").map(|d| format!(" to \"{d}\"")).unwrap_or_default();
+            u.push_str(&format!(
+                "
+LAST RIDE of this caller: from \"{pickup}\"{to}. If the conversation shows you offered it (\"שוב                  מ...?\"), a yes to the offer means that place: pass it as written here. Never use it otherwise."
+            ));
+        }
+    }
     if state.continues_answer {
         // A live call's "דוד" ... "אביטבול" became the name "דוד" and the driver note
         // "אביטבול": the caller was still giving the name when the next question played.

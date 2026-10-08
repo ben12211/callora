@@ -41,6 +41,7 @@ impl Session {
                     self.after_speech = Some(AfterSpeech::Handoff(summary));
                 }
                 Directive::Hangup => self.after_speech = Some(AfterSpeech::Hangup),
+                Directive::SendLocationLink { slot } => self.send_location_link(&slot),
             }
         }
         // Nothing queued to say: the terminal action happens right away; otherwise it waits
@@ -48,6 +49,31 @@ impl Session {
         if !self.agent_busy() && self.after_speech.is_some() {
             let _ = self.events.send(Ev::TerminateNow);
         }
+    }
+
+    /// Texts the caller a link that sends their position to this call (see `locations`).
+    fn send_location_link(&mut self, slot: &str) {
+        let (Some(links), Some(to)) = (self.services.locations.clone(), self.info.from.clone()) else { return };
+        let (tx, mut rx) = mpsc::unbounded_channel::<(f64, f64)>();
+        let url = links.create(tx);
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            while let Some((lat, lon)) = rx.recv().await {
+                if events.send(Ev::Location { lat, lon }).is_err() {
+                    return;
+                }
+            }
+        });
+        let body = format!("מוניות קלורה: לחיצה על הקישור שולחת לנו את המיקום שלך לנסיעה: {url}");
+        let telephony = self.services.telephony.clone();
+        let call = self.info.call_sid.clone();
+        let slot = slot.to_string();
+        tokio::spawn(async move {
+            match telephony.send_sms(&to, &body).await {
+                Ok(()) => tracing::info!(%call, %slot, "location link texted to the caller"),
+                Err(e) => tracing::warn!(%call, error = %format!("{e:#}"), "the location link could not be texted"),
+            }
+        });
     }
 
     /// Once the ride's pickup and destination cities are known, the price list is asked in the

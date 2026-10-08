@@ -236,10 +236,12 @@ impl AppState {
     }
 }
 
-/// The customer record with the name of the caller's last ride from our own orders, when
-/// the record has none: a known caller is not asked for it again (it is never said). Nothing
-/// else of that ride: told the agent, its addresses filled in a garbled answer ("עזרא 11",
-/// heard "עשרה, אחד עשרה", was booked as the last ride's "רבי אליעזר 11").
+/// The customer record with the caller's last ride from our own orders: its name, when the
+/// record has none (a known caller is not asked for it again), and its pickup and destination
+/// when they were found in the lists (`last_pickup`, `last_destination`, as said, and their
+/// addresses). Those are only offered ("שוב מבן זכאי 45 באלעד?") and taken on a plain yes:
+/// told the agent as facts, they once filled a garbled answer ("עזרא 11", heard "עשרה, אחד
+/// עשרה", was booked as the last ride's "רבי אליעזר 11").
 fn with_last_ride(
     customer: Option<Customer>,
     last: Option<(serde_json::Value, chrono::DateTime<chrono::Utc>)>,
@@ -249,6 +251,18 @@ fn with_last_ride(
         c
     });
     let Some((card, _)) = last else { return customer };
+    let mut places = serde_json::Map::new();
+    for (field, key) in [("pickup", "last_pickup"), ("destination", "last_destination")] {
+        let detail = card["details"].as_array().and_then(|d| d.iter().find(|d| d["field"] == field));
+        let address = detail.and_then(|d| d["address"].as_str()).map(str::trim).unwrap_or("");
+        let said = detail.and_then(|d| d["value"].as_str()).map(str::trim).unwrap_or("");
+        // Only a place the lists knew: an unverified one ("לא מאומת") is not offered again.
+        if address.is_empty() || said.is_empty() || address.contains("לא מאומת") {
+            continue;
+        }
+        places.insert(key.into(), json!(spoken_place(said)));
+        places.insert(format!("{key}_address"), json!(address));
+    }
     let name = card["details"].as_array().and_then(|details| {
         details
             .iter()
@@ -258,12 +272,27 @@ fn with_last_ride(
             .filter(|v| plausible_name(v))
             .map(str::to_string)
     });
-    let Some(name) = name else { return customer };
+    if name.is_none() && places.is_empty() {
+        return customer;
+    }
     let mut c = customer.unwrap_or_default();
     if c.name.is_none() {
-        c.name = Some(name);
+        c.name = name;
+    }
+    for (k, v) in places {
+        c.data.entry(k).or_insert(v);
     }
     Some(c)
+}
+
+/// "בן זכאי 45, אלעד" as it is said: "בן זכאי 45 באלעד".
+fn spoken_place(said: &str) -> String {
+    match said.rsplit_once(',') {
+        Some((street, city)) if !street.trim().is_empty() && !city.trim().is_empty() => {
+            format!("{} ב{}", street.trim(), city.trim())
+        }
+        _ => said.to_string(),
+    }
 }
 
 /// A name a known caller can be booked under without being asked: a few words, none twice.
@@ -295,6 +324,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(twilio::VOICE_PATH, post(voice))
         .route(twilio::STATUS_PATH, post(call_status))
         .route(twilio::MEDIA_PATH, get(media))
+        .route("/l/{token}", get(location_page).post(location_post))
         .route(twilio::WHISPER_PATH, post(whisper))
         .route(twilio::DESK_PATH, post(desk_answered))
         .route(twilio::DESK_STATUS_PATH, post(desk_status))
@@ -341,6 +371,31 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 fn xml(body: String) -> Response {
     ([(header::CONTENT_TYPE, "text/xml; charset=utf-8")], body).into_response()
+}
+
+/// The page a caller opens from the texted link (see `locations`): public, the token is the key.
+async fn location_page(State(s): State<Arc<AppState>>, Path(token): Path<String>) -> Response {
+    let live = s.services.locations.as_ref().is_some_and(|l| l.is_live(&token));
+    if !live {
+        return (StatusCode::NOT_FOUND, axum::response::Html("<p dir=\"rtl\">הקישור כבר לא בתוקף.</p>"))
+            .into_response();
+    }
+    axum::response::Html(crate::locations::PAGE).into_response()
+}
+
+#[derive(Deserialize)]
+struct Position {
+    lat: f64,
+    lon: f64,
+}
+
+async fn location_post(State(s): State<Arc<AppState>>, Path(token): Path<String>, Json(p): Json<Position>) -> Response {
+    let delivered = s.services.locations.as_ref().is_some_and(|l| l.deliver(&token, p.lat, p.lon));
+    if delivered {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
 }
 
 async fn health(State(s): State<Arc<AppState>>) -> Response {
@@ -1270,7 +1325,11 @@ mod last_ride_tests {
         });
         let c = with_last_ride(None, Some((card, chrono::Utc::now()))).expect("a customer");
         assert_eq!(c.name.as_deref(), Some("דוד"));
-        assert!(c.data.is_empty() && c.places.is_empty(), "no addresses of the last ride");
+        assert!(c.places.is_empty(), "no saved places");
+        // Its places, as said, to offer them; the unverified one is not.
+        assert_eq!(c.data["last_pickup"], "בן זכאי 40 באלעד");
+        assert_eq!(c.data["last_pickup_address"], "רבן יוחנן בן זכאי 40, אלעד");
+        assert!(c.data.get("last_destination").is_none(), "no address: not offered");
         assert!(with_last_ride(None, None).is_none(), "no ride, no customer");
     }
 

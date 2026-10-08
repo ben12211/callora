@@ -481,5 +481,64 @@
         }
       }
     ]
+  },
+  {
+    "id": "a_returning_caller_takes_the_last_ride_with_two_yeses",
+    "note": "returning caller: the last ride offered, a plain yes takes each place",
+    "customer": {
+      "name": "דוד",
+      "last_pickup": "בן זכאי 45 באלעד",
+      "last_pickup_address": "רבן יוחנן בן זכאי 45, אלעד",
+      "last_destination": "רבי עקיבא 12 בבני ברק",
+      "last_destination_address": "רבי עקיבא 12, בני ברק"
+    },
+    "turns": [
+      {
+        "caller": "כן",
+        "expect": {
+          "slots": {
+            "pickup": "בן זכאי"
+          },
+          "says_any": [
+            "שוב לרבי עקיבא"
+          ]
+        }
+      },
+      {
+        "caller": "כן",
+        "expect": {
+          "slots": {
+            "destination": "רבי עקיבא"
+          },
+          "says_any": [
+            "נוסעים|אתם"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_returning_caller_going_elsewhere_is_heard",
+    "note": "more than a yes to the offer: the agent takes it",
+    "customer": {
+      "name": "דוד",
+      "last_pickup": "בן זכאי 45 באלעד",
+      "last_pickup_address": "רבן יוחנן בן זכאי 45, אלעד",
+      "last_destination": "רבי עקיבא 12 בבני ברק",
+      "last_destination_address": "רבי עקיבא 12, בני ברק"
+    },
+    "turns": [
+      {
+        "caller": "כן, אבל הפעם לירושלים",
+        "expect": {
+          "slots": {
+            "pickup": "בן זכאי"
+          },
+          "cities": {
+            "destination": "ירושלים"
+          }
+        }
+      }
+    ]
   }
 ]

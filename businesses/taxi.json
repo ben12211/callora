@@ -491,6 +491,10 @@
     "noisy_line": { "variants": ["סליחה, יש קצת רעש בקו."] },
     "did_not_catch": { "variants": ["סליחה, לא שמעתי טוב."] },
     "which_way": { "variants": ["מ{city} או ל{city}?"] },
+    "location_link_sent": { "variants": ["נשלחה עכשיו הודעה עם קישור: לחיצה עליו שולחת לנו את המיקום. אפשר גם להגיד שוב את הכתובת."] },
+    "location_received": { "variants": ["קיבלתי את המיקום, תודה."] },
+    "greeting_last_pickup": { "variants": ["אהלן, מוניות קלורה! שוב מ{last_pickup}?"] },
+    "offer_last_destination": { "variants": ["סגור. ולאן, שוב ל{last_destination}?"] },
     "i_hear_you": { "variants": ["כן, אני פה.", "כן, שומעים."], "delivery": "quick" },
     "wait_ack": { "variants": ["בטח, אני מחכה.", "אין בעיה, אני מחכה."], "delivery": "quick" },
 

@@ -320,6 +320,7 @@ pub async fn last_ride(
         "SELECT o.card, o.at FROM callora_v2.orders o JOIN callora_v2.calls c ON c.id = o.call_id
          WHERE c.business_id = $1 AND c.from_number = $2 AND o.card ? 'result'
            AND NOT coalesce((o.card->>'verify')::boolean, false)
+           AND EXISTS (SELECT 1 FROM jsonb_array_elements(o.card->'details') d WHERE d->>'field' = 'pickup')
          ORDER BY o.at DESC LIMIT 1",
     )
     .bind(business_id)

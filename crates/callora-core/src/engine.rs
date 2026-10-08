@@ -32,6 +32,8 @@ pub enum Directive {
     Handoff { summary: HandoffSummary },
     /// Hang up once queued speech has played.
     Hangup,
+    /// Text the caller a link that sends their location for this place.
+    SendLocationLink { slot: String },
 }
 
 /// Why a business action returned no result.
@@ -407,6 +409,53 @@ impl Engine {
     }
 
     /// Whether the dispatch desk has numbers to ring (the owner's settings).
+    /// Whether a location link can be texted to this caller.
+    pub fn set_location_links(&mut self, available: bool) {
+        self.state.location_links = available;
+    }
+
+    /// The pickup not found (the second hearing did not find it either), with links available
+    /// and none sent yet in this call. Only the pickup: the phone is where the caller is.
+    fn location_link_due(&self, slot: &str) -> bool {
+        slot == "pickup"
+            && self.state.location_links
+            && self.state.location_link.is_none()
+            && !self.state.location_link_sent
+            && self.state.place_misses.get(slot).is_some_and(|n| *n >= 1)
+    }
+
+    /// The caller's position, from the texted link: the place it was sent for, with a map link
+    /// for the driver, and the call goes on.
+    pub fn on_location(&mut self, lat: f64, lon: f64) -> Vec<Directive> {
+        let mut out = Out::default();
+        let slot = self.state.location_link.take().unwrap_or_else(|| "pickup".into());
+        let address = format!("מיקום שנשלח מהטלפון: {lat:.5},{lon:.5} (https://maps.google.com/?q={lat:.5},{lon:.5})");
+        if let Some(run) = &mut self.state.run {
+            run.slots.insert(
+                slot.clone(),
+                SlotState {
+                    value: SlotValue::Place {
+                        spoken: "המיקום ששלחת".into(),
+                        address: Some(address),
+                        customer_place: Some("phone_location".into()),
+                    },
+                    confidence: 1.0,
+                    provenance: Provenance::Customer,
+                    confirmed: true,
+                },
+            );
+        }
+        self.state.place_misses.remove(&slot);
+        self.state.remember(Speaker::Caller, "(שלח מיקום מהטלפון)");
+        tracing::info!(%slot, lat, lon, "the caller's position, from the texted link");
+        if self.business.response("location_received").is_some() {
+            let ctx = self.render_ctx(None);
+            self.say(&mut out, "location_received", ctx, true);
+        }
+        self.advance(&mut out, false);
+        self.finish(out)
+    }
+
     pub fn set_desk(&mut self, available: bool) {
         self.desk = Some(available);
     }
@@ -460,6 +509,14 @@ impl Engine {
             Some(self.business.config.greeting.clone()),
         ];
         let ctx = RenderContext { customer: self.state.customer.as_ref(), ..Default::default() }.into_owned();
+        // A caller whose last ride is known is offered its pickup: "שוב מבן זכאי 45 באלעד?".
+        if let Some((said, address)) = self.last_ride_place("last_pickup") {
+            if let Some(plan) = self.render_plan("greeting_last_pickup", &ctx) {
+                out.speak(plan, true);
+                self.state.offer = Some(("pickup".into(), said, address));
+                return self.finish(out);
+            }
+        }
         for greeting in candidates.into_iter().flatten() {
             if let Some(plan) = self.render_plan(&greeting, &ctx) {
                 out.speak(plan, true);
@@ -599,6 +656,25 @@ impl Engine {
         let fields = self.answer_in_place(transcript, &fields);
         let fields = self.with_cues(transcript, &fields);
         let (changed, rejected) = self.apply_agent_fields(&fields);
+        // A pickup not found: the phone knows where the caller is. A link is texted to them, once
+        // a call, and their position is awaited (they can still say the address).
+        for slot in &rejected {
+            if slot == "pickup" || slot == "destination" {
+                *self.state.place_misses.entry(slot.clone()).or_default() += 1;
+            }
+        }
+        if let Some(slot) = rejected.iter().find(|s| self.location_link_due(s)).cloned() {
+            if self.business.response("location_link_sent").is_some() {
+                tracing::info!(transcript, %slot, "the pickup not found: a location link is texted");
+                self.state.location_link = Some(slot.clone());
+                self.state.location_link_sent = true;
+                self.agent_say(&mut out, None, "", spoken);
+                let ctx = self.render_ctx(None);
+                self.say(&mut out, "location_link_sent", ctx, true);
+                out.push(Directive::SendLocationLink { slot });
+                return self.finish(out);
+            }
+        }
         // The business's rules, as in a turn without the agent: a live call booked 17
         // passengers in one taxi, though more than 8 go to a person.
         if self.apply_rules(&mut out) {
@@ -2757,6 +2833,82 @@ impl Engine {
     /// "לא", "אין, תודה" to the optional question asked before the read-back ("הערה לנהג?"):
     /// nothing for the driver, and the details are read back. Without the agent: a live call
     /// answered this "לא" with "אפשר להמשיך?".
+    /// A place of the caller's last ride from the customer record (`last_pickup`,
+    /// `last_destination`): as said, and its address.
+    fn last_ride_place(&self, key: &str) -> Option<(String, String)> {
+        let data = &self.state.customer.as_ref()?.data;
+        let said = data.get(key)?.as_str()?.trim().to_string();
+        let address = data.get(&format!("{key}_address"))?.as_str()?.trim().to_string();
+        (!said.is_empty() && !address.is_empty()).then_some((said, address))
+    }
+
+    /// The answer to an offered place of the last ride ("שוב מבן זכאי 45 באלעד?"). A plain
+    /// "כן" takes it, and the last destination is offered next; a plain "לא" asks for the place;
+    /// anything else ("כן, אבל לבני ברק") goes to the agent, the offer forgotten.
+    pub fn on_offer_answer(&mut self, text: &str) -> Option<Vec<Directive>> {
+        let (slot, said, address) = self.state.offer.take()?;
+        let norm = crate::text::normalize(text);
+        let b = &self.business;
+        let yes = b.affirm.find(&norm).is_some() && b.fillers.strip(&b.affirm.strip(&norm)).trim().is_empty();
+        let no = b.deny.find(&norm).is_some() && b.fillers.strip(&b.deny.strip(&norm)).trim().is_empty();
+        if !yes && !no {
+            return None;
+        }
+        self.state.turns += 1;
+        self.state.silence_reprompts = 0;
+        self.state.remember(Speaker::Caller, text);
+        // The task whose place it is.
+        if self.state.run.is_none() {
+            let task = self.business.config.intents.iter().find_map(|i| {
+                let p = i.pipeline.as_ref()?;
+                let pipeline = self.business.pipeline(p)?;
+                pipeline.slots.iter().any(|s| s.slot == slot).then(|| (p.clone(), i.id.clone()))
+            });
+            if let Some((p, intent)) = task {
+                self.state.run = Some(self.new_run(&p, &intent));
+                self.fill_from_other_tasks();
+            }
+        }
+        let mut out = Out::default();
+        if yes {
+            tracing::info!(%slot, %said, "the caller took the last ride's place");
+            if let Some(run) = &mut self.state.run {
+                run.slots.insert(
+                    slot.clone(),
+                    SlotState {
+                        value: SlotValue::Place {
+                            spoken: said.clone(),
+                            address: Some(address),
+                            customer_place: Some("last_ride".into()),
+                        },
+                        confidence: 1.0,
+                        provenance: Provenance::Customer,
+                        confirmed: true,
+                    },
+                );
+            }
+            // Then the last destination, the same way.
+            let next = (slot == "pickup")
+                .then(|| self.last_ride_place("last_destination"))
+                .flatten()
+                .filter(|_| self.business.response("offer_last_destination").is_some());
+            if let Some((dest_said, dest_address)) = next {
+                let ctx = RenderContext { customer: self.state.customer.as_ref(), ..Default::default() }.into_owned();
+                if let Some(plan) = self.render_plan("offer_last_destination", &ctx) {
+                    out.speak(plan, true);
+                    self.state.offer = Some(("destination".into(), dest_said, dest_address));
+                    self.note_asked(&["destination".to_string()]);
+                    return Some(self.finish(out));
+                }
+            }
+            self.advance(&mut out, true);
+        } else {
+            tracing::info!(%slot, "the caller declined the last ride's place");
+            self.ask(&mut out, &slot, false);
+        }
+        Some(self.finish(out))
+    }
+
     pub fn on_no_to_optional(&mut self, text: &str) -> Option<Vec<Directive>> {
         let run = self.state.run.as_ref()?;
         if self.state.phase != Phase::Active || !matches!(run.step, Step::Collecting { .. }) {
