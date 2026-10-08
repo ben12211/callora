@@ -351,6 +351,58 @@ async fn when_elevenlabs_does_not_take_the_call_callora_answers() {
     assert_eq!(seen.lock().len(), 1, "it was tried first");
 }
 
+async fn tool(h: &Harness, name: &str, token: Option<&str>, body: Value) -> (u16, Value) {
+    let mut req =
+        reqwest::Client::new().post(format!("http://{}/webhooks/elevenlabs/tools/{name}", h.addr)).json(&body);
+    if let Some(t) = token {
+        req = req.header("x-callora-tools-token", t);
+    }
+    let res = req.send().await.unwrap();
+    let status = res.status().as_u16();
+    (status, res.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn the_elevenlabs_tools_need_the_token_and_send_a_ride_once() {
+    let h = start_server().await;
+    let good = callora_runtime::eleven_tools::tools_token(TOKEN);
+    let ride = json!({
+        "pickup": "כניסה לעיר, ביתר עילית",
+        "destination": "סינמה סיטי, ירושלים",
+        "passengers": 3,
+        "customer_name": "יוסי כהן",
+        "notes": "",
+        "conversation_id": "conv-1",
+        "caller_number": "+972501111111",
+    });
+
+    assert_eq!(tool(&h, "create-ride", None, ride.clone()).await.0, 401, "no token");
+    assert_eq!(tool(&h, "create-ride", Some("wrong"), ride.clone()).await.0, 401, "wrong token");
+
+    let (status, sent) = tool(&h, "create-ride", Some(&good), ride.clone()).await;
+    assert_eq!((status, &sent["ok"]), (200, &json!(true)), "{sent}");
+    assert_eq!(sent["message"], "הנסיעה נשלחה");
+
+    // The same conversation telling the same ride again (a retried tool call) sends nothing.
+    let (_, again) = tool(&h, "create-ride", Some(&good), ride.clone()).await;
+    assert_eq!(again["duplicate"], true, "{again}");
+
+    // A ride with no passengers is not sent, and the agent gets a sentence to speak from.
+    let mut bad = ride;
+    bad["passengers"] = json!(0);
+    bad["conversation_id"] = json!("conv-2");
+    let (_, refused) = tool(&h, "create-ride", Some(&good), bad).await;
+    assert_eq!(refused["ok"], false);
+    assert!(refused["message"].as_str().is_some_and(|m| !m.is_empty()), "{refused}");
+
+    // No price list is configured in the test: an answer the agent can say, not an error.
+    let (status, price) =
+        tool(&h, "get-price", Some(&good), json!({ "price_from": "בני ברק", "price_to": "ירושלים" })).await;
+    assert_eq!(status, 200);
+    assert_eq!(price["ok"], false);
+    assert!(price["message"].as_str().is_some_and(|m| !m.is_empty()), "{price}");
+}
+
 #[tokio::test]
 async fn callora_answers_unless_the_owner_chose_elevenlabs() {
     let (base, seen) = fake_elevenlabs((200, "<Response/>".to_string())).await;

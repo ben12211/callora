@@ -143,6 +143,9 @@ export type CallModeData = {
   available: boolean;
   elevenlabs: boolean;
   agent_id: string;
+  /** Where the ElevenLabs agent's tools (create-ride, get-price) are served, and the token they send. */
+  tools_url: string;
+  tools_token: string;
 };
 
 export type SettingsData = {

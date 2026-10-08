@@ -82,6 +82,8 @@ pub struct AppState {
     pub whatsapp: Option<Arc<crate::whatsapp::Service>>,
     /// The ElevenLabs Agents platform, when the owner can hand calls to it.
     pub eleven_agents: Option<Arc<crate::eleven_agents::ElevenAgents>>,
+    /// The conversations whose ride an ElevenLabs agent already sent (a retry sends nothing).
+    pub(crate) tool_rides: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl AppState {
@@ -123,6 +125,7 @@ impl AppState {
             sessions,
             whatsapp,
             eleven_agents,
+            tool_rides: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -272,6 +275,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(twilio::DESK_PATH, post(desk_answered))
         .route(twilio::DESK_STATUS_PATH, post(desk_status))
         .route(twilio::DESK_CONFERENCE_PATH, post(desk_conference))
+        .route(&format!("{}/{{tool}}", crate::eleven_tools::TOOLS_PATH), post(eleven_tool))
         .route("/api/settings", get(api_settings))
         .route("/api/settings/{business}", axum::routing::put(api_save_settings))
         .route("/api/settings/{business}/price-bot", axum::routing::put(api_save_price_bot))
@@ -841,11 +845,31 @@ async fn api_settings(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Res
         "agent": s.services.settings.agent_control().map(|c| c.view()),
         "call_mode": {
             "available": s.eleven_agents.is_some(),
+            "tools_url": format!("{}{}", s.settings.public_base_url, crate::eleven_tools::TOOLS_PATH),
+            "tools_token": crate::eleven_tools::tools_token(s.settings.stream_secrets.first().map_or("", String::as_str)),
             "elevenlabs": s.services.settings.call_mode().elevenlabs,
             "agent_id": s.services.settings.call_mode().agent_id,
         },
     }))
     .into_response()
+}
+
+/// The tools of an ElevenLabs agent (`create-ride`, `get-price`). Only with the token the settings
+/// page shows the owner.
+async fn eleven_tool(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(tool): Path<String>,
+    body: Option<Json<serde_json::Value>>,
+) -> Response {
+    let secret = s.settings.stream_secrets.first().map_or("", String::as_str);
+    let want = crate::eleven_tools::tools_token(secret);
+    let given = headers.get("x-callora-tools-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if secret.is_empty() || !bool::from(given.as_bytes().ct_eq(want.as_bytes())) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let body = body.map_or(json!({}), |Json(b)| b);
+    Json(crate::eleven_tools::run(&s, &tool, &body).await).into_response()
 }
 
 /// Choose who answers the phone: Callora's own agent, or an ElevenLabs agent (its id is checked

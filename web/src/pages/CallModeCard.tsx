@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LoaderCircle, PhoneCall } from "lucide-react";
+import { Copy, LoaderCircle, PhoneCall } from "lucide-react";
 import { type CallModeData, Unauthorized } from "../api";
 import { Badge, Button, Card, Field, Input, Problem, cx, useToast } from "../ui";
 
@@ -17,6 +17,32 @@ const OPTIONS: { value: Who; title: string; text: string }[] = [
     text: "השיחה עוברת לסוכן שבניתם בפלטפורמת ElevenLabs, עם ההגדרות שלו שם: ההנחיות, המודל, הקול והכלים. ElevenLabs מחייבת על זה.",
   },
 ];
+
+/** A read-only value the owner copies into ElevenLabs. */
+function CopyField({ label, value }: { label: string; value: string }) {
+  const toast = useToast();
+  return (
+    <div className="grid gap-1">
+      <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{label}</span>
+      <div className="flex items-center gap-2">
+        <input
+          readOnly
+          dir="ltr"
+          value={value}
+          onFocus={(e) => e.currentTarget.select()}
+          className="min-w-0 flex-1 rounded-lg bg-slate-50 px-3 py-2 font-mono text-xs text-slate-700 ring-1 ring-inset ring-slate-200 dark:bg-white/5 dark:text-slate-200 dark:ring-white/10"
+        />
+        <Button
+          variant="ghost"
+          onClick={() => navigator.clipboard.writeText(value).then(() => toast("הועתק", "good"), () => toast("לא הצלחתי להעתיק", "bad"))}
+          aria-label={`העתקה: ${label}`}
+        >
+          <Copy className="size-4" aria-hidden />
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 /** Who answers the phone. The choice is used by the calls that come next; if ElevenLabs does not
  * answer a call, Callora's own agent takes it. */
@@ -126,6 +152,15 @@ export function CallModeCard({ mode, canSave, onChanged }: { mode: CallModeData;
               <li>• שיחות שעוברות אליו לא מופיעות בדף השיחות כאן, ולא עוברות בכללי קלורה (קריאה חוזרת, בדיקת כתובות, שליחה לוואטסאפ).</li>
               <li>• אם ElevenLabs לא עונה לשיחה, הסוכן של קלורה עונה במקומו.</li>
             </ul>
+            <div className="grid gap-3 rounded-2xl bg-slate-50 p-4 ring-1 ring-inset ring-slate-200 dark:bg-white/[0.03] dark:ring-white/10">
+              <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+                כדי שהסוכן ב-ElevenLabs ישלח הזמנות ויבדוק מחירים דרך קלורה (ההזמנה מופיעה בדף ההזמנות ונשלחת לוואטסאפ), הגדר שם שני כלים
+                מסוג Webhook, <span className="font-mono">create-ride</span> ו-<span className="font-mono">get-price</span>, בכתובת הזו, עם הכותרת{" "}
+                <span className="font-mono">x-callora-tools-token</span> והקוד:
+              </p>
+              <CopyField label="כתובת הכלים (בסוף: create-ride או get-price)" value={`${mode.tools_url}/`} />
+              <CopyField label="קוד (בכותרת x-callora-tools-token)" value={mode.tools_token} />
+            </div>
           </div>
         )}
 
