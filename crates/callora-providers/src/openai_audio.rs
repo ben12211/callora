@@ -124,8 +124,8 @@ pub fn instructions(question: &str, names: &[String]) -> String {
          exactly these keys: name: the one they said, exactly as written in the list (they may add ב/מ/ל or רחוב \
          before it, or say it a little differently), or \"\" when what they said is not on the list. Never a name \
          with words they did not say: \"עזרה\" said alone is the name that is only that word, not a longer one that \
-         ends with it. number: a house number in digits, or \"\"; said: their words as you heard them, in Hebrew \
-         letters.",
+         ends with it. When they named more than one, the last one: they corrected themselves. number: a house \
+         number in digits, or \"\"; said: their words as you heard them, in Hebrew letters.",
         names.join(" | ")
     )
 }

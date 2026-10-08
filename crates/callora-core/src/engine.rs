@@ -224,8 +224,36 @@ impl Engine {
         let fields = probe.answer_in_place(transcript, &fields);
         let fields = probe.with_cues(transcript, &fields);
         let rejected = !probe.apply_agent_fields(&fields).1.is_empty();
-        // Or a business rule takes the turn over (17 passengers: a person arranges it).
-        rejected || probe.rule_takes_over()
+        // Or a business rule takes the turn over (17 passengers: a person arranges it), or a
+        // town said alone is neither place yet ("מבני ברק או לבני ברק?").
+        rejected || probe.rule_takes_over() || self.lone_city_either_way(transcript, &fields).is_some()
+    }
+
+    /// A town said alone, with no מ or ל ("בני ברק."), while neither the pickup nor the
+    /// destination is known, that the agent made one of them: it could be either. A live call's
+    /// "בני ברק" to "מאיפה לאן?" became the pickup and was the destination.
+    pub fn lone_city_either_way(&self, transcript: &str, fields: &[(String, String)]) -> Option<String> {
+        let g = self.gazetteer.as_ref()?;
+        let places_known = self
+            .state
+            .run
+            .as_ref()
+            .is_some_and(|r| r.slots.contains_key("pickup") || r.slots.contains_key("destination"));
+        if places_known {
+            return None;
+        }
+        let words: String =
+            crate::text::normalize(transcript).chars().filter(|c| !matches!(c, '.' | ',' | '?' | '!')).collect();
+        let said = self.business.fillers.strip(&words).trim().to_string();
+        let crate::gazetteer::Lookup::Found(a) = g.resolve(&said) else { return None };
+        // The town's own name and nothing else: a מ or ל before it says which place it is.
+        if a.street.is_some() || crate::text::normalize(&a.city_said) != said {
+            return None;
+        }
+        let made_a_place = fields.iter().any(|(slot, value)| {
+            (slot == "pickup" || slot == "destination") && crate::text::normalize(value).contains(&said)
+        });
+        made_a_place.then(|| a.city_said.clone())
     }
 
     /// The detail a task with a fixed order (`strict_order`) asks for next: the first one
@@ -550,6 +578,17 @@ impl Engine {
                     self.state.run = Some(self.new_run(p, &intent.id));
                     self.fill_from_other_tasks();
                 }
+            }
+        }
+        if let Some(city) = self.lone_city_either_way(transcript, &turn.fields) {
+            if self.business.response("which_way").is_some() {
+                tracing::info!(transcript, %city, "a town alone, neither place yet: asked which");
+                self.agent_say(&mut out, None, "", spoken);
+                let mut ctx = self.render_ctx(None);
+                ctx.extra.insert("city".into(), city);
+                self.say(&mut out, "which_way", ctx, true);
+                self.note_asked(&["pickup".to_string()]);
+                return self.finish(out);
             }
         }
         let was_confirming = self.state.run.as_ref().is_some_and(|r| r.step == Step::AwaitingConfirmation);
@@ -3330,6 +3369,18 @@ pub fn has_a_number(text: &str) -> bool {
     text.chars().any(|c| c.is_ascii_digit())
         || crate::text::normalize(text).split_whitespace().any(|w| {
             PASSENGER_WORDS.iter().any(|n| w == *n || w.strip_prefix('ו') == Some(n))
-                || matches!(w, "תשעה" | "תשע" | "עשרה" | "עשר" | "לבד" | "שנינו" | "שלושתנו")
+                || matches!(
+                    w,
+                    "תשעה"
+                        | "תשע"
+                        | "עשרה"
+                        | "עשר"
+                        | "לבד"
+                        | "שנינו"
+                        | "שלושתנו"
+                        | "שתי"
+                        | "שני"
+                        | "שלושת"
+                )
         })
 }

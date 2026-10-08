@@ -3441,3 +3441,35 @@ fn a_calls_health_names_what_went_wrong() {
     call.engine.on_action_result(run_id, Ok(serde_json::json!({ "ride_id": "R-1" })));
     assert!(!call.engine.health().contains(&"booking_left_unfinished"), "{:?}", call.engine.health());
 }
+
+#[test]
+fn a_town_said_alone_is_asked_which_way() {
+    // The call of 00:53: "בני ברק." to "מאיפה לאן?" became the pickup; it was the destination.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_bnei_brak_jerusalem()));
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "מאיפה לאן?", Some("book_ride"), &[]), "");
+    let fields = [("pickup".to_string(), "בני ברק".to_string())];
+    assert!(call.engine.rejects_any("בני ברק.", &fields), "the runtime holds the agent's words");
+    let d = call.engine.on_agent_turn(
+        "בני ברק.",
+        decide(AgentAction::None, "איפה בבני ברק לאסוף?", Some("book_ride"), &[("pickup", "בני ברק")]),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("מבני ברק או לבני ברק?"), "{said}");
+    assert_eq!(call.slot("pickup"), None);
+    // The answer with its preposition decides.
+    call.engine.on_agent_turn(
+        "לבני ברק",
+        decide(AgentAction::None, "", Some("book_ride"), &[("destination", "בני ברק")]),
+        "",
+    );
+    assert_eq!(call.engine.state.place_cities.get("destination").map(String::as_str), Some("בני ברק"));
+    // Said with its preposition the first time, it is taken.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_bnei_brak_jerusalem()));
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "מאיפה לאן?", Some("book_ride"), &[]), "");
+    let fields = [("pickup".to_string(), "בני ברק".to_string())];
+    assert!(!call.engine.rejects_any("מבני ברק", &fields));
+    assert!(call.engine.lone_city_either_way("מבני ברק", &fields).is_none());
+}
