@@ -197,7 +197,12 @@ async fn create_ride(s: &AppState, business: &Business, body: &Value) -> Value {
     if ok || verify {
         s.services.store.record(CallRecord::Order {
             call_id,
-            card: order_card(business, phone.as_deref(), &slots, &reply, verify),
+            card: {
+                // As the call's own orders read: "זמן איסוף: עכשיו" between the places and the passengers.
+                let mut shown = slots.clone();
+                shown.insert(2, ("pickup_time", SlotValue::Text { text: "עכשיו".into() }));
+                order_card(business, phone.as_deref(), &shown, &reply, verify)
+            },
         });
     }
     // A phone call ends with its transcript (see `pull_transcript`); one with no phone call ends here.
