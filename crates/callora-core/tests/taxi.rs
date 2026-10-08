@@ -3395,3 +3395,33 @@ fn a_street_being_cleared_up_keeps_its_citys_streets_in_focus() {
     call.engine.state.last_asks.clear();
     assert_eq!(call.engine.street_focus().as_deref(), Some("בני ברק"));
 }
+
+#[test]
+fn a_lone_goodbye_in_the_middle_of_a_booking_is_asked_about_once() {
+    // The call of 18:56: "שתיים" to "כמה נוסעים?" was heard "ביי." and the call hung up.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד לסוכות 12 בירושלים",
+        asking(
+            &["passengers"],
+            decide(
+                AgentAction::None,
+                "כמה נוסעים?",
+                Some("book_ride"),
+                &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות 12, ירושלים")],
+            ),
+        ),
+        "",
+    );
+    let d =
+        call.engine.on_agent_turn("ביי.", decide(AgentAction::EndCall, "תודה, יום טוב!", Some("book_ride"), &[]), "");
+    assert!(!d.iter().any(|d| matches!(d, Directive::Hangup)), "not hung up: {d:?}");
+    let said = spoken(&d);
+    assert!(said.contains("לא שמעתי") && said.contains("נוסעים"), "the question again: {said}");
+    assert!(!said.contains("יום טוב"), "{said}");
+    // Said again: the caller does mean it.
+    let d =
+        call.engine.on_agent_turn("ביי", decide(AgentAction::EndCall, "תודה, יום טוב!", Some("book_ride"), &[]), "");
+    assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{d:?}");
+}

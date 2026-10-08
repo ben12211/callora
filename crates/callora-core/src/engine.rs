@@ -716,6 +716,25 @@ impl Engine {
                 self.agent_say(&mut out, turn.phrase.as_deref(), &turn.say, spoken);
                 self.handoff(&mut out, "caller_requested");
             }
+            // "שתיים" to "כמה נוסעים?" was heard "ביי." and the call hung up in the middle of the
+            // booking. A lone goodbye there is asked about once: the question again.
+            AgentAction::EndCall if self.goodbye_mid_task(transcript) => {
+                tracing::info!(
+                    transcript,
+                    "a lone goodbye in the middle of a booking; maybe misheard, the question again"
+                );
+                self.state.goodbye_doubted = true;
+                self.agent_say(&mut out, None, "", spoken);
+                if self.business.response("goodbye_unclear").is_some() {
+                    let ctx = self.render_ctx(None);
+                    self.say(&mut out, "goodbye_unclear", ctx, true);
+                }
+                let slot = self.expected_slot();
+                match slot {
+                    Some(slot) => self.ask_again(&mut out, &slot),
+                    None => self.read_back(&mut out, true),
+                }
+            }
             AgentAction::EndCall => {
                 // "תודה רבה" to "משהו נוסף?" closes the call as surely as a goodbye.
                 if self.caller_said_goodbye(transcript) || (offered_more && self.only_fillers(transcript)) {
@@ -1931,6 +1950,29 @@ impl Engine {
 
     /// The caller's own words close the call: a goodbye, "that's all", or a plain "no,
     /// thanks" after "anything else?". An LLM's reading of garbled speech is not enough.
+    /// A goodbye of a word or two while a booking is being collected and a question waits for
+    /// its answer: more likely a word misheard than a caller leaving mid-sentence. Once a call.
+    fn goodbye_mid_task(&self, transcript: &str) -> bool {
+        let Some(run) = &self.state.run else { return false };
+        let words = self.business.fillers.strip(&crate::text::normalize(transcript)).split_whitespace().count();
+        !self.state.goodbye_doubted
+            && !self.offered_more
+            && matches!(run.step, Step::Collecting { .. })
+            && !run.slots.is_empty()
+            && self.last_agent_asked()
+            && words <= 2
+    }
+
+    /// The agent's last words before the caller's were a question.
+    fn last_agent_asked(&self) -> bool {
+        self.state
+            .history
+            .iter()
+            .rev()
+            .find(|t| t.speaker == Speaker::Agent)
+            .is_some_and(|t| t.text.trim_end().ends_with('?'))
+    }
+
     fn caller_said_goodbye(&self, transcript: &str) -> bool {
         let norm = crate::text::normalize(transcript);
         let b = &self.business;

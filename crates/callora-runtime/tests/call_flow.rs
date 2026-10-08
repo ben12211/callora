@@ -1385,7 +1385,7 @@ async fn the_agents_own_words_coming_back_are_not_an_answer() {
     // came back as the caller's words.
     let agent = Arc::new(ScriptedAgent::default());
     agent.replies.lock().extend([
-        json!({ "say": "לאן בבני ברק?", "action": "none", "task": "book_ride",
+        json!({ "say": "לאן בבני ברק נוסעים?", "action": "none", "task": "book_ride",
                 "fields": [{ "slot": "destination", "value": "בני ברק" }] }),
         json!({ "say": "כמה נוסעים?", "action": "none", "task": "book_ride",
                 "fields": [{ "slot": "destination", "value": "רבי עקיבא 2, בני ברק" }] }),
@@ -1396,7 +1396,7 @@ async fn the_agents_own_words_coming_back_are_not_an_answer() {
     speak(&mut ws, &h, "צריך מונית לבני ברק").await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     // While the reply plays, its own words come back.
-    speak(&mut ws, &h, "לאן בבני ברק").await;
+    speak(&mut ws, &h, "לאן בבני ברק נוסעים").await;
     while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
     assert_eq!(agent.requests.lock().len(), 1, "the echo is not sent to the agent");
     // A real answer that repeats the city is the caller's.
@@ -1543,4 +1543,23 @@ async fn the_first_question_is_the_pickup_even_when_the_agent_asks_the_destinati
         !last.contains("לאן") && (last.contains("לאסוף") || last.contains("מאיפה") || last.contains("אוספים")),
         "{said:?}"
     );
+}
+
+#[tokio::test]
+async fn an_answer_in_the_agents_own_words_after_it_spoke_is_kept() {
+    // "בבני ברק" to "לאיזה רחוב בבני ברק?" is the caller's, not an echo.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "say": "לאיזה רחוב בבני ברק?", "action": "none", "task": "book_ride",
+                "fields": [{ "slot": "destination", "value": "בני ברק" }] }),
+        json!({ "say": "איזה רחוב?", "action": "none", "task": "book_ride", "fields": [] }),
+    ]);
+    let h = start_server_with(Some(agent.clone())).await;
+    let mut ws = open_call(&h, "CA-own-words").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    speak(&mut ws, &h, "צריך מונית לבני ברק").await;
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+    speak(&mut ws, &h, "בבני ברק").await;
+    collect(&mut ws, Duration::from_millis(600)).await;
+    assert_eq!(agent.requests.lock().len(), 2, "the answer reaches the agent");
 }

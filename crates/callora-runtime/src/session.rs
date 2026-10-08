@@ -74,8 +74,9 @@ const CLIPPED_SHARE: f32 = 0.1;
 const DISTORTED_SHARE: f32 = 0.2;
 /// A word the recognizer gives less than this probability is told to the agent as unsure.
 const UNSURE_BELOW: f32 = 0.5;
-/// Speech that begins this soon after the agent stopped may still be its echo.
-const ECHO_TAIL: Duration = Duration::from_millis(1500);
+/// Speech that begins this soon after the agent stopped may still be its echo (the phone's
+/// own delay); later it is the caller answering, often with the agent's words ("בבני ברק").
+const ECHO_TAIL: Duration = Duration::from_millis(300);
 /// Words begun before the agent's reply finish the previous answer only when they follow it
 /// closely ("דוד" ... "אביטבול"), not after a long pause.
 const CONTINUATION_GAP: Duration = Duration::from_millis(2500);

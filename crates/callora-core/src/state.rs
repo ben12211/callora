@@ -266,6 +266,9 @@ pub struct CallState {
     /// This turn's audio was damaged: what happened, for the agent.
     #[serde(default)]
     pub line_trouble: Option<String>,
+    /// A lone goodbye in the middle of a booking was taken for a word misheard once already.
+    #[serde(default)]
+    pub goodbye_doubted: bool,
     /// This turn's words began before the agent's last reply started to play: they finish
     /// the caller's answer to the question before it ("דוד" ... "אביטבול").
     #[serde(default)]
@@ -340,6 +343,7 @@ impl CallState {
             distant_voice: false,
             unsure_words: Vec::new(),
             line_trouble: None,
+            goodbye_doubted: false,
             continues_answer: false,
             address_form: AddressForm::Unknown,
             caller_phone: None,

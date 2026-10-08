@@ -338,9 +338,9 @@ impl Session {
     }
 
     /// Words that are the agent's own, heard back: on a speakerphone its voice reaches the
-    /// caller's microphone, and "לאן בבני ברק?" came back as the caller's answer. Two words at
-    /// least, nearly all of them in what the agent said last ("בני ברק, רבי עקיבא" to "לאן
-    /// בבני ברק?" has words of its own and is an answer).
+    /// caller's microphone, and "לאן בבני ברק?" came back as the caller's answer. Three words at
+    /// least, begun while the agent spoke, nearly all of them in what it said last ("בני ברק,
+    /// רבי עקיבא" to "לאן בבני ברק?" has words of its own and is an answer).
     pub(super) fn is_echo(&self, text: &str) -> bool {
         let said: Vec<String> = self
             .engine
@@ -355,7 +355,9 @@ impl Session {
             })
             .collect();
         let heard: Vec<String> = callora_core::text::normalize(text).split_whitespace().map(str::to_string).collect();
-        if heard.len() < 2 || said.is_empty() {
+        // Three words at least: "בבני ברק" to "לאיזה רחוב בבני ברק?" is an answer in the agent's
+        // own words.
+        if heard.len() < 3 || said.is_empty() {
             return false;
         }
         let ours = heard.iter().filter(|w| said.contains(w)).count();
