@@ -84,6 +84,8 @@ pub struct AppState {
     pub eleven_agents: Option<Arc<crate::eleven_agents::ElevenAgents>>,
     /// The conversations whose ride an ElevenLabs agent already sent (a retry sends nothing).
     pub(crate) tool_rides: Mutex<HashMap<String, std::time::Instant>>,
+    /// The calls handed to an ElevenLabs agent that have not ended: Twilio call SID → start (unix).
+    pub(crate) eleven_calls: Mutex<HashMap<String, i64>>,
 }
 
 impl AppState {
@@ -126,6 +128,7 @@ impl AppState {
             whatsapp,
             eleven_agents,
             tool_rides: Mutex::new(HashMap::new()),
+            eleven_calls: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -442,6 +445,18 @@ async fn elevenlabs_twiml(s: &AppState, call_sid: &str, from: &str, to: &str) ->
     match agents.register_call(mode.agent_id.trim(), from, to).await {
         Ok(twiml) => {
             tracing::info!(call = %call_sid, "the call goes to the ElevenLabs agent");
+            // On the calls page from the first second, like any call; its transcript follows.
+            let business_id = s.registry.by_number(to).map(|b| b.config.id.clone()).unwrap_or_default();
+            s.services.store.record(CallRecord::Started {
+                info: CallInfo {
+                    call_id: crate::eleven_tools::eleven_call_id(call_sid),
+                    call_sid: call_sid.to_string(),
+                    business_id,
+                    from: Some(from.to_string()).filter(|f| is_e164(f)),
+                    to: to.to_string(),
+                },
+            });
+            s.eleven_calls.lock().insert(call_sid.to_string(), chrono::Utc::now().timestamp());
             Some(twiml)
         }
         Err(e) => {
@@ -468,6 +483,10 @@ async fn call_status(
         if matches!(status.as_str(), "completed" | "canceled" | "failed" | "busy" | "no-answer") {
             if let Some(desk) = &s.services.desk {
                 desk.caller_ended(sid).await;
+            }
+            let started = s.eleven_calls.lock().remove(sid);
+            if let Some(started) = started {
+                tokio::spawn(crate::eleven_tools::pull_transcript(s.clone(), sid.clone(), started));
             }
         }
         s.services.store.record(CallRecord::Status {

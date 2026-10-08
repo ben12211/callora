@@ -29,9 +29,9 @@ service area, and how they are pronounced.
 
 ## Tools
 
-`transfer_to_number` (the dispatch desk's number) and `end_call` are ElevenLabs' system tools.
-`create_ride` and `get_price` are server tools (webhooks) that Callora serves at
-`POST {PUBLIC_BASE_URL}/webhooks/elevenlabs/tools/create-ride` and `.../get-price`. They run the
+`end_call` and `skip_turn` are ElevenLabs' system tools. `create_ride`, `get_price` and
+`transfer_to_desk` are server tools (webhooks) that Callora serves at
+`POST {PUBLIC_BASE_URL}/webhooks/elevenlabs/tools/create-ride`, `.../get-price` and `.../transfer-to-desk`. They run the
 same actions as Callora's own agent (dispatch, the price list), put the ride on the orders page and
 send it to WhatsApp and Telegram. Both need the header `x-callora-tools-token`: the code and the URL
 are shown on the settings page ("מי עונה לטלפון", with ElevenLabs chosen).
@@ -42,6 +42,18 @@ are shown on the settings page ("מי עונה לטלפון", with ElevenLabs ch
 (`system__conversation_id`) and `caller_number` (`system__caller_id`). It returns
 `{"ok": true, "message": "הנסיעה נשלחה"}`, or `ok: false` with a sentence to say; a ride told twice
 in one conversation is sent once.
+
+`transfer_to_desk` body: `call_sid` (dynamic variable `system__call_sid`), `summary` (a sentence for the
+operator, from the model), `reason` (optional), `conversation_id`, `caller_number`. It does what Callora's
+own agent does for a handoff: the call moves to the desk's conference with the hold music, every desk
+number rings at once and the first to answer takes the caller, and the WhatsApp/Telegram targets that
+want handoffs are told. It answers at once and the move follows two seconds later, so the agent can say
+one short sentence. Without a desk number saved on the settings page it answers `ok: false`.
+
+Every call handed to ElevenLabs is on the calls page from the first second (`calls` row from its Twilio
+call SID). When the call ends, Callora reads the conversation from ElevenLabs
+(`GET /v1/convai/conversations`, the one whose `metadata.phone_call.call_sid` is this call) and stores
+its transcript on that row.
 
 `get_price` body: `price_from` (city), `price_to` (city), `passengers` (integer, optional),
 `round_trip` (boolean, optional). It returns `{"ok": true, "message": "<the sentence, in words>"}`.

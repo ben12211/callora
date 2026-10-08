@@ -25,7 +25,8 @@ use callora_core::render::library_entries;
 use callora_runtime::actions::ConfiguredActions;
 use callora_runtime::metrics::Metrics;
 use callora_runtime::ports::{
-    LanguageModel, NoWhisper, NullStore, SpeechToText, SttEvent, SttInput, SttSession, Telephony, TextStream,
+    CallRecord, CallStore, LanguageModel, NoWhisper, SpeechToText, SttEvent, SttInput, SttSession, Telephony,
+    TextStream,
 };
 use callora_runtime::server::{router, AppState, ServerSettings};
 use callora_runtime::session::{Services, SessionConfig};
@@ -34,6 +35,17 @@ use callora_runtime::twilio;
 const TAXI: &str = include_str!("../../../businesses/taxi.json");
 const NUMBER: &str = "+972500000000";
 const TOKEN: &str = "test-auth-token";
+
+/// What the calls recorded, for the tests that look at it (each filters by its own call).
+static RECORDS: Mutex<Vec<CallRecord>> = Mutex::new(Vec::new());
+
+struct RecStore;
+
+impl CallStore for RecStore {
+    fn record(&self, record: CallRecord) {
+        RECORDS.lock().push(record);
+    }
+}
 
 /// STT whose transcripts the test pushes.
 #[derive(Default, Clone)]
@@ -201,7 +213,7 @@ async fn start_server_full(
         tts_cache: TtsCache::new(100),
         actions: Arc::new(ConfiguredActions::new(reqwest::Client::new(), HashMap::new())),
         telephony: telephony.clone(),
-        store: Arc::new(NullStore),
+        store: Arc::new(RecStore),
         whisper: Arc::new(NoWhisper),
         metrics: metrics.clone(),
         settings: {
@@ -401,6 +413,49 @@ async fn the_elevenlabs_tools_need_the_token_and_send_a_ride_once() {
     assert_eq!(status, 200);
     assert_eq!(price["ok"], false);
     assert!(price["message"].as_str().is_some_and(|m| !m.is_empty()), "{price}");
+}
+
+#[tokio::test]
+async fn an_elevenlabs_call_is_on_the_calls_page_and_its_ride_joins_it() {
+    let (base, _) = fake_elevenlabs((200, "<Response/>".to_string())).await;
+    let mode = callora_runtime::settings::CallModeSettings { elevenlabs: true, agent_id: "agent_abc123".into() };
+    let h = start_server_full(None, SessionConfig::default(), Some(base), mode).await;
+    voice_call(&h).await; // CallSid CA-eleven
+    let id = callora_runtime::eleven_tools::eleven_call_id("CA-eleven");
+    let mine = |r: &CallRecord| match r {
+        CallRecord::Started { info } => info.call_id == id,
+        CallRecord::Order { call_id, .. } | CallRecord::Ended { call_id, .. } => *call_id == id,
+        _ => false,
+    };
+    assert!(
+        RECORDS.lock().iter().any(|r| matches!(r, CallRecord::Started { info } if info.call_id == id && info.call_sid == "CA-eleven" && info.from.as_deref() == Some("+972501111111"))),
+        "the call is on the calls page from the moment it is handed over"
+    );
+
+    let token = callora_runtime::eleven_tools::tools_token(TOKEN);
+    let ride = json!({
+        "pickup": "הנביאים, ירושלים", "destination": "רוטשילד, תל אביב", "passengers": 2,
+        "customer_name": "דיאן כהן", "notes": "מזוודות", "call_sid": "CA-eleven", "conversation_id": "conv-phone",
+    });
+    let (_, sent) = tool(&h, "create-ride", Some(&token), ride).await;
+    assert_eq!(sent["ok"], true, "{sent}");
+    let records = RECORDS.lock();
+    let orders = records.iter().filter(|r| matches!(r, CallRecord::Order { call_id, .. } if *call_id == id)).count();
+    assert_eq!(orders, 1, "the ride is an order of that call");
+    assert!(
+        !records.iter().any(|r| mine(r) && matches!(r, CallRecord::Ended { .. })),
+        "a phone call ends with its transcript, not with the ride"
+    );
+}
+
+#[tokio::test]
+async fn a_transfer_with_no_desk_says_so_instead_of_promising_one() {
+    let h = start_server().await;
+    let token = callora_runtime::eleven_tools::tools_token(TOKEN);
+    let (_, none) = tool(&h, "transfer-to-desk", Some(&token), json!({ "call_sid": "CA-x", "summary": "x" })).await;
+    assert_eq!(none["ok"], false, "{none}");
+    let (_, no_call) = tool(&h, "transfer-to-desk", Some(&token), json!({ "summary": "x" })).await;
+    assert_eq!(no_call["ok"], false, "{no_call}");
 }
 
 #[tokio::test]

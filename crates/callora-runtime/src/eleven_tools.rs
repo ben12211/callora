@@ -6,11 +6,12 @@
 //! The endpoint is open only with the token the settings page shows the owner: an HMAC of the
 //! server's own secret, so nothing new has to be configured in the deployment.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use callora_core::business::{is_e164, Business};
 use callora_core::gazetteer::Lookup;
@@ -30,6 +31,18 @@ pub fn tools_token(secret: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac accepts any key");
     mac.update(b"callora-elevenlabs-tools-v1");
     hex::encode(&mac.finalize().into_bytes()[..16])
+}
+
+/// The id of the call row for an ElevenLabs-handled phone call: the same from its Twilio call
+/// SID wherever it is needed (the webhook that hands the call over, a tool, the transcript), so
+/// they all write to one call on the calls page.
+pub fn eleven_call_id(call_sid: &str) -> uuid::Uuid {
+    let digest = Sha256::digest(format!("callora-elevenlabs-call:{call_sid}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
 }
 
 fn text(body: &Value, key: &str) -> String {
@@ -66,6 +79,7 @@ pub async fn run(s: &AppState, tool: &str, body: &Value) -> Value {
     match tool {
         "create-ride" | "create_ride" => create_ride(s, business, body).await,
         "get-price" | "get_price" => get_price(s, business, body).await,
+        "transfer-to-desk" | "transfer_to_desk" => transfer_to_desk(s, business, body).await,
         _ => fail("כלי לא מוכר"),
     }
 }
@@ -92,10 +106,16 @@ async fn create_ride(s: &AppState, business: &Business, body: &Value) -> Value {
         }
     }
 
-    let call_id = uuid::Uuid::new_v4();
+    // On a phone call the tool names the call (`system__call_sid`): the ride joins that call's row.
+    let twilio_sid = Some(text(body, "call_sid")).filter(|sid| sid.starts_with("CA"));
+    let call_id = twilio_sid.as_deref().map_or_else(uuid::Uuid::new_v4, eleven_call_id);
     let info = CallInfo {
         call_id,
-        call_sid: if conversation.is_empty() { format!("el_{call_id}") } else { format!("el_{conversation}") },
+        call_sid: match (&twilio_sid, conversation.is_empty()) {
+            (Some(sid), _) => sid.clone(),
+            (None, true) => format!("el_{call_id}"),
+            (None, false) => format!("el_{conversation}"),
+        },
         business_id: business.config.id.clone(),
         from: phone.clone(),
         to: business.phone_numbers.first().cloned().unwrap_or_default(),
@@ -146,19 +166,22 @@ async fn create_ride(s: &AppState, business: &Business, body: &Value) -> Value {
             card: order_card(business, phone.as_deref(), &slots, &reply, verify),
         });
     }
-    s.services.store.record(CallRecord::Ended {
-        call_id,
-        outcome: if ok {
-            "success"
-        } else if verify {
-            "unknown"
-        } else {
-            "failed"
-        }
-        .into(),
-        state: json!({ "source": "elevenlabs" }),
-        usage: Usage::default(),
-    });
+    // A phone call ends with its transcript (see `pull_transcript`); one with no phone call ends here.
+    if twilio_sid.is_none() {
+        s.services.store.record(CallRecord::Ended {
+            call_id,
+            outcome: if ok {
+                "success"
+            } else if verify {
+                "unknown"
+            } else {
+                "failed"
+            }
+            .into(),
+            state: json!({ "source": "elevenlabs" }),
+            usage: Usage::default(),
+        });
+    }
     if !ok {
         // A ride that may have gone through is checked by a person; the agent says so, and
         // does not send it again.
@@ -203,6 +226,59 @@ fn order_card(b: &Business, phone: Option<&str>, slots: &[(&str, SlotValue)], re
         "verify": verify,
         "summary": line.join(" | "),
     })
+}
+
+/// Hands the caller to the dispatch desk the way Callora's own agent does: the callers' call is
+/// moved to the desk's conference, the desk numbers ring, and the order card's WhatsApp
+/// targets are told. Answers at once so the agent can say it; the move follows two seconds later.
+async fn transfer_to_desk(s: &AppState, business: &Business, body: &Value) -> Value {
+    let call_sid = text(body, "call_sid");
+    if !call_sid.starts_with("CA") {
+        return fail("אי אפשר להעביר: חסר מזהה שיחה");
+    }
+    let (Some(desk), settings) = (s.services.desk.clone(), s.services.settings.desk(business)) else {
+        return fail("אין מוקדן מוגדר");
+    };
+    if settings.numbers.is_empty() {
+        return fail("אין מוקדן מוגדר");
+    }
+    let call_id = eleven_call_id(&call_sid);
+    let info = CallInfo {
+        call_id,
+        call_sid: call_sid.clone(),
+        business_id: business.config.id.clone(),
+        from: Some(text(body, "caller_number")).filter(|p| is_e164(p)),
+        to: business.phone_numbers.first().cloned().unwrap_or_default(),
+    };
+    s.services.store.record(CallRecord::Started { info: info.clone() });
+    let said: String = text(body, "summary").chars().take(300).collect();
+    let reason = Some(text(body, "reason")).filter(|r| !r.is_empty()).unwrap_or_else(|| "הסוכן ביקש מוקדן".into());
+    let summary = callora_core::engine::HandoffSummary {
+        reason,
+        business_id: business.config.id.clone(),
+        intent: None,
+        pipeline: None,
+        slots: Vec::new(),
+        customer_name: None,
+        recent: Vec::new(),
+        text: said,
+    };
+    s.services.store.record(CallRecord::Handoff { call_id, summary: summary.clone() });
+    s.services.metrics.handoffs_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let language = business.config.language.clone();
+    let unavailable = business
+        .response(&business.config.handoff.unavailable_response)
+        .and_then(|r| r.variants.first().cloned())
+        .unwrap_or_default();
+    let telephony = s.services.telephony.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if !desk.transfer(&info, &summary, &settings, &language, &unavailable).await {
+            tracing::error!(call = %info.call_sid, "the call could not be moved to the desk; hanging up");
+            let _ = telephony.hangup(&info.call_sid).await;
+        }
+    });
+    json!({ "ok": true, "message": "מעביר למוקדן" })
 }
 
 async fn get_price(s: &AppState, business: &Business, body: &Value) -> Value {
@@ -256,9 +332,112 @@ fn price_sentence(b: &Business, quote: &Value) -> Option<String> {
     (!out.contains('{')).then(|| callora_core::speech::normalize_hebrew(&out))
 }
 
+/// The transcript of a finished ElevenLabs call, as the records the calls page reads.
+pub fn transcript_records(call_id: uuid::Uuid, conversation: &Value) -> Vec<CallRecord> {
+    let mut records: Vec<CallRecord> = conversation["transcript"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| {
+            let message = turn["message"].as_str()?.trim();
+            if message.is_empty() {
+                return None;
+            }
+            let speaker = if turn["role"].as_str() == Some("user") { "caller" } else { "agent" };
+            Some(CallRecord::Turn {
+                call_id,
+                speaker: speaker.into(),
+                text: message.to_string(),
+                detail: json!({
+                    "source": "elevenlabs",
+                    "at": turn["time_in_call_secs"],
+                    "tools": turn["tool_calls"],
+                }),
+            })
+        })
+        .collect();
+    let analysis = &conversation["analysis"];
+    let outcome = match analysis["call_successful"].as_str() {
+        Some("success") => "success",
+        Some("failure") => "failed",
+        _ => "completed",
+    };
+    records.push(CallRecord::Ended {
+        call_id,
+        outcome: outcome.into(),
+        state: json!({
+            "source": "elevenlabs",
+            "conversation_id": conversation["conversation_id"],
+            "summary": analysis["transcript_summary"],
+        }),
+        usage: Usage::default(),
+    });
+    records
+}
+
+/// After an ElevenLabs call ends: finds its conversation (the one whose phone call is this Twilio
+/// call) and stores the transcript on the call's row. ElevenLabs needs a few seconds to finish it.
+pub async fn pull_transcript(s: Arc<AppState>, call_sid: String, started_unix: i64) {
+    let Some(agents) = s.eleven_agents.clone() else { return };
+    let agent_id = s.services.settings.call_mode().agent_id;
+    for attempt in 0..6u64 {
+        tokio::time::sleep(Duration::from_secs(if attempt == 0 { 6 } else { 10 })).await;
+        let found = async {
+            for (id, _) in agents.conversations(agent_id.trim(), started_unix - 120).await? {
+                let conversation = agents.conversation(&id).await?;
+                if conversation["metadata"]["phone_call"]["call_sid"].as_str() == Some(call_sid.as_str()) {
+                    return anyhow::Ok(Some(conversation));
+                }
+            }
+            anyhow::Ok(None)
+        }
+        .await;
+        match found {
+            Ok(Some(conversation)) => {
+                let call_id = eleven_call_id(&call_sid);
+                for record in transcript_records(call_id, &conversation) {
+                    s.services.store.record(record);
+                }
+                tracing::info!(call = %call_sid, "the ElevenLabs transcript is on the calls page");
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(call = %call_sid, error = %e, "ElevenLabs transcript not read yet"),
+        }
+    }
+    tracing::warn!(call = %call_sid, "no ElevenLabs transcript was found for the call");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phone_call_has_one_id_wherever_it_is_needed() {
+        assert_eq!(eleven_call_id("CA123"), eleven_call_id("CA123"));
+        assert_ne!(eleven_call_id("CA123"), eleven_call_id("CA124"));
+    }
+
+    #[test]
+    fn a_transcript_becomes_the_calls_turns_and_its_end() {
+        let id = eleven_call_id("CA1");
+        let conversation = json!({
+            "conversation_id": "conv_1",
+            "transcript": [
+                { "role": "agent", "message": "אהלן", "time_in_call_secs": 0, "tool_calls": [] },
+                { "role": "user", "message": " צריך מונית ", "time_in_call_secs": 4, "tool_calls": [] },
+                { "role": "agent", "message": "", "time_in_call_secs": 6, "tool_calls": [{ "tool_name": "create_ride" }] },
+            ],
+            "analysis": { "call_successful": "success", "transcript_summary": "הוזמנה מונית" },
+        });
+        let records = transcript_records(id, &conversation);
+        assert_eq!(records.len(), 3, "two turns with words and the end: {records:?}");
+        assert!(matches!(&records[0], CallRecord::Turn { speaker, text, .. } if speaker == "agent" && text == "אהלן"));
+        assert!(
+            matches!(&records[1], CallRecord::Turn { speaker, text, .. } if speaker == "caller" && text == "צריך מונית")
+        );
+        assert!(matches!(&records[2], CallRecord::Ended { outcome, .. } if outcome == "success"));
+    }
 
     #[test]
     fn the_token_is_stable_and_depends_on_the_secret() {

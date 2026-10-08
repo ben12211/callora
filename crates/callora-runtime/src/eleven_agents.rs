@@ -88,6 +88,46 @@ impl ElevenAgents {
     }
 }
 
+impl ElevenAgents {
+    /// The agent's conversations that started after `after_unix`: (id, start), newest first.
+    pub async fn conversations(&self, agent_id: &str, after_unix: i64) -> anyhow::Result<Vec<(String, i64)>> {
+        anyhow::ensure!(agent_id_valid(agent_id), "the agent id is not valid");
+        let resp = self
+            .http
+            .get(format!("{}/v1/convai/conversations", self.base_url))
+            .query(&[("agent_id", agent_id), ("call_start_after_unix", &after_unix.to_string()), ("page_size", "50")])
+            .header("xi-api-key", &self.api_key)
+            .timeout(CHECK_TIMEOUT)
+            .send()
+            .await
+            .context("ElevenLabs conversations did not answer")?;
+        anyhow::ensure!(resp.status().is_success(), "ElevenLabs conversations failed with HTTP {}", resp.status());
+        let v: serde_json::Value = resp.json().await.context("unreadable conversations")?;
+        Ok(v["conversations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| matches!(c["status"].as_str(), Some("done")))
+            .filter_map(|c| Some((c["conversation_id"].as_str()?.to_string(), c["start_time_unix_secs"].as_i64()?)))
+            .collect())
+    }
+
+    /// One conversation: its transcript, its phone call (`metadata.phone_call.call_sid`) and its analysis.
+    pub async fn conversation(&self, id: &str) -> anyhow::Result<serde_json::Value> {
+        anyhow::ensure!(agent_id_valid(id), "the conversation id is not valid");
+        let resp = self
+            .http
+            .get(format!("{}/v1/convai/conversations/{id}", self.base_url))
+            .header("xi-api-key", &self.api_key)
+            .timeout(CHECK_TIMEOUT)
+            .send()
+            .await
+            .context("ElevenLabs conversation did not answer")?;
+        anyhow::ensure!(resp.status().is_success(), "ElevenLabs conversation failed with HTTP {}", resp.status());
+        resp.json().await.context("unreadable conversation")
+    }
+}
+
 /// The reply of register-call is the TwiML, as text or as a JSON string.
 fn twiml_from(body: &str) -> anyhow::Result<String> {
     let trimmed = body.trim();
