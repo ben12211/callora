@@ -1379,7 +1379,7 @@ fn the_agent_is_told_the_street_question_comes_after_a_city() {
     let next = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "ירושלים");
     assert!(
         next.user.contains("NOW: the caller is giving the destination city")
-            && next.user.contains("\"לאן ב<the city>?\""),
+            && next.user.contains("\"לאיזה רחוב ב<the city>?\""),
         "{}",
         next.user
     );
@@ -1832,7 +1832,11 @@ fn the_street_question_names_the_city_and_a_wrong_city_is_corrected() {
         asking(&["customer_name"], decide(AgentAction::None, "", None, &[("passengers", "2")])),
         "",
     );
-    assert!(spoken(&d).contains("לאן בברקת?"), "the destination's street, in the city understood: {}", spoken(&d));
+    assert!(
+        spoken(&d).contains("לאיזה רחוב בברקת?"),
+        "the destination's street, in the city understood: {}",
+        spoken(&d)
+    );
 
     call.engine.on_agent_turn(
         "לא ברקת, בני ברק",
@@ -2206,7 +2210,7 @@ fn two_cities_given_are_not_asked_for_again() {
         "",
     );
     let asked = call.engine.render_phrase("ask_destination").expect("a question").text();
-    assert_eq!(asked, "לאן בבני ברק?");
+    assert_eq!(asked, "לאיזה רחוב בבני ברק?");
 }
 
 #[test]
@@ -3324,4 +3328,57 @@ fn unsure_words_and_a_bad_line_are_told_to_the_agent() {
     let request = callora_core::agent::build_request(call.engine.business(), &call.engine.state, "בן זכאי 45");
     assert!(request.user.contains("UNSURE") && request.user.contains("\"זכאי\" (30%)"), "{}", request.user);
     assert!(request.user.contains("BAD LINE: the line cut out for 400 ms"), "{}", request.user);
+}
+
+#[test]
+fn a_street_asked_again_is_asked_in_other_words() {
+    // The call of 17:08: "לאן בבני ברק?", an answer not understood, and the very same question:
+    // it sounded like a stuck machine.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_bnei_brak_jerusalem()));
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "מאיפה לאן?", Some("book_ride"), &[]), "");
+    call.engine.on_agent_turn(
+        "מבן זכאי 45 באלעד לבני ברק",
+        decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "בן זכאי 45, אלעד"), ("destination", "בני ברק")]),
+        "",
+    );
+    let first = call.engine.render_phrase("ask_destination").expect("the question").text();
+    assert_eq!(first, "לאיזה רחוב בבני ברק?");
+    call.engine.state.remember(callora_core::state::Speaker::Agent, &first);
+    call.engine.state.last_asks = vec!["destination".into()];
+    // The answer is no street of בני ברק: asked again, in other words.
+    let d = call.engine.on_agent_turn(
+        "בני ברק ו... הרב כץ",
+        asking(
+            &["destination"],
+            decide(AgentAction::None, "", Some("book_ride"), &[("destination", "הרב כץ, בני ברק")]),
+        ),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(!said.contains("לאיזה רחוב בבני ברק?"), "not the same words: {said}");
+    assert!(said.contains("לא קלטתי") || said.contains("כתובת"), "{said}");
+}
+
+#[test]
+fn a_street_being_cleared_up_keeps_its_citys_streets_in_focus() {
+    // "יש כתובת של המקום?" asks nothing by name; the answer ("עזרא 11") is still a street of
+    // the city, and was heard again against its streets only while it was asked by name.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_bnei_brak_jerusalem()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 45 באלעד לבני ברק",
+        decide(AgentAction::None, "", Some("book_ride"), &[("pickup", "בן זכאי 45, אלעד"), ("destination", "בני ברק")]),
+        "",
+    );
+    call.engine.on_agent_turn(
+        "הרב כץ",
+        asking(
+            &["destination"],
+            decide(AgentAction::None, "", Some("book_ride"), &[("destination", "הרב כץ, בני ברק")]),
+        ),
+        "",
+    );
+    call.engine.state.last_asks.clear();
+    assert_eq!(call.engine.street_focus().as_deref(), Some("בני ברק"));
 }

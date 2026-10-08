@@ -788,7 +788,9 @@ impl Session {
                 } else {
                     self.business.config.understanding.thinking_filler.clone()
                 };
-                if (rules_waiting || agent_waiting) && !self.agent_busy() && !filler_last_turn {
+                // The agent's is a short "אוקיי." so the line is not silent while it decides: on
+                // every turn it is slow, not every other one like the rules' "רגע, בודק".
+                if (rules_waiting || agent_waiting) && !self.agent_busy() && (agent_waiting || !filler_last_turn) {
                     if let Some(id) = filler {
                         if let Some(plan) = self.engine.render_response(&id) {
                             self.filler_turn = Some(caller_turn);

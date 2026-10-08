@@ -1457,3 +1457,43 @@ async fn a_paused_i_want_is_the_start_of_a_request_not_noise() {
     assert_eq!(agent.requests.lock().len(), 2, "answered");
     assert!(!frames.is_empty(), "something is said");
 }
+
+/// An agent that thinks this long before its first words.
+struct SlowAgent(Duration, Arc<ScriptedAgent>);
+
+#[async_trait]
+impl LanguageModel for SlowAgent {
+    async fn extract(&self, request: &LlmRequest) -> anyhow::Result<Value> {
+        self.1.extract(request).await
+    }
+    async fn stream(&self, request: &LlmRequest) -> anyhow::Result<TextStream> {
+        tokio::time::sleep(self.0).await;
+        self.1.stream(request).await
+    }
+    fn name(&self) -> &'static str {
+        "slow-agent"
+    }
+}
+
+#[tokio::test]
+async fn a_slow_agent_is_covered_by_a_short_acknowledgement() {
+    // "I want zero seconds of silence": while the agent decides, a recorded "אוקיי." plays.
+    let scripted = Arc::new(ScriptedAgent::default());
+    scripted.replies.lock().extend([
+        json!({ "say": "", "phrase": "ask_route", "action": "none", "task": "book_ride", "fields": [] }),
+        json!({ "say": "", "phrase": "ask_route", "action": "none", "task": "book_ride", "fields": [] }),
+    ]);
+    let h = start_server_with(Some(Arc::new(SlowAgent(Duration::from_millis(900), scripted.clone())))).await;
+    let mut ws = open_call(&h, "CA-ack").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    h.stt.say("אני רוצה להזמין מונית").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(700)).await;
+    assert!(!frames.is_empty(), "something plays before the agent's words");
+    let (frames, _) = collect(&mut ws, Duration::from_millis(1200)).await;
+    assert!(!frames.is_empty(), "then the reply");
+    // And on the next slow turn too.
+    while !collect(&mut ws, Duration::from_millis(300)).await.0.is_empty() {}
+    h.stt.say("מאלעד, בעוד חצי שעה").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(700)).await;
+    assert!(!frames.is_empty(), "every slow turn");
+}

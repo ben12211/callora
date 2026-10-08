@@ -175,10 +175,16 @@ impl Engine {
     /// asked: kept on, a live call heard the caller's name as a street of that city.
     pub fn street_focus(&self) -> Option<String> {
         let run = self.state.run.as_ref()?;
+        // Also while a street that was not found is being cleared up ("יש כתובת של המקום?"
+        // asks nothing by name): the answer is still a street of that city.
+        let clearing = |slot: &String| {
+            (self.state.place_rejections.contains_key(slot) || self.state.doubted_streets.contains(slot))
+                && !run.slots.contains_key(slot)
+        };
         self.pipeline_of(run)
             .slots
             .iter()
-            .filter(|ps| self.state.last_asks.contains(&ps.slot))
+            .filter(|ps| self.state.last_asks.contains(&ps.slot) || clearing(&ps.slot))
             .find_map(|ps| self.state.place_cities.get(&ps.slot).cloned())
     }
 
@@ -3027,17 +3033,40 @@ impl Engine {
         if let Some(specific) = self.specific_ask(slot) {
             ask = specific;
         }
+        // "לאן בבני ברק?": the city as understood, so a misheard one is heard and corrected.
+        let mut ctx = self.render_ctx(None);
+        if let Some(city) = self.state.place_cities.get(slot) {
+            ctx.extra.insert("city".into(), city.clone());
+        }
+        // Asked last turn and not understood: the same words again sounded like a stuck machine
+        // ("לאן בבני ברק?" twice). Its "again" says so and asks in other words.
+        let last_said = self
+            .state
+            .history
+            .iter()
+            .rev()
+            .find(|t| t.speaker == Speaker::Agent)
+            .map(|t| crate::text::normalize(&t.text));
+        // Only a question with other words for it is rendered here (rendering picks a variant).
+        let has_again = self.business.response(&ask).is_some_and(|r| r.again.is_some());
+        let same_again = has_again
+            && self.state.last_asks.iter().any(|a| a == slot)
+            && self.render_plan(&ask, &ctx).is_some_and(|p| {
+                let words = crate::text::normalize(&p.text());
+                last_said.as_ref().is_some_and(|l| !words.is_empty() && l.contains(words.as_str()))
+            });
+        if same_again {
+            if let Some(again) = self.business.response(&ask).and_then(|r| r.again.clone()) {
+                tracing::info!(slot, asked = %ask, instead = %again, "asked again: in other words");
+                ask = again;
+            }
+        }
         let has_prefix = self.business.response(&ask).is_some_and(|r| r.prefix.is_some());
         if acknowledge && !has_prefix {
             if let Some(ack) = self.business.config.acknowledgement.clone() {
                 let ctx = self.render_ctx(None);
                 self.say(out, &ack, ctx, true);
             }
-        }
-        // "לאן בבני ברק?": the city as understood, so a misheard one is heard and corrected.
-        let mut ctx = self.render_ctx(None);
-        if let Some(city) = self.state.place_cities.get(slot) {
-            ctx.extra.insert("city".into(), city.clone());
         }
         self.say(out, &ask, ctx, true);
         self.note_asked(&[slot.to_string()]);
