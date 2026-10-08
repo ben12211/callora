@@ -110,6 +110,9 @@ impl Session {
                 let _ = tx.send(Ev::SecondHearing { id, text });
             });
             self.second_pending = Some((id, transcript));
+            // A second hearing adds about a second before the agent even starts: the wait is
+            // known, so the thinking sound plays now rather than after the silence.
+            self.thinking_sound();
             return;
         }
         self.engine.state.second_hearing = None;
@@ -143,6 +146,22 @@ impl Session {
         }
         if let Some((result, rest, usage)) = done {
             self.finish_agent(result, rest, usage);
+        }
+    }
+
+    /// "שנייה... רגע...": the agent thinking, when the caller would otherwise wait in silence.
+    /// Once a turn at most, and not two turns in a row.
+    pub(super) fn thinking_sound(&mut self) {
+        let caller_turn = self.engine.state.turns;
+        let recent = self.filler_turn.is_some_and(|t| t == caller_turn || t + 1 == caller_turn);
+        if recent || self.agent_busy() {
+            return;
+        }
+        let Some(id) = self.business.config.agent.as_ref().and_then(|a| a.thinking_filler.clone()) else { return };
+        if let Some(plan) = self.engine.render_response(&id) {
+            tracing::info!(call = %self.info.call_sid, "a known wait: the agent is heard thinking");
+            self.filler_turn = Some(caller_turn);
+            self.speak(plan);
         }
     }
 

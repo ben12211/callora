@@ -1476,24 +1476,25 @@ impl LanguageModel for SlowAgent {
 }
 
 #[tokio::test]
-async fn a_slow_agent_is_covered_by_a_short_acknowledgement() {
-    // "I want zero seconds of silence": while the agent decides, a recorded "אוקיי." plays.
+async fn a_slow_agent_is_heard_thinking_but_not_every_turn() {
+    // "שנייה, שנייה, שנייה": said on every turn at 0.3 s, the thinking sound sounded like a stall.
+    // Now only when the agent is still silent 1.5 s after the caller's words, once a turn and not
+    // two turns in a row.
     let scripted = Arc::new(ScriptedAgent::default());
     scripted.replies.lock().extend([
         json!({ "say": "", "phrase": "ask_route", "action": "none", "task": "book_ride", "fields": [] }),
         json!({ "say": "", "phrase": "ask_route", "action": "none", "task": "book_ride", "fields": [] }),
     ]);
-    let h = start_server_with(Some(Arc::new(SlowAgent(Duration::from_millis(900), scripted.clone())))).await;
+    let h = start_server_with(Some(Arc::new(SlowAgent(Duration::from_millis(2200), scripted.clone())))).await;
     let mut ws = open_call(&h, "CA-ack").await;
     collect(&mut ws, Duration::from_millis(400)).await;
     h.stt.say("אני רוצה להזמין מונית").await;
-    let (frames, _) = collect(&mut ws, Duration::from_millis(700)).await;
-    assert!(!frames.is_empty(), "something plays before the agent's words");
     let (frames, _) = collect(&mut ws, Duration::from_millis(1200)).await;
-    assert!(!frames.is_empty(), "then the reply");
-    // And on the next slow turn too.
-    while !collect(&mut ws, Duration::from_millis(300)).await.0.is_empty() {}
-    h.stt.say("מאלעד, בעוד חצי שעה").await;
+    assert!(frames.is_empty(), "a quick enough agent is not covered");
     let (frames, _) = collect(&mut ws, Duration::from_millis(700)).await;
-    assert!(!frames.is_empty(), "every slow turn");
+    assert!(!frames.is_empty(), "a slow one is: the thinking sound");
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+    h.stt.say("מאלעד, בעוד חצי שעה").await;
+    let (frames, _) = collect(&mut ws, Duration::from_millis(1900)).await;
+    assert!(frames.is_empty(), "not two turns in a row");
 }
