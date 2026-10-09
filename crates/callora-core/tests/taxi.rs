@@ -3516,6 +3516,13 @@ fn a_no_or_another_answer_to_the_offer_is_the_usual_call() {
     call.engine.start();
     assert!(call.engine.on_offer_answer("כן, אבל לבני ברק").is_none(), "more than a yes: the agent's");
     assert!(call.engine.state.offer.is_none(), "and the offer is forgotten");
+    assert_eq!(place(call.slot("pickup")), "בן זכאי 40 באלעד", "a yes first still takes the pickup");
+    // A yes with another pickup in it ("כן, אבל מהבית") leaves the pickup to the agent.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_customer(Some(returning_caller()));
+    call.engine.start();
+    assert!(call.engine.on_offer_answer("כן, אבל הפעם מהעבודה").is_none());
+    assert_eq!(call.slot("pickup"), None);
     // Without a last ride: the usual greeting.
     let (mut call, _) = Call::new(business(&[]));
     assert!(!spoken(&call.engine.start()).contains("שוב"));

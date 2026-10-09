@@ -2830,9 +2830,6 @@ impl Engine {
             && crate::text::tokens(&norm).iter().any(|t| !crate::understanding::is_hesitation(t))
     }
 
-    /// "לא", "אין, תודה" to the optional question asked before the read-back ("הערה לנהג?"):
-    /// nothing for the driver, and the details are read back. Without the agent: a live call
-    /// answered this "לא" with "אפשר להמשיך?".
     /// A place of the caller's last ride from the customer record (`last_pickup`,
     /// `last_destination`): as said, and its address.
     fn last_ride_place(&self, key: &str) -> Option<(String, String)> {
@@ -2852,41 +2849,23 @@ impl Engine {
         let yes = b.affirm.find(&norm).is_some() && b.fillers.strip(&b.affirm.strip(&norm)).trim().is_empty();
         let no = b.deny.find(&norm).is_some() && b.fillers.strip(&b.deny.strip(&norm)).trim().is_empty();
         if !yes && !no {
+            // "כן, אבל הפעם לירושלים": a yes first takes the offered pickup, and the agent hears
+            // the rest with it known; unless the rest names another pickup ("כן, אבל מהבית").
+            let yes_first = b.affirm.find(&norm).is_some_and(|(_, (start, _))| start == 0);
+            let other_pickup =
+                norm.split_whitespace().skip(1).any(|w| w.starts_with('מ') && w != "מה" && w.chars().count() > 2);
+            if yes_first && slot == "pickup" && !other_pickup {
+                self.take_offered(&slot, said, address);
+            }
             return None;
         }
         self.state.turns += 1;
         self.state.silence_reprompts = 0;
         self.state.remember(Speaker::Caller, text);
-        // The task whose place it is.
-        if self.state.run.is_none() {
-            let task = self.business.config.intents.iter().find_map(|i| {
-                let p = i.pipeline.as_ref()?;
-                let pipeline = self.business.pipeline(p)?;
-                pipeline.slots.iter().any(|s| s.slot == slot).then(|| (p.clone(), i.id.clone()))
-            });
-            if let Some((p, intent)) = task {
-                self.state.run = Some(self.new_run(&p, &intent));
-                self.fill_from_other_tasks();
-            }
-        }
+        self.start_task_for(&slot);
         let mut out = Out::default();
         if yes {
-            tracing::info!(%slot, %said, "the caller took the last ride's place");
-            if let Some(run) = &mut self.state.run {
-                run.slots.insert(
-                    slot.clone(),
-                    SlotState {
-                        value: SlotValue::Place {
-                            spoken: said.clone(),
-                            address: Some(address),
-                            customer_place: Some("last_ride".into()),
-                        },
-                        confidence: 1.0,
-                        provenance: Provenance::Customer,
-                        confirmed: true,
-                    },
-                );
-            }
+            self.take_offered(&slot, said, address);
             // Then the last destination, the same way.
             let next = (slot == "pickup")
                 .then(|| self.last_ride_place("last_destination"))
@@ -2909,6 +2888,46 @@ impl Engine {
         Some(self.finish(out))
     }
 
+    /// The task whose place a slot is, started when none runs.
+    fn start_task_for(&mut self, slot: &str) {
+        if self.state.run.is_some() {
+            return;
+        }
+        let task = self.business.config.intents.iter().find_map(|i| {
+            let p = i.pipeline.as_ref()?;
+            let pipeline = self.business.pipeline(p)?;
+            pipeline.slots.iter().any(|s| s.slot == slot).then(|| (p.clone(), i.id.clone()))
+        });
+        if let Some((p, intent)) = task {
+            self.state.run = Some(self.new_run(&p, &intent));
+            self.fill_from_other_tasks();
+        }
+    }
+
+    /// The offered place of the last ride, taken: in the task (started when there is none).
+    fn take_offered(&mut self, slot: &str, said: String, address: String) {
+        tracing::info!(%slot, %said, "the caller took the last ride's place");
+        self.start_task_for(slot);
+        if let Some(run) = &mut self.state.run {
+            run.slots.insert(
+                slot.to_string(),
+                SlotState {
+                    value: SlotValue::Place {
+                        spoken: said,
+                        address: Some(address),
+                        customer_place: Some("last_ride".into()),
+                    },
+                    confidence: 1.0,
+                    provenance: Provenance::Customer,
+                    confirmed: true,
+                },
+            );
+        }
+    }
+
+    /// "לא", "אין, תודה" to the optional question asked before the read-back ("הערה לנהג?"):
+    /// nothing for the driver, and the details are read back. Without the agent: a live call
+    /// answered this "לא" with "אפשר להמשיך?".
     pub fn on_no_to_optional(&mut self, text: &str) -> Option<Vec<Directive>> {
         let run = self.state.run.as_ref()?;
         if self.state.phase != Phase::Active || !matches!(run.step, Step::Collecting { .. }) {
