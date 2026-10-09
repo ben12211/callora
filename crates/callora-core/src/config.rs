@@ -50,6 +50,11 @@ pub struct BusinessConfig {
     /// city, and the caller is not asked for an address it does not have.
     #[serde(default)]
     pub informal_places: Vec<String>,
+    /// Words of a place of the caller's own ("הבית", "העבודה", "אמא שלי", "הגן של הילד"): no
+    /// address, and none the system knows unless the customer's record has it. The agent asks
+    /// where it is in its own words; the system does not answer with "לא הכרתי את הבית".
+    #[serde(default)]
+    pub personal_places: Vec<String>,
     /// Words the speech recognizer should expect, such as the cities and streets of the
     /// service area. Known place names and aliases are added automatically.
     #[serde(default)]

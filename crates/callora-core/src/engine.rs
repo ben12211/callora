@@ -1880,6 +1880,15 @@ impl Engine {
                 self.state.place_rejections.remove(slot);
                 SlotValue::Place { spoken: a.spoken(), address: Some(a.official()), customer_place: None }
             }
+            // "מהבית", "מאמא שלי": a place of the caller's own, no address. It is not taken, and
+            // not answered with "לא הכרתי את הבית. מאיזו עיר לאסוף?": the agent asks where it is,
+            // in its own words, and its words are spoken.
+            Lookup::NoCity { .. } if (precise || street_once) && self.business.is_personal_place(spoken) => {
+                notes.push(format!(
+                    "{slot} \"{spoken}\" is a place of the caller's own, not an address: it was not taken. Ask where it is                      in your own words, as they named it (\"ואיפה הבית? באיזו עיר?\", \"איפה אמא שלך גרה?\"), and pass                      the address they give"
+                ));
+                return None;
+            }
             // "אפרק": no locality by that name. A place that needs one is not taken as it was
             // heard (a live ride was booked from "אפרק"): the caller is asked which city.
             Lookup::NoCity { closest } if (precise || street_once) && !give_up => {

@@ -89,6 +89,7 @@ pub struct Business {
     pub nothing: PhraseSet,
     pub transfer: PhraseSet,
     pub informal_places: PhraseSet,
+    pub personal_places: PhraseSet,
     pub meta: Vec<CompiledMeta>,
     pub intent_keywords: Vec<(String, PhraseSet)>,
     pub slots: BTreeMap<SlotId, CompiledSlot>,
@@ -105,6 +106,11 @@ impl Business {
     /// no street address to look up or to ask for.
     pub fn is_informal_place(&self, name: &str) -> bool {
         self.informal_places.find(&crate::text::normalize(name)).is_some()
+    }
+
+    /// Whether a place is the caller's own ("הבית", "העבודה של אשתי", "אמא שלי").
+    pub fn is_personal_place(&self, name: &str) -> bool {
+        self.personal_places.find(&crate::text::normalize(name)).is_some()
     }
 
     /// Words that announce a transfer to a person ("רגע, מעביר למוקדן"), said only with one.
@@ -184,6 +190,7 @@ impl Business {
         let nothing = phrase("lexicon.nothing".into(), &config.lexicon.nothing, false);
         let transfer = phrase("lexicon.transfer".into(), &config.lexicon.transfer, false);
         let informal_places = phrase("informal_places".into(), &config.informal_places, true);
+        let personal_places = phrase("personal_places".into(), &config.personal_places, true);
 
         let mut meta = Vec::new();
         for (key, m) in &config.meta_intents {
@@ -307,6 +314,7 @@ impl Business {
             nothing,
             transfer,
             informal_places,
+            personal_places,
             meta,
             intent_keywords,
             slots,

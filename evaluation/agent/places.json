@@ -399,5 +399,63 @@
         }
       }
     ]
+  },
+  {
+    "id": "home_is_asked_about_not_refused",
+    "note": "\"מהבית לבני ברק\" was answered \"לא הכרתי את הבית. מאיזו עיר לאסוף?\"",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיפה לאן?"
+        }
+      },
+      {
+        "caller": "תאסוף אותי מהבית לבני ברק",
+        "expect": {
+          "says_any": [
+            "בית|גר|איפה"
+          ],
+          "says_none": [
+            "לא הכרתי"
+          ],
+          "no_fields": [
+            "pickup"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "a_relatives_home_is_asked_about",
+    "note": "\"מאמא שלי לירושלים\": where does she live",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיפה לאן?"
+        }
+      },
+      {
+        "caller": "מאמא שלי לירושלים",
+        "expect": {
+          "says_any": [
+            "אמא|גרה|איפה"
+          ],
+          "says_none": [
+            "לא הכרתי"
+          ],
+          "no_fields": [
+            "pickup"
+          ]
+        }
+      }
+    ]
   }
 ]

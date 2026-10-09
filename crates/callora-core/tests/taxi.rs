@@ -3801,3 +3801,22 @@ fn a_name_corrected_at_the_read_back_is_read_back() {
     );
     assert!(spoken(&d).contains("על שם שני"), "{}", spoken(&d));
 }
+
+#[test]
+fn a_place_of_the_callers_own_is_asked_about_in_the_agents_words() {
+    // "מהבית לבני ברק" was answered "לא הכרתי את הבית. מאיזו עיר לאסוף?".
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "סבבה, מאיפה לאן?", Some("book_ride"), &[]), "");
+    let fields = [("pickup".to_string(), "הבית".to_string())];
+    assert!(!call.engine.rejects_any("מהבית לבני ברק", &fields), "the agent's own words are spoken");
+    let d = call.engine.on_agent_turn(
+        "מהבית לבני ברק",
+        asking(&["pickup"], decide(AgentAction::None, "סבבה, ואיפה הבית? באיזו עיר?", None, &[("pickup", "הבית")])),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("ואיפה הבית") && !said.contains("לא הכרתי"), "{said}");
+    assert_eq!(call.slot("pickup"), None, "no address taken");
+    assert!(call.engine.state.agent_notes.iter().any(|n| n.contains("place of the caller's own")));
+}
