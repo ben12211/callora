@@ -14,25 +14,11 @@ pub struct TwilioRest {
     account_sid: String,
     auth_token: String,
     base_url: String,
-    /// Who texts callers: an SMS-capable number, an alphanumeric sender ID ("Callora"), or a
-    /// Messaging Service ("MG…"). None: no texts.
-    sms_from: Option<String>,
 }
 
 impl TwilioRest {
     pub fn new(http: reqwest::Client, account_sid: String, auth_token: String, base_url: Option<String>) -> Self {
-        Self {
-            http,
-            account_sid,
-            auth_token,
-            base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.into()),
-            sms_from: None,
-        }
-    }
-
-    pub fn with_sms_from(mut self, from: Option<String>) -> Self {
-        self.sms_from = from.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
-        self
+        Self { http, account_sid, auth_token, base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.into()) }
     }
 
     async fn update(&self, call_sid: &str, form: &[(&str, &str)]) -> anyhow::Result<()> {
@@ -109,32 +95,6 @@ impl Telephony for TwilioRest {
             anyhow::bail!("Twilio call create failed with HTTP {status} (code {code:?})");
         }
         body["sid"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!("Twilio returned no call sid"))
-    }
-
-    fn sends_sms(&self) -> bool {
-        self.sms_from.is_some()
-    }
-
-    async fn send_sms(&self, to: &str, body: &str) -> anyhow::Result<()> {
-        let Some(from) = &self.sms_from else { anyhow::bail!("no SMS sender is set up (TWILIO_SMS_FROM)") };
-        let endpoint = format!("{}/2010-04-01/Accounts/{}/Messages.json", self.base_url, self.account_sid);
-        let sender = if from.starts_with("MG") { "MessagingServiceSid" } else { "From" };
-        let form = [("To", to), (sender, from.as_str()), ("Body", body)];
-        let resp = self
-            .http
-            .post(endpoint)
-            .timeout(Duration::from_secs(10))
-            .basic_auth(&self.account_sid, Some(&self.auth_token))
-            .form(&form)
-            .send()
-            .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body: serde_json::Value = resp.json().await.unwrap_or_default();
-            let code = body.get("code").and_then(serde_json::Value::as_i64);
-            anyhow::bail!("Twilio SMS failed with HTTP {status} (code {code:?})");
-        }
-        Ok(())
     }
 
     async fn cancel(&self, call_sid: &str) -> anyhow::Result<()> {

@@ -69,7 +69,7 @@ accounts: each one runs a browser of its own (about 300–500 MB).
 ## Optional runtime tuning (environment)
 
 `AGENT_HEDGE_MS` (default `1100`), `AGENT_SPECULATE` (the agent starts on the partial transcript at the end of speech; on unless `false`),
-`TWILIO_SMS_FROM` (GitHub variable: who texts a caller whose pickup was not found a link that sends their location; an alphanumeric sender ID registered in Twilio, an SMS-capable number or a Messaging Service; unset, no texts), `SECOND_HEARING` (a street or city answer the stream got wrong is heard again by an audio model told the names expected; `off` turns it off, `scribe` uses ElevenLabs Scribe), `SECOND_HEARING_MODEL` (default `gpt-audio-1.5`),
+`SECOND_HEARING` (a street or city answer the stream got wrong is heard again by an audio model told the names expected; `off` turns it off, `scribe` uses ElevenLabs Scribe), `SECOND_HEARING_MODEL` (default `gpt-audio-1.5`),
 `EVAL_PRICES` (prices for `callora eval` only; defaults to `AGENT_PRICES`),
 `RUST_LOG`, `LOG_FORMAT`, `HOST`, `PORT`, `BUSINESS_CONFIG_DIR`, `AUDIO_LIBRARY_DIR`,
 `TRANSCRIPT_RETENTION_DAYS` (*legacy*), `TTS_CACHE_ENTRIES`, `VAD_TRIGGER_MS`,

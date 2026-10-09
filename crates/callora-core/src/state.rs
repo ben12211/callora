@@ -269,22 +269,6 @@ pub struct CallState {
     /// A lone goodbye in the middle of a booking was taken for a word misheard once already.
     #[serde(default)]
     pub goodbye_doubted: bool,
-    /// A place of the caller's last ride just offered ("שוב מבן זכאי 45 באלעד?"): the slot, the
-    /// place as said, and its address. A plain yes takes it.
-    #[serde(default)]
-    pub offer: Option<(String, String, String)>,
-    /// The call can text the caller a link that sends their location (an SMS sender, a number).
-    #[serde(default)]
-    pub location_links: bool,
-    /// The place a location link was sent for, while its position is awaited.
-    #[serde(default)]
-    pub location_link: Option<String>,
-    /// A location link was texted in this call (once a call).
-    #[serde(default)]
-    pub location_link_sent: bool,
-    /// How many times each place was not understood (rejected) in this call.
-    #[serde(default)]
-    pub place_misses: BTreeMap<String, u8>,
     /// This turn's words began before the agent's last reply started to play: they finish
     /// the caller's answer to the question before it ("דוד" ... "אביטבול").
     #[serde(default)]
@@ -360,11 +344,6 @@ impl CallState {
             unsure_words: Vec::new(),
             line_trouble: None,
             goodbye_doubted: false,
-            offer: None,
-            location_links: false,
-            location_link: None,
-            location_link_sent: false,
-            place_misses: BTreeMap::new(),
             continues_answer: false,
             address_form: AddressForm::Unknown,
             caller_phone: None,

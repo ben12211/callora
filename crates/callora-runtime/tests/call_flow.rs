@@ -127,8 +127,6 @@ impl Synthesizer for FakeTts {
 #[derive(Default)]
 struct FakeTelephony {
     hangups: Mutex<Vec<String>>,
-    /// Texts sent: (to, body).
-    sms: Mutex<Vec<(String, String)>>,
 }
 
 #[async_trait]
@@ -138,13 +136,6 @@ impl Telephony for FakeTelephony {
         Ok(())
     }
     async fn transfer(&self, _call_sid: &str, _to: &str, _whisper: Option<&str>) -> anyhow::Result<()> {
-        Ok(())
-    }
-    fn sends_sms(&self) -> bool {
-        true
-    }
-    async fn send_sms(&self, to: &str, body: &str) -> anyhow::Result<()> {
-        self.sms.lock().push((to.to_string(), body.to_string()));
         Ok(())
     }
 }
@@ -214,8 +205,6 @@ async fn start_server_full(
 }
 
 thread_local! {
-    /// The next server in this test texts location links.
-    static LINKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The business the next server in this test runs, when not the taxi file as it is.
     static BUSINESS: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
@@ -265,9 +254,6 @@ async fn start_server_inner(
             Arc::new(store)
         },
         desk: None,
-        locations: LINKS
-            .with(|l| l.replace(false))
-            .then(|| Arc::new(callora_runtime::locations::LocationLinks::new("https://calls.example.test"))),
     };
     let mut libraries = HashMap::new();
     libraries.insert("taxi".to_string(), Arc::new(library));
@@ -1696,83 +1682,4 @@ async fn words_the_failed_recognizer_never_answered_go_to_the_next_one() {
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(*h.stt.finalizes.lock(), 2, "the new session is asked to finish the words");
     assert!(h.stt.audio.lock().len() >= before + 30 * 160, "with the words' audio");
-}
-
-#[tokio::test]
-async fn a_pickup_not_found_is_sent_from_the_callers_phone() {
-    let agent = Arc::new(ScriptedAgent::default());
-    agent.replies.lock().extend([
-        json!({ "action": "none", "fields": [{ "slot": "pickup", "value": "אלעד" }], "asks": ["pickup"], "say": "איפה באלעד לאסוף?", "task": "book_ride" }),
-        json!({ "action": "none", "fields": [{ "slot": "pickup", "value": "עריף 12, אלעד" }], "asks": ["pickup"], "say": "", "task": "book_ride" }),
-        json!({ "action": "none", "fields": [{ "slot": "pickup", "value": "עריפים 12, אלעד" }], "asks": ["pickup"], "say": "", "task": "book_ride" }),
-    ]);
-    let gazetteer = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
-        "1309	אלעד	110	רבן יוחנן בן זכאי	official
-",
-    ));
-    LINKS.with(|l| l.set(true));
-    let h = start_server_inner(
-        Some(agent.clone()),
-        SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() },
-        None,
-        Default::default(),
-        Some((gazetteer, Arc::new(ListedHearing::default()))),
-    )
-    .await;
-    // The voice webhook first: the call knows the caller's number to text.
-    let mut params = BTreeMap::new();
-    params.insert("CallSid".to_string(), "CA-location".to_string());
-    params.insert("To".to_string(), NUMBER.to_string());
-    params.insert("From".to_string(), "+972501111111".to_string());
-    let sig = twilio::signature(TOKEN, &format!("https://calls.example.test{}", twilio::VOICE_PATH), &params);
-    let url = format!("http://{}{}", h.addr, twilio::VOICE_PATH);
-    let ok = reqwest::Client::new().post(&url).header("X-Twilio-Signature", sig).form(&params).send().await.unwrap();
-    assert_eq!(ok.status(), 200);
-    let mut ws = open_call(&h, "CA-location").await;
-    collect(&mut ws, Duration::from_millis(400)).await;
-    for said in ["צריך מונית מאלעד", "עריף שתים עשרה", "עריפים שתים עשרה"] {
-        h.stt.say(said).await;
-        while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
-    }
-    let sms = h.telephony.sms.lock().clone();
-    assert_eq!(sms.len(), 1, "one link texted, once a call: {sms:?}");
-    let url = sms[0].1.split_whitespace().last().unwrap().to_string();
-    assert!(url.starts_with("https://calls.example.test/l/"), "{url}");
-    let path = url.trim_start_matches("https://calls.example.test");
-    let client = reqwest::Client::new();
-    let page = client.get(format!("http://{}{path}", h.addr)).send().await.unwrap();
-    assert_eq!(page.status(), 200);
-    let posted = client
-        .post(format!("http://{}{path}", h.addr))
-        .json(&json!({ "lat": 32.04, "lon": 34.95 }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(posted.status(), 204);
-    collect(&mut ws, Duration::from_millis(600)).await;
-    let bad = client
-        .post(format!("http://{}/l/nope", h.addr))
-        .json(&json!({ "lat": 32.0, "lon": 34.0 }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(bad.status(), 404);
-    let records = RECORDS.lock();
-    let id = records
-        .iter()
-        .find_map(|r| match r {
-            CallRecord::Started { info } if info.call_sid == "CA-location" => Some(info.call_id),
-            _ => None,
-        })
-        .expect("the call");
-    let said: Vec<&str> = records
-        .iter()
-        .filter_map(|r| match r {
-            CallRecord::Turn { call_id, speaker, text, .. } if *call_id == id && speaker == "agent" => {
-                Some(text.as_str())
-            }
-            _ => None,
-        })
-        .collect();
-    assert!(said.iter().any(|t| t.contains("קיבלתי את המיקום")), "{said:?}");
 }

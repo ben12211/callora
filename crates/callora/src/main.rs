@@ -938,9 +938,7 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     }
     let twilio_token = env("TWILIO_AUTH_TOKEN");
     let telephony: Arc<dyn Telephony> = match (env("TWILIO_ACCOUNT_SID"), twilio_token.clone()) {
-        (Some(sid), Some(token)) => {
-            Arc::new(TwilioRest::new(client.clone(), sid, token, None).with_sms_from(env("TWILIO_SMS_FROM")))
-        }
+        (Some(sid), Some(token)) => Arc::new(TwilioRest::new(client.clone(), sid, token, None)),
         _ => {
             tracing::warn!("TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN not set: hangups and transfers are disabled");
             Arc::new(NoTelephony)
@@ -1022,9 +1020,6 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         metrics: Arc::new(Metrics::default()),
         settings: settings_store,
         desk: None,
-        locations: env("PUBLIC_BASE_URL")
-            .filter(|u| !u.trim().is_empty())
-            .map(|u| Arc::new(callora_runtime::locations::LocationLinks::new(&u))),
     };
     let mut session = SessionConfig { dynamic_model: env("ELEVENLABS_DYNAMIC_MODEL"), ..SessionConfig::default() };
     if let Some(ms) = env("VAD_ENDPOINT_MS").and_then(|v| v.parse().ok()) {
@@ -1292,7 +1287,6 @@ async fn simulate(dir: &Path, business: &str) -> anyhow::Result<()> {
                         next.extend(engine.on_action_result(run_id, result));
                     }
                     Directive::Handoff { summary } => println!("  · HANDOFF ({}) — {}", summary.reason, summary.text),
-                    Directive::SendLocationLink { slot } => println!("  · LOCATION LINK texted for {slot}"),
                     Directive::Hangup => {
                         println!("  · HANGUP");
                         for card in callora_core::orders::order_cards(&b, &engine.state) {

@@ -53,9 +53,6 @@ hearing the audio itself (no faster, misses details).
 | Pickup and destination mixed | מ/ל decide which place is which |
 | A street that is not in the list | The closest street offered; a place without an address taken as said, marked for the driver |
 | Silence after "משהו נוסף?" on a sent ride | A goodbye, not "הלו? אני פה" |
-
-| A returning caller says their address again | Their last ride's pickup is offered in the greeting ("שוב מבן זכאי 45 באלעד?") and a plain yes takes it; then its destination the same way |
-| A pickup not found in the lists | The caller is texted a link that sends their phone's position into the call (needs `TWILIO_SMS_FROM`) |
 | A town said alone ("בני ברק.") | "מבני ברק או לבני ברק?" |
 
 ## 4. Releases
@@ -71,9 +68,6 @@ hearing the audio itself (no faster, misses details).
 ## 5. Left to do
 
 Needs the owner (money or a decision):
-- An SMS sender in Twilio for the location link (an alphanumeric sender ID such as "Callora",
-  registered in Trust Hub, or an SMS-capable number), then the GitHub variable
-  `TWILIO_SMS_FROM`. The call's own number cannot text.
 - Calls through Twilio's European region (Ireland) instead of the US: the server is in
   Jerusalem, Twilio's US media is 180-270 ms away each way.
 - OpenAI billing on auto-recharge: on 2026-10-08 the credit ran out and recognition stopped.

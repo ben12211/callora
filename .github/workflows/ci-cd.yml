@@ -298,9 +298,6 @@ jobs:
       TAXI_CRM_TOKEN: ${{ secrets.TAXI_CRM_TOKEN }}
       ALLOW_LIST: ${{ secrets.ALLOW_LIST }}
       ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-      # Who texts callers the location link: an alphanumeric sender ID ("Callora"), an
-      # SMS-capable number or a Messaging Service (MG…). Unset: no texts.
-      TWILIO_SMS_FROM: ${{ vars.TWILIO_SMS_FROM }}
       AUDIO_SAMPLE_NUMBERS: ${{ vars.AUDIO_SAMPLE_NUMBERS }}
       # Telegram's API id and hash (my.telegram.org), for the accounts that ask the price bot.
       TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -356,7 +353,7 @@ jobs:
                       AGENT_MODEL AGENT_BACKUP_MODEL AGENT_FALLBACK_MODEL AGENT_REASONING_EFFORT AGENT_PRICES \
                       TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN \
                       TAXI_CRM_URL TAXI_CRM_TOKEN ALLOW_LIST ADMIN_API_KEY AUDIO_SAMPLE_NUMBERS DASHBOARD_PASSWORD \
-                      TELEGRAM_API_ID TELEGRAM_API_HASH TWILIO_SMS_FROM; do
+                      TELEGRAM_API_ID TELEGRAM_API_HASH; do
             value="${!name}"
             value="${value//$'\n'/}"
             printf '%s=%s\n' "$name" "$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"

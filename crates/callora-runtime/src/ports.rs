@@ -212,16 +212,6 @@ pub trait Telephony: Send + Sync {
     async fn cancel(&self, _call_sid: &str) -> anyhow::Result<()> {
         Ok(())
     }
-
-    /// Whether `send_sms` can reach a caller (a sender is set up).
-    fn sends_sms(&self) -> bool {
-        false
-    }
-
-    /// Text a caller.
-    async fn send_sms(&self, _to: &str, _body: &str) -> anyhow::Result<()> {
-        anyhow::bail!("no SMS sender is set up")
-    }
 }
 
 // ---------------------------------------------------------------------------------------

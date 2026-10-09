@@ -386,10 +386,6 @@ impl Runner {
                 turn.route = Route::Scripted;
                 let d = agent::parse(&b, s);
                 engine.on_agent_turn(&t.caller, d, "")
-            } else if let Some(d) = engine.on_offer_answer(&t.caller) {
-                // As a call: a plain yes or no to the last ride's place, before the agent.
-                turn.route = Route::FastLane;
-                d
             } else {
                 let (u, needs_llm) = fast_path(&b, &engine.context(), &t.caller);
                 if u.noise {
@@ -461,7 +457,6 @@ impl Runner {
                     }
                     Directive::Handoff { .. } => fx.handoff = true,
                     Directive::Hangup => fx.ended = true,
-                    Directive::SendLocationLink { .. } => {}
                 }
             }
             pending = next;
