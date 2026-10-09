@@ -1982,7 +1982,21 @@ impl Engine {
                     run.confirmed = false;
                 }
                 let ctx = self.render_ctx(None);
-                self.say(out, &confirm.response, ctx, true);
+                // A name taken from an earlier ride was never said in this call: the read-back
+                // says it ("מיופטף", heard in an earlier call, went out unsaid).
+                let remembered = self.state.run.as_ref().is_some_and(|r| {
+                    pipeline.slots.iter().any(|ps| {
+                        ps.from_customer.as_deref() == Some("name")
+                            && r.slots.get(&ps.slot).is_some_and(|s| s.provenance == Provenance::Customer)
+                    })
+                });
+                let with_name = format!("{}_with_name", confirm.response);
+                let response = if remembered && self.business.response(&with_name).is_some() {
+                    with_name
+                } else {
+                    confirm.response.clone()
+                };
+                self.say(out, &response, ctx, true);
             }
             // Nothing to confirm: go straight to the action.
             None => self.advance(out, false),
@@ -2027,6 +2041,20 @@ impl Engine {
             return Some(("how many passengers (a number)".into(), numbers));
         }
         None
+    }
+
+    /// The second hearing as the agent gets it: a street it named without the house number the
+    /// stream heard gets that number ("עריף שתים עשרה." heard again as "ראב\"ד" went out as
+    /// ראב"ד with no number).
+    pub fn with_stream_number(&self, transcript: &str, second: &str) -> String {
+        if self.street_focus().is_none() || second.chars().any(|c| c.is_ascii_digit()) {
+            return second.to_string();
+        }
+        let digits = crate::hebrew::with_digits(&crate::text::normalize(transcript));
+        match digits.split_whitespace().find(|w| w.chars().all(|c| c.is_ascii_digit())) {
+            Some(number) => format!("{second} {number}"),
+            None => second.to_string(),
+        }
     }
 
     /// What went wrong in the call so far, for its health record: a booking with details given

@@ -760,7 +760,8 @@ impl Session {
                     return;
                 }
                 let Some((_, transcript)) = self.second_pending.take() else { return };
-                self.engine.state.second_hearing = text.filter(|t| !t.is_empty());
+                self.engine.state.second_hearing =
+                    text.filter(|t| !t.is_empty()).map(|t| self.engine.with_stream_number(&transcript, &t));
                 self.start_agent(transcript, false);
             }
             Ev::SttFocused { city, result } => {

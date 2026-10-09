@@ -508,6 +508,7 @@
     "ask_destination_price": { "variants": ["לאן הנסיעה?"] },
     "ask_passengers": {"variants": ["כמה נוסעים?", "כמה אתם?"]},
     "confirm_ride": {"prefix": "ack", "variants": ["{passengers} מ{pickup} ל{destination}, {pickup_time}. לשלוח?", "אז {passengers} מ{pickup} ל{destination}, {pickup_time}. לשלוח?"], "params": {"passengers": {"kind": "count", "gender": "masculine", "singular": "נוסע אחד", "plural": "נוסעים", "range": [1, 8]}, "pickup_time": {"kind": "time"}}},
+    "confirm_ride_with_name": {"prefix": "ack", "variants": ["{passengers} מ{pickup} ל{destination}, {pickup_time}, על שם {customer_name}. לשלוח?", "אז {passengers} מ{pickup} ל{destination}, {pickup_time}, על שם {customer_name}. לשלוח?"], "params": {"passengers": {"kind": "count", "gender": "masculine", "singular": "נוסע אחד", "plural": "נוסעים", "range": [1, 8]}, "pickup_time": {"kind": "time"}}},
     "filler_searching": {"variants": ["סגור, רושם את ההזמנה.", "מעולה, שולח את ההזמנה.", "יאללה, רושם את זה."]},
     "filler_checking": {"variants": ["שנייה, אני בודק.", "רגע, בודק.", "שנייה, מסתכל.", "רגע אחד, בודק."]},
     "off_topic": {
@@ -533,7 +534,7 @@
     "ask_name": {"variants": ["על שם מי לרשום את ההזמנה?", "על איזה שם לרשום?"]},
     "ask_notes": {"variants": ["יש משהו שהנהג צריך לדעת?", "הערה לנהג?", "משהו שכדאי שהנהג ידע?"]},
     "filler_thinking": { "variants": ["רגע, אני בודק.", "שנייה, בודק."] },
-    "ride_booked": {"variants": ["סגור, ההזמנה יצאה. נהג יתקשר ממש בקרוב.", "מעולה, זה אצלנו. נהג יחזור בדקות הקרובות.", "יאללה, סגרנו. נהג יתקשר בדקות הקרובות."], "delivery": "important"},
+    "ride_booked": {"variants": ["ההזמנה יצאה, נהג יתקשר ממש בקרוב.", "זה אצלנו, נהג יחזור בדקות הקרובות.", "סגרנו, נהג יתקשר בדקות הקרובות."], "delivery": "important"},
     "ride_failed": { "variants": ["אוי, כרגע אין נהג פנוי באזור."], "delivery": "calm" },
     "ride_unconfirmed": { "variants": ["רגע, אני מעביר למוקדן שיוודא שההזמנה נקלטה."], "delivery": "calm" },
     "ride_status_answer": {

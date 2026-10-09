@@ -1018,7 +1018,7 @@ fn faq_mid_flow_answers_then_resumes() {
 fn voice_library_is_mostly_pregenerated() {
     let b = with_desk();
     let entries = library_entries(&b);
-    assert!(entries.iter().any(|e| e.text == "סגור, ההזמנה יצאה. נהג יתקשר ממש בקרוב."));
+    assert!(entries.iter().any(|e| e.text == "ההזמנה יצאה, נהג יתקשר ממש בקרוב."));
     // A price is said live: any sum, from the price list.
     assert!(!entries.iter().any(|e| e.response_id == "price_answer"));
     assert!(entries.iter().any(|e| e.text == "מאיפה לאסוף?" && e.delivery == "slow"));
@@ -3472,4 +3472,58 @@ fn a_town_said_alone_is_asked_which_way() {
     let fields = [("pickup".to_string(), "בני ברק".to_string())];
     assert!(!call.engine.rejects_any("מבני ברק", &fields));
     assert!(call.engine.lone_city_either_way("מבני ברק", &fields).is_none());
+}
+
+#[test]
+fn a_street_heard_again_without_its_number_keeps_the_number_the_stream_heard() {
+    // From a live call: "עריף שתים עשרה." was heard again as "ראב\"ד", and the ride went out
+    // without its 12.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t218\tהרי\"ף\tofficial\n1309\tאלעד\t219\tראב\"ד\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    assert_eq!(call.engine.with_stream_number("עריף שתים עשרה.", "ראב\"ד"), "ראב\"ד", "no street asked");
+    call.engine.on_agent_turn(
+        "מאלעד",
+        asking(&["pickup"], decide(AgentAction::None, "איפה באלעד לאסוף?", Some("book_ride"), &[("pickup", "אלעד")])),
+        "",
+    );
+    assert_eq!(call.engine.with_stream_number("עריף שתים עשרה.", "ראב\"ד"), "ראב\"ד 12");
+    assert_eq!(call.engine.with_stream_number("עריף שתים עשרה.", "הרי\"ף 12"), "הרי\"ף 12", "its own number");
+    assert_eq!(call.engine.with_stream_number("עריף.", "הרי\"ף"), "הרי\"ף", "none heard");
+    // And the stream's "עריף" is itself הרי"ף: no second hearing is needed.
+    assert!(call.engine.second_hearing_question("עריף שתים עשרה.").is_none());
+}
+
+#[test]
+fn a_name_from_an_earlier_ride_is_said_in_the_read_back() {
+    // From a live call: the name of an earlier ride, "מיופטף", was booked and never said.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.set_customer(Some(serde_json::from_value(serde_json::json!({ "name": "דוד" })).unwrap()));
+    let d = call.engine.on_agent_turn(
+        "בן זכאי 40 אלעד לסוכות ירושלים, שלושה",
+        decide(
+            AgentAction::ReadBack,
+            "סגור.",
+            Some("book_ride"),
+            &[
+                ("pickup", "בן זכאי 40, אלעד"),
+                ("destination", "סוכות 12, ירושלים"),
+                ("passengers", "שלושה"),
+                ("notes", "אין"),
+            ],
+        ),
+        "",
+    );
+    assert!(spoken(&d).contains("על שם דוד"), "{}", spoken(&d));
+    // A name said in this call is not read back again.
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn(
+        "לא, זה 45",
+        decide(AgentAction::ReadBack, "", None, &[("pickup", "בן זכאי 45")]),
+        "",
+    );
+    assert!(!spoken(&d).contains("על שם"), "{}", spoken(&d));
 }

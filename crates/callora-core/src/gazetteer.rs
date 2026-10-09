@@ -198,7 +198,8 @@ fn spelling(s: &str) -> String {
                 .filter(|&(i, c)| i == 0 || !matches!(c, 'ו' | 'י'))
                 .map(|(i, c)| match c {
                     'ע' => 'א',
-                    'ה' if i + 1 == n && n > 1 => 'א',
+                    // A word's first ה sounds as its א or ע: "עריף" said is הרי"ף of אלעד.
+                    'ה' if (i == 0 || i + 1 == n) && n > 1 => 'א',
                     'כ' => 'ק',
                     'ט' => 'ת',
                     'ש' => 'ס',
@@ -1096,6 +1097,18 @@ mod tests {
             Lookup::Found(a) => a,
             other => panic!("expected an address, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_first_he_sounds_as_its_alef_or_ayin() {
+        // From a live call: "עריף שתים עשרה." in אלעד is הרי"ף 12, not ראב"ד.
+        let g = Gazetteer::from_tsv(
+            "1309	אלעד	218	הרי\"ף	official
+1309	אלעד	219	ראב\"ד	official
+",
+        );
+        let a = found(g.resolve_within("עריף שתים עשרה.", "אלעד").unwrap());
+        assert_eq!((a.street.as_deref(), a.number.as_deref()), (Some("הרי\"ף"), Some("12")));
     }
 
     #[test]
