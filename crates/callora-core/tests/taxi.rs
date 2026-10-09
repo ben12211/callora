@@ -230,7 +230,7 @@ fn wait_says_so_changes_nothing_and_waits_longer() {
     assert_eq!(call.engine.silence_after_ms(), 15_000, "a longer wait before \"שומעים אותי?\"");
     let d = call.engine.on_silence();
     assert!(spoken(&d).contains("הלו"), "{}", spoken(&d));
-    assert_eq!(call.engine.silence_after_ms(), 3_000, "then the usual wait");
+    assert_eq!(call.engine.silence_after_ms(), 5_000, "then the usual wait");
 }
 
 #[test]
@@ -2151,7 +2151,7 @@ fn a_silent_caller_with_details_given_is_waited_for() {
     for _ in 0..2 {
         assert!(spoken(&call.engine.on_silence()).contains("הלו"));
     }
-    assert_eq!(call.engine.silence_after_ms(), 3_000);
+    assert_eq!(call.engine.silence_after_ms(), 5_000);
     for _ in 0..2 {
         let d = call.engine.on_silence();
         assert!(spoken(&d).contains("אני") && !d.iter().any(|d| matches!(d, Directive::Hangup)), "{}", spoken(&d));
@@ -3721,4 +3721,83 @@ fn a_city_corrected_after_a_turn_not_understood_still_asks_its_street() {
     );
     let said = spoken(&d);
     assert!(said.contains("באלעד") && !said.contains("בני ברק"), "{said}");
+}
+
+#[test]
+fn a_street_named_like_a_moshav_is_not_asked_which_way() {
+    // A live call: "בן זכאי." to "איפה באלעד לאסוף?" was asked "מבן זכאי או לבן זכאי?".
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         2066\tבן זכאי\t9000\tבן זכאי\tofficial\n2640\tראש העין\t1\tשבזי\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "מאלעד לראש העין.",
+        asking(
+            &["pickup"],
+            decide(
+                AgentAction::None,
+                "איפה באלעד לאסוף?",
+                Some("book_ride"),
+                &[("pickup", "אלעד"), ("destination", "ראש העין")],
+            ),
+        ),
+        "",
+    );
+    let fields = [("pickup".to_string(), "בן זכאי, אלעד".to_string())];
+    assert!(call.engine.lone_city_either_way("בן זכאי.", &fields).is_none());
+}
+
+#[test]
+fn a_town_only_the_second_hearing_heard_is_asked_about_not_taken() {
+    // A live call: "אליהו." heard again against the towns came back ג'ת, and the pickup was ג'ת.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "628\tג'ת\t1\tהרצל\tofficial\n1309\tאלעד\t110\tרבי עקיבא\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "אני רוצה להזמין מונית.",
+        asking(&["pickup"], decide(AgentAction::None, "מאיפה לאסוף?", Some("book_ride"), &[])),
+        "",
+    );
+    call.engine.state.second_hearing = Some("ג'ת".into());
+    let d = call.engine.on_agent_turn(
+        "אליהו.",
+        asking(&["pickup"], decide(AgentAction::None, "איפה בג'ת לאסוף?", None, &[("pickup", "ג'ת")])),
+        "",
+    );
+    assert!(spoken(&d).contains("ג'ת, נכון?"), "{}", spoken(&d));
+    assert_ne!(call.engine.street_focus().as_deref(), Some("ג'ת"), "not taken yet");
+    // A town the stream heard is taken as before.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבי עקיבא\tofficial\n",
+    ))));
+    call.engine.on_agent_turn(
+        "אני רוצה להזמין מונית.",
+        asking(&["pickup"], decide(AgentAction::None, "מאיפה לאסוף?", Some("book_ride"), &[])),
+        "",
+    );
+    call.engine.state.second_hearing = Some("אלעד".into());
+    let d = call.engine.on_agent_turn(
+        "מאלעד.",
+        asking(&["pickup"], decide(AgentAction::None, "איפה באלעד לאסוף?", None, &[("pickup", "אלעד")])),
+        "",
+    );
+    assert!(!spoken(&d).contains("נכון?"), "{}", spoken(&d));
+    assert_eq!(call.engine.street_focus().as_deref(), Some("אלעד"));
+}
+
+#[test]
+fn a_name_corrected_at_the_read_back_is_read_back() {
+    // A live call: "על שם שני." to the read-back, and it was read again without the name.
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn(
+        "על שם שני.",
+        decide(AgentAction::ReadBack, "", None, &[("customer_name", "שני")]),
+        "",
+    );
+    assert!(spoken(&d).contains("על שם שני"), "{}", spoken(&d));
 }

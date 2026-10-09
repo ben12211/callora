@@ -239,7 +239,10 @@ impl Engine {
             .run
             .as_ref()
             .is_some_and(|r| r.slots.contains_key("pickup") || r.slots.contains_key("destination"));
-        if places_known {
+        // Nor once a place's city is known and its street asked: "בן זכאי." to "איפה באלעד
+        // לאסוף?" is the street (בן זכאי is also a moshav), and a live caller was asked "מבן
+        // זכאי או לבן זכאי?".
+        if places_known || !self.state.place_cities.is_empty() {
             return None;
         }
         let words: String =
@@ -1738,7 +1741,49 @@ impl Engine {
             }
             _ => None,
         };
+        // A town only the second hearing heard: "אליהו." heard again against the towns came back
+        // ג'ת, and a live ride's pickup was ג'ת. The stream's words name it, sound like it, or
+        // the caller agreed to it.
+        let unheard_town = match &lookup {
+            Lookup::Found(a)
+                if a.street.is_none()
+                    && a.place.is_none()
+                    && self.state.second_hearing.is_some()
+                    && !self.state.unheard_streets.contains(&format!("{slot}:town")) =>
+            {
+                let stream: String = self
+                    .state
+                    .history
+                    .iter()
+                    .filter(|t| t.speaker == Speaker::Caller)
+                    .map(|t| t.text.as_str())
+                    .chain(self.state.offered_streets.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(". ");
+                let heard = g.towns_named(&stream).contains(&a.city)
+                    || g.area_towns_heard(&stream, &self.business.config.service_area).iter().any(|(_, t)| *t == a.city)
+                    // Only a name long enough not to be close to something in any sentence ("גת"
+                    // is a letter off "ת" of "מונית").
+                    || (crate::gazetteer::norm(&a.city_said).chars().count() >= 4
+                        && crate::gazetteer::unheard_words(&a.city_said, &stream).is_empty());
+                (!heard).then(|| a.city_said.clone())
+            }
+            _ => None,
+        };
         Some(match lookup {
+            Lookup::Found(_) if unheard_town.is_some() && self.business.response("town_heard_check").is_some() => {
+                let town = unheard_town.unwrap_or_default();
+                notes.push(format!(
+                    "{slot}: only the second hearing heard the town {town}; the caller's words do not sound like it, so                      it was not taken. The system asked whether they said it: if they agree, pass \"{town}\"; if not, ask                      for the town again"
+                ));
+                self.state.unheard_streets.insert(format!("{slot}:town"));
+                if !self.state.offered_streets.contains(&town) {
+                    self.state.offered_streets.push(town.clone());
+                }
+                self.state.doubt_confirm.insert(slot.to_string(), vec![prompt("town_heard_check", &[("town", town)])]);
+                rejected.push(slot.to_string());
+                return None;
+            }
             Lookup::Found(a) if unheard_street.is_some() && self.business.response("street_heard_check").is_some() => {
                 let street = unheard_street.unwrap_or_default();
                 let number = a.number.clone().unwrap_or_default();
@@ -2048,16 +2093,17 @@ impl Engine {
                     run.confirmed = false;
                 }
                 let ctx = self.render_ctx(None);
-                // A name taken from an earlier ride was never said in this call: the read-back
-                // says it ("מיופטף", heard in an earlier call, went out unsaid).
-                let remembered = self.state.run.as_ref().is_some_and(|r| {
-                    pipeline.slots.iter().any(|ps| {
-                        ps.from_customer.as_deref() == Some("name")
-                            && r.slots.get(&ps.slot).is_some_and(|s| s.provenance == Provenance::Customer)
-                    })
+                // The name is read back with the ride: one from an earlier ride was never said
+                // in this call ("מיופטף" went out unsaid), and one corrected at the read-back was
+                // left out of the read-back again, so the caller asked "על שם מי ההזמנה?".
+                let named = self.state.run.as_ref().is_some_and(|r| {
+                    pipeline
+                        .slots
+                        .iter()
+                        .any(|ps| ps.from_customer.as_deref() == Some("name") && r.slots.contains_key(&ps.slot))
                 });
                 let with_name = format!("{}_with_name", confirm.response);
-                let response = if remembered && self.business.response(&with_name).is_some() {
+                let response = if named && self.business.response(&with_name).is_some() {
                     with_name
                 } else {
                     confirm.response.clone()

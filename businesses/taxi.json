@@ -528,6 +528,7 @@
     "ask_destination_street_again": { "variants": ["סליחה, לא קלטתי. איזה רחוב ב{city}?"] },
     "ask_pickup_unknown": { "variants": ["לא הכרתי את {heard}. מאיזו עיר לאסוף?"] },
     "ask_destination_unknown": { "variants": ["לא הכרתי את {heard}. לאיזו עיר נוסעים?"] },
+    "town_heard_check": { "variants": ["{town}, נכון?"] },
     "street_heard_check": { "variants": ["{street} ב{city}, נכון?"] },
     "street_not_found_suggest": { "variants": ["לא מצאתי את {heard} ב{city}. התכוונת ל{suggestion}?"] },
     "street_not_found": { "variants": ["לא מצאתי את {heard} ב{city}. אולי זה בעיר אחרת?"] },
@@ -627,7 +628,7 @@
     "after_action_failures": 2
   },
   "silence": {
-    "reprompt_after_ms": 3000,
+    "reprompt_after_ms": 5000,
     "max_reprompts": 2,
     "response": "still_there",
     "patient_after_ms": 15000,
