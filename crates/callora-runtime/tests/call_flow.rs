@@ -665,8 +665,10 @@ async fn a_slow_transcript_is_waited_for_not_called_noise() {
     );
     h.stt.say("מירושלים").await;
     assert!(!collect(&mut ws, Duration::from_millis(1400)).await.0.is_empty(), "the words get their next question");
+    // The late transcript comes 4 s after the speech, inside this window; the silence
+    // reprompt after the question comes later.
     assert!(
-        collect(&mut ws, Duration::from_millis(2500)).await.0.is_empty(),
+        collect(&mut ws, Duration::from_millis(2000)).await.0.is_empty(),
         "and the late empty transcript after them asks nothing"
     );
 }
