@@ -16,12 +16,10 @@ use callora_core::engine::{Directive, Engine};
 use callora_core::render::library_entries;
 use callora_core::understanding::{fast_path, merge};
 use callora_providers::{
-    cartesia::Cartesia,
     deepgram::Deepgram,
     elevenlabs::ElevenLabs,
     openai::OpenAi,
     race::{Fallback, FirstAnswer, Hedged},
-    scribe::Scribe,
     twilio_rest::TwilioRest,
 };
 use callora_runtime::actions::ConfiguredActions;
@@ -372,9 +370,8 @@ fn load_gazetteer() -> Option<Arc<callora_core::gazetteer::Gazetteer>> {
     (!g.is_empty()).then(|| Arc::new(g))
 }
 
-/// Speech recognition: Deepgram Nova-3 unless STT_PROVIDER names OpenAI (`gpt-transcribe`),
-/// Scribe (ElevenLabs) or Cartesia. Each needs its key; without the chosen one's, the next
-/// one with a key hears. OpenAI is backed by the next one if its session cannot open.
+/// Speech recognition: OpenAI (`gpt-transcribe`), backed by Deepgram Nova-3 when it fails
+/// (`SttFailover`); `STT_PROVIDER=deepgram` puts Deepgram first. Each needs its key.
 fn speech_to_text() -> Arc<dyn SpeechToText> {
     let openai = || {
         env("OPENAI_API_KEY").map(|key| {
@@ -396,32 +393,19 @@ fn speech_to_text() -> Arc<dyn SpeechToText> {
             Arc::new(Deepgram::new(key, env("DEEPGRAM_STT_URL"), env("DEEPGRAM_STT_MODEL"))) as Arc<dyn SpeechToText>
         })
     };
-    let scribe = || {
-        env("ELEVENLABS_API_KEY").map(|key| {
-            Arc::new(Scribe::new(key, env("ELEVENLABS_STT_URL"), env("ELEVENLABS_STT_MODEL"))) as Arc<dyn SpeechToText>
-        })
-    };
-    let cartesia = || {
-        env("CARTESIA_API_KEY").map(|key| {
-            Arc::new(Cartesia::new(key, env("CARTESIA_STT_URL"), env("CARTESIA_STT_MODEL"), env("CARTESIA_VERSION")))
-                as Arc<dyn SpeechToText>
-        })
-    };
     let chosen = match env("STT_PROVIDER").as_deref() {
-        Some("openai") => match (openai(), deepgram().or_else(scribe).or_else(cartesia)) {
+        Some("deepgram") => deepgram().or_else(openai),
+        _ => match (openai(), deepgram()) {
             (Some(primary), Some(backup)) => {
                 Some(Arc::new(callora_providers::stt_failover::SttFailover::new(primary, backup))
                     as Arc<dyn SpeechToText>)
             }
             (primary, backup) => primary.or(backup),
         },
-        Some("cartesia") => cartesia().or_else(deepgram).or_else(scribe),
-        Some("scribe") => scribe().or_else(deepgram).or_else(cartesia),
-        _ => deepgram().or_else(scribe).or_else(cartesia),
     };
     chosen.unwrap_or_else(|| {
         tracing::error!(
-            "none of DEEPGRAM_API_KEY, ELEVENLABS_API_KEY or CARTESIA_API_KEY is set: calls cannot be understood and will be handed off"
+            "neither OPENAI_API_KEY nor DEEPGRAM_API_KEY is set: calls cannot be understood and will be handed off"
         );
         Arc::new(NoStt)
     })
@@ -861,19 +845,10 @@ async fn stt_probe(file: &Path, limit: usize, keyterms: &[String]) -> anyhow::Re
 /// The second hearing of a street or city answer (`SECOND_HEARING`): by default an OpenAI
 /// audio model told the names expected (`SECOND_HEARING_MODEL`, default gpt-audio-1.5), which
 /// on recorded and synthetic answers found the street 85-95% of the time where the stream
-/// alone found 50-77%; `scribe` (or the old `1`) is ElevenLabs Scribe hinted with the names,
-/// which made names up on live calls; `off` is none.
+/// alone found 50-77%; `off` is none.
 fn second_hearing() -> Option<Arc<dyn callora_runtime::ports::Transcriber>> {
     match env("SECOND_HEARING").as_deref().map(str::trim) {
         Some("off" | "0" | "none" | "false") => None,
-        Some("scribe" | "1") => env("ELEVENLABS_API_KEY").map(|key| {
-            Arc::new(callora_providers::scribe_batch::ScribeBatch::new(
-                http(),
-                key,
-                None,
-                env("ELEVENLABS_BATCH_STT_MODEL"),
-            )) as Arc<dyn callora_runtime::ports::Transcriber>
-        }),
         _ => env("OPENAI_API_KEY").map(|key| {
             tracing::info!("street and city answers get a second hearing by an audio model told the names");
             Arc::new(callora_providers::openai_audio::AudioHearing::new(http(), key, None, env("SECOND_HEARING_MODEL")))
@@ -1068,7 +1043,6 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
         whatsapp: env("WHATSAPP_URL").zip(env("WHATSAPP_TOKEN").filter(|t| t.len() >= 16)),
         library_dir: Some(library_dir.clone()),
         library_model: env("ELEVENLABS_LIBRARY_MODEL"),
-        eleven_agents: env("ELEVENLABS_API_KEY").map(|key| (key, env("ELEVENLABS_API_BASE_URL"))),
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
     // A voice chosen on the settings page replaces the business's own.

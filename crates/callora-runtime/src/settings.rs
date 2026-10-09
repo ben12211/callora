@@ -105,31 +105,8 @@ pub struct PriceBotSettings {
     pub chat_name: String,
 }
 
-/// Who answers the phone: Callora's own agent, or an agent built on the ElevenLabs Agents
-/// platform (by its agent id). Chosen on the settings page, for the whole server.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CallModeSettings {
-    #[serde(default)]
-    pub elevenlabs: bool,
-    #[serde(default)]
-    pub agent_id: String,
-}
-
-impl CallModeSettings {
-    /// Problems that keep these settings from being saved.
-    pub fn problems(&self) -> Vec<String> {
-        if self.elevenlabs && !crate::eleven_agents::agent_id_valid(self.agent_id.trim()) {
-            return vec!["צריך מזהה סוכן של ElevenLabs (agent_…)".into()];
-        }
-        Vec::new()
-    }
-}
-
 #[derive(Default)]
 pub struct SettingsStore {
-    /// Who answers calls; Callora's own agent until the owner chooses ElevenLabs.
-    call_mode: RwLock<CallModeSettings>,
     desks: RwLock<HashMap<String, DeskSettings>>,
     price_bots: RwLock<HashMap<String, PriceBotSettings>>,
     /// The voice chosen on the settings page (an ElevenLabs voice id).
@@ -171,16 +148,7 @@ impl SettingsStore {
             .flatten()
             .and_then(|r| serde_json::from_value::<AgentModelSettings>(r.get("value")).ok())
             .filter(|m| m.problems().is_empty());
-        let call_mode = sqlx::query("SELECT value FROM callora_v2.app_settings WHERE key = 'call_mode'")
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|r| serde_json::from_value::<CallModeSettings>(r.get("value")).ok())
-            .filter(|m| m.problems().is_empty())
-            .unwrap_or_default();
         Ok(Self {
-            call_mode: RwLock::new(call_mode),
             desks: RwLock::new(desks),
             price_bots: RwLock::new(price_bots),
             voices: RwLock::new(voices),
@@ -217,33 +185,6 @@ impl SettingsStore {
             Some(v) => self.voices.write().insert(business_id.to_string(), v),
             None => self.voices.write().remove(business_id),
         };
-        Ok(())
-    }
-
-    /// Who answers calls now.
-    pub fn call_mode(&self) -> CallModeSettings {
-        self.call_mode.read().clone()
-    }
-
-    /// Use this mode for the calls that come next, without saving it.
-    pub fn set_call_mode(&self, mode: CallModeSettings) {
-        *self.call_mode.write() = mode;
-    }
-
-    /// Save the mode; the default (Callora answers) is no row at all.
-    pub async fn save_call_mode(&self, pool: &PgPool, mode: CallModeSettings) -> sqlx::Result<()> {
-        if mode.elevenlabs {
-            sqlx::query(
-                "INSERT INTO callora_v2.app_settings (key, value) VALUES ('call_mode', $1)
-                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
-            )
-            .bind(serde_json::to_value(&mode).unwrap_or_default())
-            .execute(pool)
-            .await?;
-        } else {
-            sqlx::query("DELETE FROM callora_v2.app_settings WHERE key = 'call_mode'").execute(pool).await?;
-        }
-        self.set_call_mode(mode);
         Ok(())
     }
 

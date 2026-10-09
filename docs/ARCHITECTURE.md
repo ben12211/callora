@@ -157,9 +157,10 @@ and merges its answer with the rules'.
   into short pieces synthesized side by side; finished syntheses go into an LRU cache. A
   reply that opens with live TTS may start with a recorded cover (`voice.dynamic_cover`); the
   taxi business has none, so no hesitation sound plays before a spoken reply.
-- **Speech recognition**: Deepgram Nova-3 in Hebrew (`STT_PROVIDER=scribe` for ElevenLabs
-  Scribe, `cartesia` for Cartesia), with the runtime's VAD deciding when an utterance
-  ends (`endpointing=false`, then `Finalize`). Its
+- **Speech recognition**: OpenAI `gpt-transcribe` in Hebrew, backed by Deepgram Nova-3 when
+  it fails (`SttFailover`; `STT_PROVIDER=deepgram` puts Deepgram first), with the runtime's
+  VAD deciding when an utterance ends (manual commit; Deepgram: `endpointing=false`, then
+  `Finalize`). Its
   keyterms are biased with the streets of a city while its street is the question (a
   second session opens beside the live one and takes over between utterances), and go
   back to the business's words once the question moves on: left on, a city's streets
@@ -170,8 +171,7 @@ and merges its answer with the rules'.
   city's streets, the 150 closest in a city of more than 700; or the towns), about a second
   (`crates/callora-providers/src/openai_audio.rs`). The agent gets both hearings. Measured on
   the street answers of past calls (stream 50%, both 85%), 120 random streets of ten cities
-  (77%, 95%) and 71 towns (62%, 86%). `SECOND_HEARING=off` turns it off, `scribe` is the
-  older ElevenLabs Scribe hearing.
+  (77%, 95%) and 71 towns (62%, 86%). `SECOND_HEARING=off` turns it off.
 - **Playout** sends 20 ms frames about 60 ms ahead of real time. Cancel drops everything
   and sends Twilio `clear`. Barge-in: energy VAD on the caller's track after ~100 ms.
 - **Fillers**: a pipeline's own filler when its action starts ("רגע, בודק."). The agent's thinking

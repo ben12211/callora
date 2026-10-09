@@ -19,8 +19,7 @@ really said, and the call ends only on a real goodbye. The product specification
 V2 implements it is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The first business
 is a taxi company: [`businesses/taxi.json`](businesses/taxi.json).
 
-The previous TypeScript implementation is preserved on the `OLD-MAIN` branch. What V2
-kept from it is listed in [`docs/LEGACY_INVENTORY.md`](docs/LEGACY_INVENTORY.md).
+The previous TypeScript implementation is preserved on the `OLD-MAIN` branch.
 
 ## Run it (Docker is the only requirement)
 
@@ -105,7 +104,7 @@ should have happened ([`evaluation/README.md`](evaluation/README.md)).
 | `callora-core` | The generic runtime with no I/O: the Business JSON schema and validation, the agent's prompt and reply parsing, the deterministic understanding, explicit call state, the engine (tasks, slots, rules, read-back, fallback, handoff), response planning, Israel's places list, Hebrew numbers and spoken-text normalization |
 | `callora-audio` | μ-law, VAD (barge-in + endpointing), the pre-generated voice library and its builder, the TTS cache, and paced, cancellable playout |
 | `callora-runtime` | Twilio webhooks and the media WebSocket, the per-call actor (`session` with `hearing`, `agent_turn`, `speech`), business actions (with idempotency keys), Postgres call history, metrics, token pricing, and the owner's pages and admin API |
-| `callora-providers` | OpenAI-compatible LLMs (the agent, with streaming and token usage; understanding), Deepgram (Nova-3 STT), ElevenLabs (TTS, Scribe STT), Cartesia (STT), Twilio REST, and the hedge/race between models |
+| `callora-providers` | OpenAI-compatible LLMs (the agent, with streaming and token usage; understanding), OpenAI speech recognition (`gpt-transcribe`) and its second hearing (`gpt-audio-1.5`), Deepgram (Nova-3 STT, the backup), ElevenLabs (TTS), Twilio REST, and the hedge/race between models |
 | `callora` | The binary: `serve`, `migrate`, `healthcheck`, `config validate`, `voice-library build/status`, `simulate`, `understand`, `agent-prompt`, `eval` |
 
 ## Dashboard
@@ -153,5 +152,5 @@ The webhook paths are the legacy ones, so numbers already configured in Twilio k
 ## Configuration and secrets
 
 Every variable and GitHub secret is listed, by name only, in [`SECRETS.md`](SECRETS.md).
-Deployment is described in [`DEPLOYMENT.md`](DEPLOYMENT.md), and project status is in
-[`docs/V2_STATUS.md`](docs/V2_STATUS.md).
+Deployment is described in [`DEPLOYMENT.md`](DEPLOYMENT.md), and what can go wrong on a
+call and what guards it in [`docs/RELIABILITY.md`](docs/RELIABILITY.md).

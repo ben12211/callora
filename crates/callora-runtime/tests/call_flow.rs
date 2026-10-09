@@ -191,17 +191,7 @@ async fn start_server_with(agent: Option<Arc<dyn LanguageModel>>) -> Harness {
 }
 
 async fn start_server_cfg(agent: Option<Arc<dyn LanguageModel>>, session: SessionConfig) -> Harness {
-    start_server_full(agent, session, None, Default::default()).await
-}
-
-/// The server with an ElevenLabs API (its base URL) and the owner's choice of who answers.
-async fn start_server_full(
-    agent: Option<Arc<dyn LanguageModel>>,
-    session: SessionConfig,
-    eleven: Option<String>,
-    mode: callora_runtime::settings::CallModeSettings,
-) -> Harness {
-    start_server_inner(agent, session, eleven, mode, None).await
+    start_server_inner(agent, session, None).await
 }
 
 thread_local! {
@@ -215,8 +205,6 @@ type Hearing = (Arc<callora_core::gazetteer::Gazetteer>, Arc<dyn callora_runtime
 async fn start_server_inner(
     agent: Option<Arc<dyn LanguageModel>>,
     session: SessionConfig,
-    eleven: Option<String>,
-    mode: callora_runtime::settings::CallModeSettings,
     hearing: Option<Hearing>,
 ) -> Harness {
     let env = |k: &str| {
@@ -248,11 +236,7 @@ async fn start_server_inner(
         store: Arc::new(RecStore),
         whisper: Arc::new(NoWhisper),
         metrics: metrics.clone(),
-        settings: {
-            let store = callora_runtime::settings::SettingsStore::default();
-            store.set_call_mode(mode);
-            Arc::new(store)
-        },
+        settings: Arc::new(callora_runtime::settings::SettingsStore::default()),
         desk: None,
     };
     let mut libraries = HashMap::new();
@@ -270,7 +254,6 @@ async fn start_server_inner(
         whatsapp: None,
         library_dir: None,
         library_model: None,
-        eleven_agents: eleven.map(|base| ("xi-test-key".to_string(), Some(base))),
     };
     let state = AppState::new(registry, libraries, services, session, settings, None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -333,213 +316,19 @@ async fn voice_webhook_requires_a_valid_signature_and_returns_a_stream() {
     assert!(body.contains("<Parameter name=\"token\""));
 }
 
-/// A stand-in for ElevenLabs' register-call: answers with `reply` and remembers what it was asked.
-async fn fake_elevenlabs(reply: (u16, String)) -> (String, Arc<Mutex<Vec<(Value, Option<String>)>>>) {
-    use axum::http::{HeaderMap, StatusCode};
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let log = seen.clone();
-    let app = axum::Router::new()
-        .route(
-            "/v1/convai/conversations/{id}",
-            axum::routing::get(|axum::extract::Path(id): axum::extract::Path<String>| async move {
-                match id.as_str() {
-                    "conv-live" => (
-                        StatusCode::OK,
-                        axum::Json(json!({ "agent_id": "agent_abc123", "status": "in-progress",
-                            "metadata": { "phone_call": { "call_sid": "CA-eleven" } } })),
-                    ),
-                    "conv-done" => {
-                        (StatusCode::OK, axum::Json(json!({ "agent_id": "agent_abc123", "status": "done" })))
-                    }
-                    "conv-other" => (
-                        StatusCode::OK,
-                        axum::Json(json!({ "agent_id": "agent_someone_else", "status": "in-progress" })),
-                    ),
-                    _ => (StatusCode::NOT_FOUND, axum::Json(json!({}))),
-                }
-            }),
-        )
-        .route(
-            "/v1/convai/twilio/register-call",
-            axum::routing::post(move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
-                let log = log.clone();
-                let reply = reply.clone();
-                async move {
-                    let key = headers.get("xi-api-key").and_then(|v| v.to_str().ok()).map(str::to_string);
-                    log.lock().push((body, key));
-                    (StatusCode::from_u16(reply.0).unwrap(), reply.1)
-                }
-            }),
-        );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{addr}"), seen)
-}
-
-async fn voice_call(h: &Harness) -> String {
+#[tokio::test]
+async fn a_call_is_connected_to_the_media_stream() {
+    let h = start_server().await;
     let mut params = BTreeMap::new();
-    params.insert("CallSid".to_string(), "CA-eleven".to_string());
+    params.insert("CallSid".to_string(), "CA-voice".to_string());
     params.insert("To".to_string(), NUMBER.to_string());
     params.insert("From".to_string(), "+972501111111".to_string());
     let sig = twilio::signature(TOKEN, &format!("https://calls.example.test{}", twilio::VOICE_PATH), &params);
     let url = format!("http://{}{}", h.addr, twilio::VOICE_PATH);
     let ok = reqwest::Client::new().post(&url).header("X-Twilio-Signature", sig).form(&params).send().await.unwrap();
     assert_eq!(ok.status(), 200);
-    ok.text().await.unwrap()
-}
-
-#[tokio::test]
-async fn a_call_goes_to_the_elevenlabs_agent_when_the_owner_chose_it() {
-    let twiml =
-        "<?xml version=\"1.0\"?><Response><Connect><Stream url=\"wss://elevenlabs.test/s\"/></Connect></Response>";
-    let (base, seen) = fake_elevenlabs((200, twiml.to_string())).await;
-    let mode = callora_runtime::settings::CallModeSettings { elevenlabs: true, agent_id: "agent_abc123".into() };
-    let h = start_server_full(None, SessionConfig::default(), Some(base), mode).await;
-    let body = voice_call(&h).await;
-    assert_eq!(body, twiml, "ElevenLabs' TwiML is what Twilio gets");
-    let seen = seen.lock();
-    assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0].0["agent_id"], "agent_abc123");
-    assert_eq!(seen[0].0["from_number"], "+972501111111");
-    assert_eq!(seen[0].0["to_number"], NUMBER);
-    assert_eq!(seen[0].1.as_deref(), Some("xi-test-key"));
-}
-
-#[tokio::test]
-async fn when_elevenlabs_does_not_take_the_call_callora_answers() {
-    let (base, seen) = fake_elevenlabs((500, "down".to_string())).await;
-    let mode = callora_runtime::settings::CallModeSettings { elevenlabs: true, agent_id: "agent_abc123".into() };
-    let h = start_server_full(None, SessionConfig::default(), Some(base), mode).await;
-    let body = voice_call(&h).await;
+    let body = ok.text().await.unwrap();
     assert!(body.contains("<Connect><Stream url=\"wss://calls.example.test/webhooks/twilio/media\">"), "{body}");
-    assert_eq!(seen.lock().len(), 1, "it was tried first");
-}
-
-async fn tool(h: &Harness, name: &str, token: Option<&str>, body: Value) -> (u16, Value) {
-    let mut req =
-        reqwest::Client::new().post(format!("http://{}/webhooks/elevenlabs/tools/{name}", h.addr)).json(&body);
-    if let Some(t) = token {
-        req = req.header("x-callora-tools-token", t);
-    }
-    let res = req.send().await.unwrap();
-    let status = res.status().as_u16();
-    (status, res.json().await.unwrap_or(Value::Null))
-}
-
-#[tokio::test]
-async fn the_elevenlabs_tools_need_the_token_and_send_a_ride_once() {
-    let h = start_server().await;
-    let good = callora_runtime::eleven_tools::tools_token(TOKEN);
-    let ride = json!({
-        "pickup": "כניסה לעיר, ביתר עילית",
-        "destination": "סינמה סיטי, ירושלים",
-        "passengers": 3,
-        "customer_name": "יוסי כהן",
-        "notes": "",
-        "conversation_id": "conv-1",
-        "caller_number": "+972501111111",
-    });
-
-    assert_eq!(tool(&h, "create-ride", None, ride.clone()).await.0, 401, "no token");
-    assert_eq!(tool(&h, "create-ride", Some("wrong"), ride.clone()).await.0, 401, "wrong token");
-
-    let (status, sent) = tool(&h, "create-ride", Some(&good), ride.clone()).await;
-    assert_eq!((status, &sent["ok"]), (200, &json!(true)), "{sent}");
-    assert_eq!(sent["message"], "הנסיעה נשלחה");
-
-    // The same conversation telling the same ride again (a retried tool call) sends nothing.
-    let (_, again) = tool(&h, "create-ride", Some(&good), ride.clone()).await;
-    assert_eq!(again["duplicate"], true, "{again}");
-
-    // A ride with no passengers is not sent, and the agent gets a sentence to speak from.
-    let mut bad = ride;
-    bad["passengers"] = json!(0);
-    bad["conversation_id"] = json!("conv-2");
-    let (_, refused) = tool(&h, "create-ride", Some(&good), bad).await;
-    assert_eq!(refused["ok"], false);
-    assert!(refused["message"].as_str().is_some_and(|m| !m.is_empty()), "{refused}");
-
-    // No price list is configured in the test: an answer the agent can say, not an error.
-    let (status, price) =
-        tool(&h, "get-price", Some(&good), json!({ "price_from": "בני ברק", "price_to": "ירושלים" })).await;
-    assert_eq!(status, 200);
-    assert_eq!(price["ok"], false);
-    assert!(price["message"].as_str().is_some_and(|m| !m.is_empty()), "{price}");
-}
-
-#[tokio::test]
-async fn an_elevenlabs_call_is_on_the_calls_page_and_its_ride_joins_it() {
-    let (base, _) = fake_elevenlabs((200, "<Response/>".to_string())).await;
-    let mode = callora_runtime::settings::CallModeSettings { elevenlabs: true, agent_id: "agent_abc123".into() };
-    let h = start_server_full(None, SessionConfig::default(), Some(base), mode).await;
-    voice_call(&h).await; // CallSid CA-eleven
-    let id = callora_runtime::eleven_tools::eleven_call_id("CA-eleven");
-    let mine = |r: &CallRecord| match r {
-        CallRecord::Started { info } => info.call_id == id,
-        CallRecord::Order { call_id, .. } | CallRecord::Ended { call_id, .. } => *call_id == id,
-        _ => false,
-    };
-    assert!(
-        RECORDS.lock().iter().any(|r| matches!(r, CallRecord::Started { info } if info.call_id == id && info.call_sid == "CA-eleven" && info.from.as_deref() == Some("+972501111111"))),
-        "the call is on the calls page from the moment it is handed over"
-    );
-
-    let token = callora_runtime::eleven_tools::tools_token(TOKEN);
-    let ride = json!({
-        "pickup": "הנביאים, ירושלים", "destination": "רוטשילד, תל אביב", "passengers": 2,
-        "customer_name": "דיאן כהן", "notes": "מזוודות", "call_sid": "CA-eleven", "conversation_id": "conv-phone",
-    });
-    let (_, sent) = tool(&h, "create-ride", Some(&token), ride).await;
-    assert_eq!(sent["ok"], true, "{sent}");
-    let records = RECORDS.lock();
-    let orders = records.iter().filter(|r| matches!(r, CallRecord::Order { call_id, .. } if *call_id == id)).count();
-    assert_eq!(orders, 1, "the ride is an order of that call");
-    assert!(
-        !records.iter().any(|r| mine(r) && matches!(r, CallRecord::Ended { .. })),
-        "a phone call ends with its transcript, not with the ride"
-    );
-}
-
-#[tokio::test]
-async fn a_transfer_with_no_desk_says_so_instead_of_promising_one() {
-    let h = start_server().await;
-    let token = callora_runtime::eleven_tools::tools_token(TOKEN);
-    let (_, none) = tool(&h, "transfer-to-desk", Some(&token), json!({ "call_sid": "CA-x", "summary": "x" })).await;
-    assert_eq!(none["ok"], false, "{none}");
-    let (_, no_call) = tool(&h, "transfer-to-desk", Some(&token), json!({ "summary": "x" })).await;
-    assert_eq!(no_call["ok"], false, "{no_call}");
-}
-
-#[tokio::test]
-async fn a_tool_call_needs_no_token_when_elevenlabs_confirms_its_live_conversation() {
-    let (base, _) = fake_elevenlabs((200, "<Response/>".to_string())).await;
-    let mode = callora_runtime::settings::CallModeSettings { elevenlabs: true, agent_id: "agent_abc123".into() };
-    let h = start_server_full(None, SessionConfig::default(), Some(base), mode).await;
-    let ride = |conversation: &str, sid: &str| {
-        json!({ "pickup": "הנביאים, ירושלים", "destination": "רוטשילד, תל אביב", "passengers": 2,
-                "customer_name": "דיאן", "conversation_id": conversation, "call_sid": sid })
-    };
-
-    let (status, sent) = tool(&h, "create-ride", None, ride("conv-live", "")).await;
-    assert_eq!((status, &sent["ok"]), (200, &json!(true)), "a live conversation of our agent: {sent}");
-
-    assert_eq!(tool(&h, "create-ride", None, ride("conv-done", "")).await.0, 401, "a finished one");
-    assert_eq!(tool(&h, "create-ride", None, ride("conv-other", "")).await.0, 401, "another agent's");
-    assert_eq!(tool(&h, "create-ride", None, ride("conv-unknown", "")).await.0, 401, "one that does not exist");
-    assert_eq!(
-        tool(&h, "create-ride", None, json!({ "pickup": "x", "destination": "y", "passengers": 1 })).await.0,
-        401
-    );
-}
-
-#[tokio::test]
-async fn callora_answers_unless_the_owner_chose_elevenlabs() {
-    let (base, seen) = fake_elevenlabs((200, "<Response/>".to_string())).await;
-    let h = start_server_full(None, SessionConfig::default(), Some(base), Default::default()).await;
-    let body = voice_call(&h).await;
-    assert!(body.contains("<Connect><Stream url=\"wss://calls.example.test/webhooks/twilio/media\">"), "{body}");
-    assert!(seen.lock().is_empty(), "ElevenLabs is never asked");
 }
 
 #[tokio::test]
@@ -1321,8 +1110,6 @@ async fn a_garbled_street_is_heard_again_against_the_citys_streets() {
     let h = start_server_inner(
         Some(agent.clone()),
         SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() },
-        None,
-        Default::default(),
         Some((gazetteer, hearing.clone())),
     )
     .await;
@@ -1368,8 +1155,6 @@ async fn a_street_the_stream_heard_right_is_not_heard_again() {
     let h = start_server_inner(
         Some(agent.clone()),
         SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() },
-        None,
-        Default::default(),
         Some((gazetteer, hearing.clone())),
     )
     .await;
@@ -1642,8 +1427,6 @@ async fn a_passengers_answer_with_no_number_is_heard_again() {
     let h = start_server_inner(
         Some(agent.clone()),
         SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() },
-        None,
-        Default::default(),
         Some((gazetteer, hearing.clone())),
     )
     .await;

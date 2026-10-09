@@ -3,7 +3,6 @@ import { Headphones, PhoneForwarded, PhoneIncoming, PhoneOutgoing, Plus, Trash2,
 import { type DeskSettings, type SettingsData, Unauthorized, useApi } from "../api";
 import { Badge, Button, Card, Field, FIELD, Input, PageHeader, Problem, Skeleton, cx, useToast } from "../ui";
 import { AgentModelCard } from "./AgentModelCard";
-import { CallModeCard } from "./CallModeCard";
 import { PriceBotCard } from "./PriceBot";
 import { VoiceCard } from "./VoiceCard";
 
@@ -56,12 +55,6 @@ export function Settings() {
               </li>
             ))}
           </ol>
-          <CallModeCard
-            key={JSON.stringify(settings.data.call_mode)}
-            mode={settings.data.call_mode}
-            canSave={settings.data.saving}
-            onChanged={settings.reload}
-          />
           {settings.data.agent && (
             <AgentModelCard
               key={JSON.stringify(settings.data.agent.active)}
