@@ -1638,8 +1638,18 @@ impl Engine {
         });
         // With the city given before, try the street there first ("בן זכאי 45" after "אלעד"
         // is a street of אלעד, not the moshav בן זכאי).
+        // Unless the answer is another town by its name: "אלעד" after "אילת" corrects the city
+        // (looked up as "אלעד, אילת", a live call booked the street "אילת" in לוד). A town of a
+        // few streets stays a street of the city before ("בן זכאי" in אלעד, not the moshav).
+        let another_town = matches!(
+            g.resolve(spoken),
+            Lookup::Found(ref a) if a.street.is_none() && a.place.is_none() && a.number.is_none()
+                && city_before.as_deref() != Some(a.city_said.as_str())
+                && g.town_names(20).contains(&a.city)
+        );
         let in_city_before = city_before
             .as_ref()
+            .filter(|_| !another_town)
             .map(|city| g.resolve(&format!("{spoken}, {city}")))
             .filter(|l| matches!(l, Lookup::Found(a) if a.street.is_some()));
         // "street, city" as the agent wrote it (the parsed value has lost the comma): the
@@ -2095,6 +2105,11 @@ impl Engine {
     pub fn second_hearing_question(&self, transcript: &str) -> Option<(String, Vec<String>)> {
         let g = self.gazetteer.as_ref()?;
         if let Some(city) = self.street_focus() {
+            // Another town named while a street is asked corrects the city ("אלעד, לא אלת."
+            // to "איפה באילת לאסוף?"): heard against אילת's streets it came back "אלול".
+            if g.towns_named(transcript).iter().any(|t| *t != city) {
+                return None;
+            }
             let street_found = [transcript.to_string(), street_answer(transcript)].iter().any(|t| {
                 matches!(g.resolve_within(t, &city), Some(crate::gazetteer::Lookup::Found(a)) if a.street.is_some())
             });

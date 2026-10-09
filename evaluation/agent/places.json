@@ -348,5 +348,56 @@
         }
       }
     ]
+  },
+  {
+    "id": "a_city_corrected_while_its_street_is_asked",
+    "note": "A live call: \"מאלעד\" heard \"מאילת\"; the caller said \"אלעד, לא אלת.\" while the street of אילת was asked, and was asked about a street of בני ברק",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיפה לאן?"
+        }
+      },
+      {
+        "caller": "מאילת לבני ברק.",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "asks": [
+            "pickup"
+          ],
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "אילת"
+            },
+            {
+              "slot": "destination",
+              "value": "בני ברק"
+            }
+          ],
+          "say": "איפה באילת לאסוף?"
+        }
+      },
+      {
+        "caller": "אלעד, לא אלת.",
+        "expect": {
+          "cities": {
+            "pickup": "אלעד"
+          },
+          "says_any": [
+            "באלעד"
+          ],
+          "says_none": [
+            "בני ברק",
+            "באילת"
+          ]
+        }
+      }
+    ]
   }
 ]

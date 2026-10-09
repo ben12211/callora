@@ -3637,3 +3637,88 @@ fn a_street_both_hearings_heard_is_taken_at_once() {
     assert!(!spoken(&d).contains("נכון?"), "{}", spoken(&d));
     assert!(place(call.slot("pickup")).contains("45"), "{}", place(call.slot("pickup")));
 }
+
+#[test]
+fn a_city_corrected_while_its_street_is_asked_is_the_new_city_and_its_street_is_asked() {
+    // A live call: "מאלעד לבני ברק" was heard "מאילת לבני ברק"; the caller said "אלעד, לא
+    // אלת." and was asked for a street of בני ברק, the pickup's street never asked.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "2600\tאילת\t1\tאלול\tofficial\n1309\tאלעד\t110\tרבי עקיבא\tofficial\n6100\tבני ברק\t825\tעזרא\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    let d = call.engine.on_agent_turn(
+        "מאילת לבני ברק.",
+        asking(
+            &["pickup"],
+            decide(
+                AgentAction::None,
+                "איפה באילת לאסוף?",
+                Some("book_ride"),
+                &[("pickup", "אילת"), ("destination", "בני ברק")],
+            ),
+        ),
+        "",
+    );
+    assert!(spoken(&d).contains("באילת"), "{}", spoken(&d));
+    assert_eq!(call.engine.street_focus().as_deref(), Some("אילת"));
+    // A city named while a street is asked is no street of the old one: no second hearing.
+    assert!(call.engine.second_hearing_question("אלעד, לא אלת.").is_none());
+    let d = call.engine.on_agent_turn(
+        "אלעד, לא אלת.",
+        asking(&["pickup"], decide(AgentAction::None, "סליחה. איפה באלעד לאסוף?", None, &[("pickup", "אלעד")])),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("באלעד") && !said.contains("בני ברק"), "{said}");
+    assert_eq!(call.engine.street_focus().as_deref(), Some("אלעד"));
+}
+
+#[test]
+fn a_city_corrected_after_a_turn_not_understood_still_asks_its_street() {
+    // The live call's replies, as the agent gave them: the route asked by its phrase, the
+    // pickup's street asked in אילת, a correction not understood, then "איפה באלעד לאסוף?"
+    // which was held for "לאיזה רחוב בבני ברק?".
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "2600	אילת	1	אלול	official
+1309	אלעד	110	רבי עקיבא	official
+6100	בני ברק	825	עזרא	official
+",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    let mut route = decide(AgentAction::None, "", Some("book_ride"), &[]);
+    route.phrase = Some("ask_route".into());
+    call.engine.on_agent_turn("אני רוצה להזמין מונית.", route, "");
+    call.engine.on_agent_turn(
+        "מאילת לבני ברק.",
+        asking(
+            &["pickup"],
+            decide(
+                AgentAction::None,
+                "איפה באילת לאסוף?",
+                Some("book_ride"),
+                &[("pickup", "אילת"), ("destination", "בני ברק")],
+            ),
+        ),
+        "",
+    );
+    call.engine.on_agent_turn(
+        "אלעד, לא אלת.",
+        asking(&["pickup"], decide(AgentAction::None, "סליחה, לא קלטתי. איפה באילת לאסוף?", Some("book_ride"), &[])),
+        "",
+    );
+    let fields = vec![("pickup".to_string(), "אלעד".to_string())];
+    assert_eq!(call.engine.moves_on(&fields, &["pickup".to_string()]), None, "asking the pickup is not moving on");
+    assert_eq!(call.engine.out_of_order("אלעד, לא אלת.", &fields, &["pickup".to_string()]), None, "nor out of order");
+    let d = call.engine.on_agent_turn(
+        "אלעד, לא אלת.",
+        asking(
+            &["pickup"],
+            decide(AgentAction::None, "סליחה, צודק. איפה באלעד לאסוף?", Some("book_ride"), &[("pickup", "אלעד")]),
+        ),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("באלעד") && !said.contains("בני ברק"), "{said}");
+}
