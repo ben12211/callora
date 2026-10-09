@@ -68,7 +68,6 @@ jobs:
         run: |
           bash -n deploy/deploy.sh deploy/k8s-deploy.sh deploy/bootstrap-oracle-linux.sh
           docker compose -f docker-compose.yml config -q
-          docker compose -f docker-compose.prod.yml config -q
           docker compose -f docker-compose.edge.yml config -q
           python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
           python3 - <<'PY'
@@ -85,6 +84,7 @@ jobs:
         if: github.event_name == 'push'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_BACKUP_MODEL: ${{ vars.AGENT_BACKUP_MODEL }}
           AGENT_REASONING_EFFORT: ${{ vars.AGENT_REASONING_EFFORT }}
@@ -103,6 +103,13 @@ jobs:
           # recognizer, the second hearing and the agent.
           ./dev callora eval --cases evaluation/audio --repeat 1 --min-pass 0.9 | tee eval-audio.txt
           { echo '```'; tail -n 40 eval.txt; echo; tail -n 20 eval-audio.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # The same voices through Soniox, to compare recognizers: reported, never a gate.
+          if [[ -n "$SONIOX_API_KEY" ]]; then
+            sed -i 's/^STT_PROVIDER=.*/STT_PROVIDER=soniox/' .env
+            echo "SONIOX_API_KEY=$SONIOX_API_KEY" >> .env
+            ./dev callora eval --cases evaluation/audio --repeat 1 | tee eval-soniox.txt || true
+            { echo 'Soniox:'; echo '```'; tail -n 20 eval-soniox.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Stop the development stack
         if: always()
@@ -275,6 +282,7 @@ jobs:
       ELEVENLABS_VOICE_ID: ${{ vars.ELEVENLABS_VOICE_ID || secrets.ELEVENLABS_VOICE_ID }}
       ELEVENLABS_DYNAMIC_MODEL: ${{ vars.ELEVENLABS_DYNAMIC_MODEL }}
       DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+      SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
       # The legacy admin password until a dashboard one is set.
       DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD || secrets.ADMIN_PASSWORD }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -347,7 +355,7 @@ jobs:
           # /opt/callora/.env, which k8s-deploy.sh turns into the cluster's Secret.
           for name in TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN STREAM_TOKEN_SECRET \
                       ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID ELEVENLABS_DYNAMIC_MODEL \
-                      STT_PROVIDER OPENAI_STT_HINTS DEEPGRAM_API_KEY OPENAI_API_KEY GEMINI_API_KEY GEMINI_MODEL \
+                      STT_PROVIDER OPENAI_STT_HINTS DEEPGRAM_API_KEY SONIOX_API_KEY OPENAI_API_KEY GEMINI_API_KEY GEMINI_MODEL \
                       TEXT_LLM_MODEL TEXT_LLM_REASONING_EFFORT \
                       AGENT_MODEL AGENT_BACKUP_MODEL AGENT_FALLBACK_MODEL AGENT_REASONING_EFFORT AGENT_PRICES \
                       TAXI_PHONE_NUMBERS TAXI_HANDOFF_NUMBER TAXI_DISPATCH_URL TAXI_DISPATCH_TOKEN \

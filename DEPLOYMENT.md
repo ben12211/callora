@@ -33,12 +33,9 @@ to end, rolls the backend out, and fails back to the previous revision if it doe
 ready. The images must stay **public** on Docker Hub: the cluster pulls them without
 credentials.
 
-The first deploy into the cluster adopted the Docker Compose stack (`docker-compose.prod.yml`,
-kept for reference): its database by `pg_dump`, its voice library and WhatsApp logins by copy;
-Caddy was pointed at the cluster, and the old containers were removed once the public address
-answered from it. Their volumes (`callora_postgres_data`, `callora_voice_library`,
-`callora_whatsapp_data`) are kept as a backup. The sections below on Compose describe that
-older setup.
+Until 2026-10-01 Callora ran in Docker Compose; the first deploy into the cluster copied its
+database, voice library and WhatsApp logins over. The old volumes (`callora_postgres_data`,
+`callora_voice_library`, `callora_whatsapp_data`) are kept on the VM as a backup.
 
 ## One-time Docker Hub setup
 
@@ -98,7 +95,7 @@ DATABASE_URL=postgresql://callora:URL_ENCODED_PASSWORD@db:5432/callora
 PUBLIC_BASE_URL=https://calls.example.com
 ```
 
-If `POSTGRES_PASSWORD` contains URL-reserved characters, percent-encode it in `DATABASE_URL`. `DATABASE_URL` must use the Compose service hostname `db`. An existing legacy `.env` works as it is: V2 keeps these names, and legacy-only entries are ignored.
+If `POSTGRES_PASSWORD` contains URL-reserved characters, percent-encode it in `DATABASE_URL`. `DATABASE_URL` must use the database service hostname `db`. An existing legacy `.env` works as it is: V2 keeps these names, and legacy-only entries are ignored.
 
 If the file does not exist, the first deployment creates it with the synchronized settings, then stops and names the host settings it cannot know.
 
@@ -124,47 +121,24 @@ In the Twilio console, each taxi number's **A call comes in** webhook is `POST h
 
 ## CI/CD behavior
 
-Pull requests run `./dev check` (rustfmt, clippy with warnings denied, and the whole test suite against a real PostgreSQL, all in containers), business configuration validation, shell syntax checks, and Compose validation. They never use deployment secrets.
+Pull requests run `./dev check` (rustfmt, clippy with warnings denied, and the whole test suite against a real PostgreSQL, all in containers), business configuration validation, shell syntax checks, and validation of the Compose files (local development and Caddy). They never use deployment secrets.
 
 A push to `main` then:
 
 1. Builds the `linux/arm64` image. The Dockerfile cross-compiles a static binary on the runner's own architecture with cargo-zigbuild, with zig fetched from PyPI against a pinned checksum. The result is a distroless, non-root image of about 5 MB.
 2. Pushes `DOCKER_HUB_USERNAME/callora:<sha>` and `:latest`, and deploys the SHA tag over SSH.
-3. `deploy.sh` reclaims disk, syncs settings, pulls, starts PostgreSQL, validates Caddy, runs `callora migrate` (retried, before the backend is replaced), replaces the backend, starts Caddy, and waits for the container healthcheck (`callora healthcheck`), the internal health check and the public HTTPS health check. It rolls back automatically on failure.
+3. `deploy.sh` reclaims disk and syncs settings into `/opt/callora/.env`; `k8s-deploy.sh` turns them into the cluster's Secret, records missing voice-library sentences (a Job), waits for calls in progress to end, rolls the backend out (migrations run in its init container), and checks the public HTTPS health. A backend that does not become ready is rolled back to the previous revision.
 
 Migrations create and evolve only the `callora_v2` schema, and they are forward-compatible with the previous image.
 
 ## Voice library
 
-Most replies are pre-generated audio. It lives in the `callora_voice_library` volume, and every deployment records whatever is missing (new or changed sentences, or a new voice) before the new backend answers calls; only missing clips are synthesized, and a failed build does not block the release (those sentences use live TTS). To run it by hand:
-
-```bash
-cd /opt/callora
-docker compose --env-file .env -f docker-compose.prod.yml run --rm backend voice-library build
-docker compose --env-file .env -f docker-compose.prod.yml run --rm backend voice-library status
-docker compose --env-file .env -f docker-compose.prod.yml restart backend
-```
-
-The running backend loads the library at startup, hence the restart after a manual build.
-
-## Cutting over from the legacy stack
-
-The Postgres volume, Caddy volumes, ports, `.env` host settings and webhook paths are all unchanged, so a V2 deployment replaces the legacy backend in place. Legacy data in the `public` schema is left untouched. To return to the legacy system, deploy `OLD-MAIN`: its image tags are still on Docker Hub, and V2's schema does not interfere with it.
+Most replies are pre-generated audio, in `/var/lib/callora/voice-library` on the node. Every deployment records whatever is missing (new or changed sentences, or a new voice) in a Job before the new backend answers calls; only missing clips are synthesized, and a failed build does not block the release (those sentences use live TTS). The running backend loads the library at startup.
 
 
 ## Disk space
 
-Every release is pulled under its own immutable commit-SHA tag, so the VM gains a whole image per deployment. Nothing used to remove one, and a boot volume that filled up between releases failed the deployment in the worst possible place: partway through unpacking a layer, with the live configuration already replaced.
-
-Container logs were the other half of it, and on a boot volume this size the larger half: Docker never rotates a log on its own, and the backend narrates every call turn to stdout. Every service in `docker-compose.prod.yml` now caps its log at 10 MB across 3 files, and `deploy/bootstrap-oracle-linux.sh` writes the same defaults into `/etc/docker/daemon.json` for anything started outside Compose. A container keeps its old, unbounded log file until it is next recreated, which the deployment does anyway.
-
-Each deployment reclaims before it touches anything. Superseded `*/callora:<sha>` images, dangling images, the build cache, and containers left behind by earlier runs are removed; the incoming release, the release a rollback would restore, and anything a running container still uses are all kept. Volumes are never pruned, under any filter, because the PostgreSQL named volume is the production database.
-
-After reclaiming, the deployment checks that `/opt/callora`, Docker's data root, and `/var/lib/containerd` each have room to unpack the release: twice the size of the release already on the host, and never less than 1 GiB. Measuring it from the image rather than fixing a number means the check tracks whatever the backend image grows into. If there is not enough, it truncates any container log over 50 MB — in place, the way `logrotate -copytruncate` does, using an image already on the host so nothing has to be pulled onto a full disk — and checks once more. Short of that it stops before the previous release is replaced, so the site keeps serving while the space is sorted out.
-
-A refusal prints `df`, `docker system df`, **and the largest directories on the root filesystem**, because Docker's own accounting only covers Docker's files. On this VM those came to 2.3 GB of images on a disk with 28 GB used — the thing filling it was outside Docker entirely, and no amount of pruning would have found it.
-
-Reclaiming can also be run on its own, which is the first thing to try on a host that has already filled up:
+Every release is pulled under its own immutable commit-SHA tag. Before each deployment `deploy.sh reclaim` removes superseded `*/callora:<sha>` images on the VM (the release a rollback would restore is kept, and the daemon refuses to remove an image a container uses), dangling images, the build cache and containers left behind more than a day ago (never minikube's node). Volumes are never pruned. Inside the node, images of earlier releases are removed after a deployment succeeds. Container logs are capped by `/etc/docker/daemon.json` (written by `deploy/bootstrap-oracle-linux.sh`).
 
 ```bash
 df -h /var
@@ -172,43 +146,27 @@ docker system df
 bash /opt/callora/deploy.sh reclaim
 ```
 
-If that is not enough, the boot volume needs to grow; images are not what is filling it.
-
 ## Recovering a lost environment file
 
-`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, and `PUBLIC_BASE_URL` deliberately never leave the VM, so the pipeline cannot re-send them if `/opt/callora/.env` is lost. Before the atomic writes described below, a rollback on a full disk could truncate that file and take them with it.
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, and `PUBLIC_BASE_URL` deliberately never leave the VM, so the pipeline cannot re-send them if `/opt/callora/.env` is lost.
 
 `update-secrets` now puts them back on its own, from two places that still have them: `/opt/callora/.rollback/.env`, the backup the failed deployment took, whose lines are copied back byte for byte; and failing that, the containers still running with the values, read with `docker inspect`.
 
 Only settings that are actually missing are written, only names are ever logged, and a value read from a container is used only if it survives an env file unquoted — anything else is reported by name rather than written back as something subtly different from what the server is running on.
 
-## Ports 80 and 443
-
-Caddy is the last container a deployment starts, so a port already taken by something else used to surface as a daemon error at the very end — after the backend had been replaced. The deployment now checks first, before it touches the live configuration, and names every container publishing 80 or 443 that does not belong to the `callora` Compose project, with its image and project.
-
-It reports and refuses; it never stops anything. A container holding :80 may be the stack currently serving the site, and it may own the database volume, so what happens to it is a decision for a person and not for a deployment.
-
-Caddy is then checked again after it starts. Compose reuses a container whose configuration has not changed, so a Caddy container created by a deployment that failed to bind the ports can be started by the next one without ever binding them — and then everything reports healthy, because Caddy's health check runs inside the container, while nothing answers from outside the VM. If the ports are not held, the deployment recreates Caddy once and checks again. A public health check that still fails says whether Caddy holds the ports, which separates a Docker problem from a VCN, NSG, firewalld, or DNS one.
-
 ## Rollback behavior
 
-Before changing the running application, `/opt/callora/deploy.sh` saves the prior image reference and production configuration. Configuration is replaced by writing a staging file next to the destination and renaming it, so `/opt/callora/.env` is always either the old file or the new one — a full disk can no longer truncate it halfway through a rollback. If image pull, Caddy validation, migration, container startup, or any health check fails, it restores the previous backend and Caddy configuration. On a failed first deployment it stops the app containers, restores the original server environment, and preserves PostgreSQL and its volume.
-
-Database migrations are never automatically reversed because doing so could destroy data. New migrations must therefore be backward-compatible with the previous application image. The old backend remains running while the new image is pulled and migrations execute; only the final single-container replacement creates a brief application restart.
+A backend that does not become ready within six minutes is rolled back to its previous revision (`kubectl rollout undo`); a release whose public health check then fails is rolled back by the workflow (`k8s-deploy.sh rollback`, the previous backend and WhatsApp revisions). Database migrations are never reversed automatically, because doing so could destroy data: a new migration must work with the previous image too.
 
 Useful production diagnostics:
 
 ```bash
-cd /opt/callora
-docker compose --env-file .env -f docker-compose.prod.yml ps
-docker compose --env-file .env -f docker-compose.prod.yml logs --tail=200 backend
-docker compose --env-file .env -f docker-compose.prod.yml logs --tail=200 caddy
-docker volume inspect callora_postgres_data
+bash /opt/callora/k8s-deploy.sh status
+kubectl -n callora get pods
+kubectl -n callora logs deploy/backend --tail=200
+docker logs --tail=200 callora-caddy-1
 df -h /var /opt
-docker system df
 ```
-
-Do not run `docker compose down --volumes` in production.
 
 ## After a deployment: the agent and the calls page
 

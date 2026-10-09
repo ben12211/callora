@@ -371,7 +371,8 @@ fn load_gazetteer() -> Option<Arc<callora_core::gazetteer::Gazetteer>> {
 }
 
 /// Speech recognition: OpenAI (`gpt-transcribe`), backed by Deepgram Nova-3 when it fails
-/// (`SttFailover`); `STT_PROVIDER=deepgram` puts Deepgram first. Each needs its key.
+/// (`SttFailover`); `STT_PROVIDER=deepgram` puts Deepgram first, `soniox` Soniox (`stt-rt-v5`)
+/// backed by OpenAI. Each needs its key.
 fn speech_to_text() -> Arc<dyn SpeechToText> {
     let openai = || {
         env("OPENAI_API_KEY").map(|key| {
@@ -393,8 +394,21 @@ fn speech_to_text() -> Arc<dyn SpeechToText> {
             Arc::new(Deepgram::new(key, env("DEEPGRAM_STT_URL"), env("DEEPGRAM_STT_MODEL"))) as Arc<dyn SpeechToText>
         })
     };
+    let soniox = || {
+        env("SONIOX_API_KEY").map(|key| {
+            Arc::new(callora_providers::soniox::Soniox::new(key, env("SONIOX_STT_URL"), env("SONIOX_STT_MODEL")))
+                as Arc<dyn SpeechToText>
+        })
+    };
     let chosen = match env("STT_PROVIDER").as_deref() {
         Some("deepgram") => deepgram().or_else(openai),
+        Some("soniox") => match (soniox(), openai()) {
+            (Some(primary), Some(backup)) => {
+                Some(Arc::new(callora_providers::stt_failover::SttFailover::new(primary, backup))
+                    as Arc<dyn SpeechToText>)
+            }
+            (primary, backup) => primary.or(backup),
+        },
         _ => match (openai(), deepgram()) {
             (Some(primary), Some(backup)) => {
                 Some(Arc::new(callora_providers::stt_failover::SttFailover::new(primary, backup))

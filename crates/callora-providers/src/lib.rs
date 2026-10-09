@@ -7,5 +7,6 @@ pub mod openai;
 pub mod openai_audio;
 pub mod openai_stt;
 pub mod race;
+pub mod soniox;
 pub mod stt_failover;
 pub mod twilio_rest;

@@ -54,6 +54,8 @@ pub fn is_outage(error: &str) -> bool {
         "quota",
         "billing",
         "credit",
+        "payment",
+        "402",
         "rate_limit",
         "429",
         "invalid_api_key",

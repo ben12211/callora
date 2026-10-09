@@ -8,11 +8,6 @@
 #   k8s-deploy.sh confirm                     record the release as the last good one
 #   k8s-deploy.sh rollback                    the previous backend and WhatsApp revisions
 #   k8s-deploy.sh status                      what runs, for a person
-#
-# The first deploy adopts the Docker Compose stack it replaces: its database (pg_dump), its
-# voice library and its WhatsApp logins are copied into the cluster, Caddy is pointed at the
-# cluster, and only once the public address answers from there are the old containers
-# removed (their volumes are kept).
 set -Eeuo pipefail
 umask 077
 
@@ -22,7 +17,6 @@ readonly INCOMING_DIR="$APP_DIR/incoming"
 readonly MANIFESTS="$APP_DIR/k8s"
 readonly EDGE_COMPOSE="$APP_DIR/docker-compose.edge.yml"
 readonly EDGE_ENV="$APP_DIR/edge.env"
-readonly LEGACY_COMPOSE="$APP_DIR/docker-compose.prod.yml"
 readonly LAST_IMAGE_FILE="$APP_DIR/.last-successful-image"
 readonly LOCK_FILE=/tmp/callora-deploy.lock
 readonly NS=callora
@@ -31,16 +25,11 @@ readonly NS=callora
 readonly NODE=minikube
 readonly NODE_DATA=/var/lib/callora
 readonly NODE_PORT=30300
-# The Compose stack this replaced.
-readonly LEGACY_DB=callora-db-1
-readonly LEGACY_BACKEND=callora-backend-1
-readonly LEGACY_WHATSAPP=callora-whatsapp-1
 
 log() { printf '[callora-k8s] %s\n' "$*" >&2; }
 k() { kubectl -n "$NS" "$@"; }
 on_node() { docker exec "$NODE" "$@"; }
 edge() { docker compose -p callora --env-file "$EDGE_ENV" -f "$EDGE_COMPOSE" "$@"; }
-legacy_running() { [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" == true ]]; }
 setting() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$ENV_FILE" | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/'; }
 
 ensure_cluster() {
@@ -73,7 +62,7 @@ apply_settings() {
     }
     END { for (i = 1; i <= n; i++) print order[i] "=" seen[order[i]] }
   ' "$ENV_FILE" > "$env"
-  # The defaults docker-compose.prod.yml gave when a setting was unset or empty.
+  # The defaults for settings left unset or empty.
   local default name value
   for default in RUST_LOG=info TRANSCRIPT_RETENTION_DAYS=30 ELEVENLABS_API_BASE_URL=https://api.elevenlabs.io \
                  WHATSAPP_MAX_SESSIONS=5; do
@@ -98,42 +87,10 @@ prepare_node_dirs() {
     chown 65532:65532 $NODE_DATA/voice-library && chown 1000:1000 $NODE_DATA/whatsapp"
 }
 
-node_dir_empty() { [[ -z "$(on_node sh -c "ls -A $NODE_DATA/$1 2>/dev/null")" ]]; }
-
-# A Compose volume's files into the node's directory for it, once (only into an empty one).
-adopt_volume() {
-  local volume="$1" dir="$2" owner="$3"
-  docker volume inspect "$volume" >/dev/null 2>&1 || return 0
-  node_dir_empty "$dir" || return 0
-  log "Copying the $volume volume into the cluster ($NODE_DATA/$dir)."
-  docker run --rm --network none -v "$volume:/from:ro" --entrypoint tar postgres:16-alpine -C /from -cf - . |
-    docker exec -i "$NODE" tar -C "$NODE_DATA/$dir" -xf -
-  on_node chown -R "$owner" "$NODE_DATA/$dir"
-}
-
-# The Compose stack's database into the cluster's, once: only while the cluster's has no
-# Callora schema, so a later deploy never overwrites it.
-adopt_database() {
-  legacy_running "$LEGACY_DB" || return 0
-  local present
-  present="$(k exec deploy/db -- sh -c \
-    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from pg_namespace where nspname = '\''callora_v2'\''"')"
-  [[ "$present" == 0 ]] || return 0
-  log 'Copying the database from the Compose stack into the cluster.'
-  docker exec "$LEGACY_DB" sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges' |
-    k exec -i deploy/db -- sh -c 'psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null
-  log "Database copied: $(k exec deploy/db -- sh -c \
-    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from callora_v2.calls"') calls."
-}
-
 active_calls() {
   local metrics=''
   if k get endpoints backend -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null | grep -q .; then
     metrics="$(kubectl get --raw "/api/v1/namespaces/$NS/services/backend:http/proxy/metrics" 2>/dev/null || true)"
-  elif legacy_running "$LEGACY_BACKEND"; then
-    local ip
-    ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$LEGACY_BACKEND" | awk '{print $1}')"
-    metrics="$(curl -fsS --max-time 3 "http://$ip:3000/metrics" 2>/dev/null || true)"
   fi
   awk '$1 == "callora_calls_active" { print $2 }' <<<"$metrics"
 }
@@ -238,24 +195,8 @@ refresh_edge() {
   wait_for_caddy || { log 'Caddy did not become healthy.'; return 1; }
 }
 
-# The Compose stack again, as it was, when the cluster could not take over the first time.
-restore_legacy() {
-  [[ -f "$LEGACY_COMPOSE" ]] || return 0
-  log 'Putting the Compose stack back in front.'
-  docker compose -p callora --env-file "$ENV_FILE" -f "$LEGACY_COMPOSE" up -d --no-deps whatsapp caddy || true
-}
-
-retire_legacy() {
-  local c
-  for c in "$LEGACY_BACKEND" "$LEGACY_WHATSAPP" "$LEGACY_DB"; do
-    docker inspect "$c" >/dev/null 2>&1 || continue
-    docker rm -f "$c" >/dev/null
-    log "Removed the Compose container $c (its volume is kept)."
-  done
-}
-
 deploy_release() {
-  local image="$1" whatsapp="${2:-}" hash first=false
+  local image="$1" whatsapp="${2:-}" hash
   [[ "$image" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/callora:[0-9a-f]{40}$ ]] || {
     log 'The image must be a Docker Hub Callora image with an immutable commit-SHA tag.'
     return 1
@@ -266,7 +207,6 @@ deploy_release() {
   install -m 0644 "$INCOMING_DIR/docker-compose.edge.yml" "$EDGE_COMPOSE"
   install -m 0644 "$INCOMING_DIR/Caddyfile" "$APP_DIR/Caddyfile"
 
-  k get deploy backend >/dev/null 2>&1 || first=true
   # WhatsApp: the image of this commit; without one (its build failed), whatever runs now.
   [[ -n "$whatsapp" ]] || whatsapp="$(current_image whatsapp)"
   [[ -n "$whatsapp" ]] || whatsapp="${image%%:*}:whatsapp-latest"
@@ -278,18 +218,6 @@ deploy_release() {
   kubectl apply -f "$MANIFESTS/base.yaml"
   k rollout status deploy/db --timeout=5m
 
-  if [[ "$first" == true ]]; then
-    log 'First deploy into the cluster: adopting the Compose stack.'
-    adopt_database
-    adopt_volume callora_voice_library voice-library 65532:65532
-    if legacy_running "$LEGACY_WHATSAPP" && node_dir_empty whatsapp; then
-      # Two browsers on one WhatsApp login would sign each other out.
-      log 'Stopping the Compose WhatsApp service to move its logins.'
-      docker stop "$LEGACY_WHATSAPP" >/dev/null
-    fi
-    adopt_volume callora_whatsapp_data whatsapp 1000:1000
-  fi
-
   build_voice_library "$image"
   wait_for_calls_to_end
 
@@ -297,11 +225,7 @@ deploy_release() {
   apply_app "$image" "$whatsapp" "$hash"
   if ! k rollout status deploy/backend --timeout=6m; then
     k logs deploy/backend --all-containers --tail=60 2>/dev/null || true
-    if [[ "$first" == true ]]; then
-      restore_legacy
-    else
-      k rollout undo deploy/backend || true
-    fi
+    k rollout undo deploy/backend || true
     log 'The backend did not become ready.'
     return 1
   fi
@@ -309,19 +233,11 @@ deploy_release() {
     log 'The WhatsApp service is not ready; calls and orders are unaffected.'
   fi
 
-  if [[ "$first" == true ]]; then
-    wait_for_calls_to_end
-    log 'Pointing Caddy at the cluster.'
-  fi
   if ! refresh_edge || ! public_health 30; then
-    if [[ "$first" == true ]]; then
-      restore_legacy
-      log 'The public address did not answer from the cluster; the Compose stack serves again.'
-    fi
+    log 'The public address did not answer from the cluster.'
     return 1
   fi
   log "Public health check passed: $(setting PUBLIC_BASE_URL)/health answers from the cluster."
-  [[ "$first" == true ]] && retire_legacy
 
   # Images of releases before, inside the node; whatever a pod uses stays.
   on_node crictl rmi --prune >/dev/null 2>&1 || true

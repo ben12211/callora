@@ -50,7 +50,8 @@ secrets already configured in GitHub keep working.
 | `TEXT_LLM_MODEL` | optional | OpenAI-side model for understanding without an agent (default `gpt-4o-mini`). *legacy* |
 | `GEMINI_MODEL` | optional | Gemini model for understanding (default `gemini-3.8-flash`). |
 | `TEXT_LLM_REASONING_EFFORT` | optional | Gemini thinking level, sent as `reasoning_effort` (default `low`; `gemini-3.8-flash` rejects `minimal`). |
-| `STT_PROVIDER` | optional | `openai` (default, backed by Deepgram) or `deepgram`. |
+| `STT_PROVIDER` | optional | `openai` (default, backed by Deepgram), `deepgram`, or `soniox` (backed by OpenAI). |
+| `SONIOX_API_KEY` | optional | Soniox real-time speech-to-text (`stt-rt-v5`), for `STT_PROVIDER=soniox`; the eval also runs the voice cases through it for comparison. |
 | `TAXI_PHONE_NUMBERS`, `TAXI_HANDOFF_NUMBER` | see above | May be Variables instead of Secrets. |
 
 ## Host-only settings (`/opt/callora/.env` on the VM, never sent by the pipeline)
