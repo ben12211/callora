@@ -68,7 +68,7 @@ accounts: each one runs a browser of its own (about 300–500 MB).
 
 ## Optional runtime tuning (environment)
 
-`AGENT_HEDGE_MS` (default `1100`), `AGENT_SPECULATE` (the agent starts on the partial transcript at the end of speech; on unless `false`),
+`AGENT_HEDGE_MS` (default `1100`), `AGENT_SPECULATE` (the agent starts on the partial transcript at the end of speech; off unless `true`: Soniox's partial words lag the speech, so the guesses missed),
 `SECOND_HEARING` (a street or city answer the stream got wrong is heard again by an audio model told the names expected; `off` turns it off), `SECOND_HEARING_MODEL` (default `gpt-audio-1.5`),
 `EVAL_PRICES` (prices for `callora eval` only; defaults to `AGENT_PRICES`),
 `RUST_LOG`, `LOG_FORMAT`, `HOST`, `PORT`, `BUSINESS_CONFIG_DIR`, `AUDIO_LIBRARY_DIR`,

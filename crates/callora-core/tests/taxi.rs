@@ -3521,8 +3521,14 @@ fn a_street_heard_again_without_its_number_keeps_the_number_the_stream_heard() {
     assert_eq!(call.engine.with_stream_number("עריף שתים עשרה.", "ראב\"ד"), "ראב\"ד 12");
     assert_eq!(call.engine.with_stream_number("עריף שתים עשרה.", "הרי\"ף 12"), "הרי\"ף 12", "its own number");
     assert_eq!(call.engine.with_stream_number("עריף.", "הרי\"ף"), "הרי\"ף", "none heard");
-    // And the stream's "עריף" is itself הרי"ף: no second hearing is needed.
+    // And the stream's "עריף" is itself הרי"ף: no second hearing is needed, also with what
+    // Soniox writes around it.
     assert!(call.engine.second_hearing_question("עריף שתים עשרה.").is_none());
+    assert!(call.engine.second_hearing_question("כן, עריף שתים עשרה.").is_none());
+    assert!(call.engine.second_hearing_question("אממ, עריף 12.").is_none());
+    assert!(call.engine.second_hearing_question("אממ, מזרה.").is_some(), "no street: heard again");
+    assert_eq!(callora_core::engine::street_answer("כן, אממ, בן זכאי 45."), "בן זכאי 45.");
+    assert_eq!(callora_core::engine::street_answer("טוב הרב שך 4"), "הרב שך 4");
 }
 
 #[test]

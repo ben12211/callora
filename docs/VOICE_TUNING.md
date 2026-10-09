@@ -57,7 +57,7 @@ A live TTS sentence still arriving has an unknown end and is always cut.
 
 The agent is also told, without a setting, when an utterance's audio was damaged (the line lost 200 ms or more of it, or a fifth of it was clipped: wind or shouting), when words were much quieter than the caller's own voice (someone near them: under 30% of the caller's level), and the agent's own words coming back on a speakerphone are dropped.
 | `VAD_TRIGGER_MS` | `100` | Voice needed for the VAD to say speech started (existing). |
-| `AGENT_SPECULATE` | on | Start the agent on the partial transcript (existing). |
+| `AGENT_SPECULATE` | off | Start the agent on the partial transcript at the end of speech. Soniox's partial words lag a syllable behind, so on live calls every guess missed. |
 
 Set both `VAD_ENDPOINT_SHORT_MS` and `VAD_ENDPOINT_LONG_MS` to `VAD_ENDPOINT_MS` to turn the
 adaptation off.

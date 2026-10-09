@@ -2095,10 +2095,9 @@ impl Engine {
     pub fn second_hearing_question(&self, transcript: &str) -> Option<(String, Vec<String>)> {
         let g = self.gazetteer.as_ref()?;
         if let Some(city) = self.street_focus() {
-            let street_found = matches!(
-                g.resolve_within(transcript, &city),
-                Some(crate::gazetteer::Lookup::Found(a)) if a.street.is_some()
-            );
+            let street_found = [transcript.to_string(), street_answer(transcript)].iter().any(|t| {
+                matches!(g.resolve_within(t, &city), Some(crate::gazetteer::Lookup::Found(a)) if a.street.is_some())
+            });
             return (!street_found)
                 .then(|| (format!("which street in {city}"), g.street_candidates(&city, transcript, 700, 150)));
         }
@@ -3462,6 +3461,20 @@ const PASSENGER_WORDS: [&str; 16] = [
 ];
 
 /// A digit or a number word in the words heard.
+/// A street answer without what comes around the street: hesitations anywhere and a yes or no
+/// before it. Soniox writes them out ("אממ, אהרונוביץ 32.", "כן, בן זכאי 45."), and the
+/// street was then looked up with them and heard a second time for nothing.
+pub fn street_answer(transcript: &str) -> String {
+    let bare = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+    let mut words: Vec<&str> =
+        transcript.split_whitespace().filter(|w| !crate::understanding::is_hesitation(&bare(w))).collect();
+    while words.first().is_some_and(|w| matches!(bare(w).as_str(), "כן" | "לא" | "אוקיי" | "אוקי" | "טוב" | "סבבה"))
+    {
+        words.remove(0);
+    }
+    words.join(" ")
+}
+
 pub fn has_a_number(text: &str) -> bool {
     text.chars().any(|c| c.is_ascii_digit())
         || crate::text::normalize(text).split_whitespace().any(|w| {

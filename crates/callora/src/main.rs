@@ -1016,7 +1016,10 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     }
     // On unless turned off: the agent starts on the recognizer's partial text at the end of
     // speech, ~350 ms before the final transcript; a different final starts it over.
-    session.agent_speculate = !env("AGENT_SPECULATE").is_some_and(|v| v == "false" || v == "0");
+    // Off unless asked for: Soniox's words at the end of speech lag a syllable behind ("אני רוצה
+    // להזמ" for "אני רוצה להזמין מונית"), so every guess missed and cost a request, while its
+    // final words come 0.17 s later anyway.
+    session.agent_speculate = env("AGENT_SPECULATE").is_some_and(|v| v == "true" || v == "1");
     session.sample_audio_from = env("AUDIO_SAMPLE_NUMBERS").map(|l| parse_allow_list(&l)).unwrap_or_default();
     if let Some(ms) = env("VAD_TRIGGER_MS").and_then(|v| v.parse().ok()) {
         session.vad.trigger_ms = ms;
