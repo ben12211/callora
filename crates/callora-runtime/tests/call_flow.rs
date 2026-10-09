@@ -1140,6 +1140,50 @@ async fn a_garbled_street_is_heard_again_against_the_citys_streets() {
 }
 
 #[tokio::test]
+async fn a_street_due_a_second_hearing_is_not_answered_on_the_partial_words() {
+    // With a recognizer that streams words (Soniox), the agent starts on the partial words at
+    // the end of speech; a hit would skip the second hearing of a street the lists do not know.
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "say": "איפה באלעד לאסוף?", "action": "none", "task": "book_ride", "asks": ["pickup"],
+                "fields": [{ "slot": "pickup", "value": "אלעד" }] }),
+        json!({ "say": "לאן?", "action": "none", "task": "book_ride",
+                "fields": [{ "slot": "pickup", "value": "רבן יוחנן בן זכאי 45, אלעד" }] }),
+    ]);
+    let gazetteer = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n",
+    ));
+    let hearing = Arc::new(ListedHearing::default());
+    let h = start_server_inner(
+        Some(agent.clone()),
+        SessionConfig { tts_gain_db: 0.0, agent_speculate: true, ..SessionConfig::default() },
+        Some((gazetteer, hearing.clone())),
+    )
+    .await;
+    let mut ws = open_call(&h, "CA-no-speculation").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    speak(&mut ws, &h, "צריך מונית מאלעד").await;
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+
+    for _ in 0..30 {
+        ws.send(Message::Text(loud_frame().into())).await.unwrap();
+    }
+    // The words stream in while the caller speaks (the start of speech clears the last ones).
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    h.stt.partial("ב... זה קח ארבעים וחמש").await;
+    for _ in 0..40 {
+        ws.send(Message::Text(quiet_frame().into())).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.stt.say("ב... זה קח ארבעים וחמש").await;
+    collect(&mut ws, Duration::from_millis(600)).await;
+    assert_eq!(hearing.asked.lock().len(), 1, "the street answer is heard again");
+    let requests = agent.requests.lock();
+    assert_eq!(requests.len(), 2, "one decision, after the second hearing");
+    assert!(requests[1].user.contains("SECOND HEARING"), "{}", requests[1].user);
+}
+
+#[tokio::test]
 async fn a_street_the_stream_heard_right_is_not_heard_again() {
     let agent = Arc::new(ScriptedAgent::default());
     agent.replies.lock().extend([

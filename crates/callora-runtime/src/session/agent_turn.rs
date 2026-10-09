@@ -29,7 +29,26 @@ impl Session {
         if u.noise || self.engine.fast_lane(&u, needs_llm) {
             return;
         }
+        // A street or city the lists do not know yet is heard a second time first, which waits
+        // for the final words anyway; a hit here would skip it.
+        if self.second_hearing_expected(&text).is_some() {
+            tracing::info!(call = %self.info.call_sid, "a second hearing is due; not speculating");
+            return;
+        }
         self.start_agent(text, true);
+    }
+
+    /// The owner's test calls keep each utterance's audio, to compare recognizers.
+    fn record_utterance(&self, transcript: &str) {
+        if self.info.from.as_ref().is_some_and(|f| self.cfg.sample_audio_from.contains(f))
+            && !self.last_utterance.is_empty()
+        {
+            self.services.store.record(CallRecord::Utterance {
+                call_id: self.info.call_id,
+                heard: transcript.to_string(),
+                audio: self.last_utterance.clone(),
+            });
+        }
     }
 
     pub(super) fn on_final_agent(&mut self, text: String) {
@@ -43,6 +62,7 @@ impl Session {
                 if let Some(c) = &mut self.clock {
                     c.speculative_hit = true;
                 }
+                self.record_utterance(&transcript);
                 self.pending_agent = Some(p);
                 return self.adopt_speculation();
             }
@@ -67,15 +87,7 @@ impl Session {
         if self.engine.fast_lane(&fast, needs_llm) {
             return self.understood(fast);
         }
-        if self.info.from.as_ref().is_some_and(|f| self.cfg.sample_audio_from.contains(f))
-            && !self.last_utterance.is_empty()
-        {
-            self.services.store.record(CallRecord::Utterance {
-                call_id: self.info.call_id,
-                heard: transcript.clone(),
-                audio: self.last_utterance.clone(),
-            });
-        }
+        self.record_utterance(&transcript);
         // A city or street expected: hear the words once more, with every name expected as a
         // hint, before the agent decides ("זה ביתר" came back "זה יותר", "אהרונוביץ" as
         // "עונה מ-32"). The agent gets both.
