@@ -1695,7 +1695,55 @@ impl Engine {
         if matches!(&lookup, Lookup::Found(a) if a.number.is_some()) {
             self.state.doubted_numbers.remove(slot);
         }
+        // A street only the second hearing heard: the stream's words do not sound like any of
+        // its names ("עפרה." heard again as שדרות כפר עציון, "עריף" as ראב"ד). The audio
+        // model, told a city's streets, sometimes forces one onto whatever was said.
+        let unheard_street = match &lookup {
+            Lookup::Found(a)
+                if a.place.is_none()
+                    && self.state.second_hearing.is_some()
+                    && !self.state.unheard_streets.contains(slot) =>
+            {
+                let stream: String = self
+                    .state
+                    .history
+                    .iter()
+                    .filter(|t| t.speaker == Speaker::Caller)
+                    .map(|t| t.text.as_str())
+                    .chain(self.state.offered_streets.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(". ");
+                a.street
+                    .as_ref()
+                    .filter(|s| !g.street_heard(&a.city, s, &stream))
+                    .map(|_| a.street_said.clone().or_else(|| a.street.clone()).unwrap_or_default())
+            }
+            _ => None,
+        };
         Some(match lookup {
+            Lookup::Found(a) if unheard_street.is_some() && self.business.response("street_heard_check").is_some() => {
+                let street = unheard_street.unwrap_or_default();
+                let number = a.number.clone().unwrap_or_default();
+                let named = format!("{street} {number}").trim().to_string();
+                notes.push(format!(
+                    "{slot}: only the second hearing heard the street {street}; the caller's words do not sound like                      it, so it was not taken. The system asked whether they said it: if they agree, pass \"{named}, {}\";                      if not, ask for the street again",
+                    a.city_said
+                ));
+                self.state.unheard_streets.insert(slot.to_string());
+                if !self.state.offered_streets.contains(&street) {
+                    self.state.offered_streets.push(street);
+                }
+                if !number.is_empty() {
+                    self.state.doubted_numbers.insert(slot.to_string(), number);
+                }
+                self.state.doubt_confirm.insert(
+                    slot.to_string(),
+                    vec![prompt("street_heard_check", &[("street", named), ("city", a.city_said.clone())])],
+                );
+                self.state.place_cities.insert(slot.to_string(), a.city_said);
+                rejected.push(slot.to_string());
+                return None;
+            }
             // "בן זכאי 45" with no city: a house number is a street's, and the locality its words
             // name (the moshav בן זכאי) is not where the caller is. Ask for the city and keep
             // the street for it.

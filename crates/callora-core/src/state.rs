@@ -222,6 +222,10 @@ pub struct CallState {
     /// Place slots whose street was not found once already: the second time it is kept.
     #[serde(default)]
     pub doubted_streets: BTreeSet<String>,
+    /// Place slots whose street only the second hearing heard, and the caller was asked
+    /// whether they said it: once a call.
+    #[serde(default)]
+    pub unheard_streets: BTreeSet<String>,
     /// How many times each slot's place was rejected as never said: the third time the agent
     /// insists, it is taken (a check that loops is worse than a doubtful place).
     #[serde(default)]
@@ -330,6 +334,7 @@ impl CallState {
             agent_notes: Vec::new(),
             place_cities: BTreeMap::new(),
             doubted_streets: BTreeSet::new(),
+            unheard_streets: BTreeSet::new(),
             unheard_rejections: BTreeMap::new(),
             asked_before_confirm: BTreeSet::new(),
             open_questions: Vec::new(),

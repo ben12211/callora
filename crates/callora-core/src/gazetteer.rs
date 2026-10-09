@@ -422,6 +422,16 @@ impl Gazetteer {
         Some(format!("{} {number}, {}", city.streets[si], a.city_said))
     }
 
+    /// Whether `heard` holds a street of `city` by any of its names, garbled or not
+    /// ("בן זכאי" is רבן יוחנן בן זכאי). A street the list does not have counts as heard: there
+    /// is nothing to tell.
+    pub fn street_heard(&self, city: &str, street: &str, heard: &str) -> bool {
+        let Some((ci, _)) = self.city_keys.get(&norm(city)) else { return true };
+        let city = &self.cities[*ci];
+        let Some(&si) = city.street_keys.get(&norm(street)) else { return true };
+        city.street_keys.iter().filter(|(_, &s)| s == si).any(|(name, _)| unheard_words(name, heard).is_empty())
+    }
+
     /// The full names of the towns `text` names, with or without a prefix and by their short
     /// names too ("מביתר" → ביתר עילית, "לבני ברק" → בני ברק).
     pub fn towns_named(&self, text: &str) -> Vec<String> {
@@ -1100,13 +1110,23 @@ mod tests {
     }
 
     #[test]
+    fn a_street_is_heard_by_any_of_its_names() {
+        let g = Gazetteer::from_tsv(
+            "6100\tבני ברק\t923\tשד כפר עציון\tofficial\n6100\tבני ברק\t923\tכפר עציון\tsynonym\n\
+             1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+             1309\tאלעד\t219\tראב\"ד\tofficial\n",
+        );
+        assert!(g.street_heard("אלעד", "רבן יוחנן בן זכאי", "בן זכאי, ארבעים וחמש."));
+        assert!(!g.street_heard("אלעד", "ראב\"ד", "עריף שתים עשרה."));
+        assert!(!g.street_heard("בני ברק", "שד כפר עציון", "עפרה."));
+        assert!(g.street_heard("בני ברק", "שד כפר עציון", "לכפר עציון 3"));
+        assert!(g.street_heard("בני ברק", "רחוב שאיננו", "משהו"), "not on the list: nothing to tell");
+    }
+
+    #[test]
     fn a_first_he_sounds_as_its_alef_or_ayin() {
         // From a live call: "עריף שתים עשרה." in אלעד is הרי"ף 12, not ראב"ד.
-        let g = Gazetteer::from_tsv(
-            "1309	אלעד	218	הרי\"ף	official
-1309	אלעד	219	ראב\"ד	official
-",
-        );
+        let g = Gazetteer::from_tsv("1309\tאלעד\t218\tהרי\"ף\tofficial\n1309\tאלעד\t219\tראב\"ד\tofficial\n");
         let a = found(g.resolve_within("עריף שתים עשרה.", "אלעד").unwrap());
         assert_eq!((a.street.as_deref(), a.number.as_deref()), (Some("הרי\"ף"), Some("12")));
     }

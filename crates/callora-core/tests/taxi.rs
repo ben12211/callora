@@ -3527,3 +3527,78 @@ fn a_name_from_an_earlier_ride_is_said_in_the_read_back() {
     );
     assert!(!spoken(&d).contains("על שם"), "{}", spoken(&d));
 }
+
+#[test]
+fn a_street_only_the_second_hearing_heard_is_asked_about_not_taken() {
+    // From a live call: "עפרה." was heard again as שדרות כפר עציון, and the ride went out to it.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "6100\tבני ברק\t825\tעזרא\tofficial\n6100\tבני ברק\t923\tשד כפר עציון\tofficial\n\
+         6100\tבני ברק\t923\tשדרות כפר עציון\tsynonym\n6100\tבני ברק\t923\tכפר עציון\tsynonym\n\
+         1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "מבן זכאי 45 אלעד לבני ברק",
+        asking(
+            &["destination"],
+            decide(
+                AgentAction::None,
+                "לאיזה רחוב בבני ברק?",
+                Some("book_ride"),
+                &[("pickup", "בן זכאי 45, אלעד"), ("destination", "בני ברק")],
+            ),
+        ),
+        "",
+    );
+    call.engine.state.second_hearing = Some("שדרות כפר עציון".into());
+    let d = call.engine.on_agent_turn(
+        "עפרה.",
+        asking(
+            &["passengers"],
+            decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "שדרות כפר עציון, בני ברק")]),
+        ),
+        "",
+    );
+    assert!(spoken(&d).contains("שדרות כפר עציון בבני ברק, נכון?"), "{}", spoken(&d));
+    assert!(call.slot("destination").is_none(), "not taken yet: {:?}", call.slot("destination"));
+    // "כן": taken.
+    call.engine.state.second_hearing = None;
+    call.engine.on_agent_turn(
+        "כן",
+        asking(
+            &["passengers"],
+            decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "שדרות כפר עציון, בני ברק")]),
+        ),
+        "",
+    );
+    assert!(place(call.slot("destination")).contains("כפר עציון"), "{}", place(call.slot("destination")));
+}
+
+#[test]
+fn a_street_both_hearings_heard_is_taken_at_once() {
+    // "בן זכאי" said is רבן יוחנן בן זכאי by one of its names.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "מאלעד לסוכות בירושלים",
+        asking(
+            &["pickup"],
+            decide(
+                AgentAction::None,
+                "איפה באלעד לאסוף?",
+                Some("book_ride"),
+                &[("pickup", "אלעד"), ("destination", "סוכות 12, ירושלים")],
+            ),
+        ),
+        "",
+    );
+    call.engine.state.second_hearing = Some("רבן יוחנן בן זכאי 45".into());
+    let d = call.engine.on_agent_turn(
+        "בן זכאי, ארבעים וחמש.",
+        decide(AgentAction::None, "כמה נוסעים?", None, &[("pickup", "רבן יוחנן בן זכאי 45, אלעד")]),
+        "",
+    );
+    assert!(!spoken(&d).contains("נכון?"), "{}", spoken(&d));
+    assert!(place(call.slot("pickup")).contains("45"), "{}", place(call.slot("pickup")));
+}
