@@ -422,7 +422,7 @@
       "description": "יוצר הזמנה במערכת ההסעות ומחזיר זמן הגעה",
       "backends": [
         { "kind": "http", "url_env": "TAXI_DISPATCH_URL", "token_env": "TAXI_DISPATCH_TOKEN" },
-        { "kind": "mock", "result": { "ride_id": "DEMO-1001", "eta_minutes": 4 }, "latency_ms": 900 }
+        { "kind": "mock", "result": { "ride_id": "DEMO-1001" }, "latency_ms": 900 }
       ],
       "requires_confirmation": true,
       "min_confidence": 0.7,
