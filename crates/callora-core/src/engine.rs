@@ -523,6 +523,14 @@ impl Engine {
         self.state.remember(Speaker::Caller, transcript);
         // Notes were for the decision just made; new ones are for the next.
         self.state.agent_notes.clear();
+        // The goodbye again after it was asked about: the caller is leaving, whatever the agent
+        // chose. In a test call it asked "כמה נוסעים?" after three more "ביי." until the
+        // caller hung up.
+        if self.insists_on_goodbye(transcript) {
+            tracing::info!(transcript, "a goodbye again after the first was asked about; the call ends");
+            self.goodbye(&mut out);
+            return self.finish(out);
+        }
         let mut turn = turn;
         if let Some(intent) = turn.phrase.as_deref().and_then(|p| self.refused_wrongly(transcript, p)) {
             tracing::info!(transcript, %intent, "a refusal of what the business does; its task instead");
@@ -2055,6 +2063,19 @@ impl Engine {
     /// thanks" after "anything else?". An LLM's reading of garbled speech is not enough.
     /// A goodbye of a word or two while a booking is being collected and a question waits for
     /// its answer: more likely a word misheard than a caller leaving mid-sentence. Once a call.
+    /// A goodbye of a word or two, said after an earlier one was asked about.
+    fn insists_on_goodbye(&self, transcript: &str) -> bool {
+        let norm = crate::text::normalize(transcript);
+        let b = &self.business;
+        self.state.goodbye_doubted
+            && b.fillers.strip(&norm).split_whitespace().count() <= 2
+            && b.meta(MetaIntent::Goodbye).is_some_and(|m| {
+                m.exact.matches_whole(&norm, &b.fillers)
+                    || m.phrases.find(&norm).is_some()
+                    || m.exact.find(&norm).is_some()
+            })
+    }
+
     fn goodbye_mid_task(&self, transcript: &str) -> bool {
         let Some(run) = &self.state.run else { return false };
         let words = self.business.fillers.strip(&crate::text::normalize(transcript)).split_whitespace().count();

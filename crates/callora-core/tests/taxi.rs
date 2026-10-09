@@ -3427,6 +3427,35 @@ fn a_lone_goodbye_in_the_middle_of_a_booking_is_asked_about_once() {
 }
 
 #[test]
+fn a_goodbye_said_again_ends_the_call_whatever_the_agent_asks() {
+    // A test call: after the goodbye was asked about, the agent asked "כמה נוסעים?" after three
+    // more "ביי." until the caller hung up.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד לסוכות 12 בירושלים",
+        asking(
+            &["passengers"],
+            decide(
+                AgentAction::None,
+                "כמה נוסעים?",
+                Some("book_ride"),
+                &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות 12, ירושלים")],
+            ),
+        ),
+        "",
+    );
+    call.engine.on_agent_turn("ביי.", decide(AgentAction::EndCall, "", Some("book_ride"), &[]), "");
+    let d = call.engine.on_agent_turn(
+        "ביי.",
+        asking(&["passengers"], decide(AgentAction::None, "לא שמעתי מספר. כמה נוסעים?", Some("book_ride"), &[])),
+        "",
+    );
+    assert!(d.iter().any(|d| matches!(d, Directive::Hangup)), "{}", spoken(&d));
+    assert!(!spoken(&d).contains("נוסעים"), "{}", spoken(&d));
+}
+
+#[test]
 fn a_calls_health_names_what_went_wrong() {
     let (mut call, _) = Call::new(business(&[]));
     assert!(call.engine.health().is_empty());

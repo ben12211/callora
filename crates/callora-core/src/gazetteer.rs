@@ -785,17 +785,21 @@ impl Gazetteer {
     /// `None` when `city` is not a locality.
     pub fn resolve_within(&self, street: &str, city: &str) -> Option<Lookup> {
         let first = self.resolve_within_written(street, city)?;
-        if matches!(&first, Lookup::Found(a) if a.street.is_some()) {
+        let has_street = matches!(&first, Lookup::Found(a) if a.street.is_some());
+        if matches!(&first, Lookup::Found(a) if a.street.is_some() && a.number.is_some()) {
             return Some(first);
         }
         // A recognizer's punctuation kept its number words from being read as digits ("עזרה
-        // אחת עשרה." was no street of בני ברק, "עזרה 11" is עזרא 11).
+        // אחת עשרה." was no street of בני ברק, "עזרה 11" is עזרא 11). And a street found with
+        // its number word read as part of its name ("דסלר ארבע" was הרב דסלר, no number).
         let digits = crate::hebrew::with_digits(&without_punctuation(street));
         if digits == street {
             return Some(first);
         }
         Some(match self.resolve_within_written(&digits, city) {
-            Some(found @ Lookup::Found(_)) if matches!(&found, Lookup::Found(a) if a.street.is_some()) => found,
+            Some(found @ Lookup::Found(_)) if matches!(&found, Lookup::Found(a) if a.street.is_some() && (a.number.is_some() || !has_street)) => {
+                found
+            }
             _ => first,
         })
     }
@@ -1129,6 +1133,17 @@ mod tests {
         let g = Gazetteer::from_tsv("1309\tאלעד\t218\tהרי\"ף\tofficial\n1309\tאלעד\t219\tראב\"ד\tofficial\n");
         let a = found(g.resolve_within("עריף שתים עשרה.", "אלעד").unwrap());
         assert_eq!((a.street.as_deref(), a.number.as_deref()), (Some("הרי\"ף"), Some("12")));
+    }
+
+    #[test]
+    fn a_number_word_like_a_name_word_is_still_the_house_number() {
+        // A test call: "דסלר ארבע" was "דסלר הרב" one letter off, הרב דסלר with no number.
+        let g = Gazetteer::from_tsv(
+            "6100\tבני ברק\t911\tהרב דסלר\tofficial\n6100\tבני ברק\t911\tדסלר\tsynonym\n\
+             6100\tבני ברק\t911\tדסלר הרב\tsynonym\n",
+        );
+        let a = found(g.resolve_within("דסלר ארבע", "בני ברק").unwrap());
+        assert_eq!((a.street.as_deref(), a.number.as_deref()), (Some("הרב דסלר"), Some("4")));
     }
 
     #[test]
