@@ -2899,7 +2899,7 @@ fn a_silence_asks_the_last_question_alone() {
 
 #[test]
 fn a_group_too_big_for_a_taxi_goes_to_a_person_when_the_agent_decides() {
-    // A live call booked "שבע עשרה" passengers in one taxi: more than 8 go to a person.
+    // A live call booked "שבע עשרה" passengers in one taxi: more than 7 go to a person.
     let (mut call, _) = Call::new(with_desk());
     let mut turn = decide(
         AgentAction::None,
@@ -4045,4 +4045,48 @@ fn a_ride_within_the_town_holds_the_agents_question_about_the_destination() {
     );
     assert!(!spoken(&d).contains("לאן"), "{}", spoken(&d));
     assert!(spoken(&d).contains("באלעד"), "{}", spoken(&d));
+}
+
+/// At "כמה נוסעים?", both places known.
+fn at_the_passengers_question(b: Arc<Business>) -> Call {
+    let (mut call, _) = Call::new(b);
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד לסוכות 12 בירושלים",
+        asking(
+            &["passengers"],
+            decide(
+                AgentAction::None,
+                "כמה נוסעים?",
+                Some("book_ride"),
+                &[("pickup", "בן זכאי 40, אלעד"), ("destination", "סוכות 12, ירושלים")],
+            ),
+        ),
+        "",
+    );
+    call
+}
+
+#[test]
+fn passengers_garbled_as_another_word_are_still_taken() {
+    // The audio eval: "שתי נוסעים" was heard "שתי נושאים", and the agent asked again.
+    let mut call = at_the_passengers_question(business(&[]));
+    call.engine.on_agent_turn(
+        "אני רוצה שתי נושאים.",
+        decide(AgentAction::None, "לא קלטתי, כמה נוסעים?", None, &[]),
+        "",
+    );
+    assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 2 }));
+}
+
+#[test]
+fn seven_passengers_get_a_van_and_eight_go_to_a_person() {
+    // The owner: seven is the most a taxi takes; more go to a person.
+    let mut call = at_the_passengers_question(with_desk());
+    let d = call.engine.on_agent_turn("שבעה", decide(AgentAction::None, "", None, &[("passengers", "7")]), "");
+    assert_eq!(call.slot("passengers"), Some(SlotValue::Integer { value: 7 }), "{}", spoken(&d));
+    assert!(!spoken(&d).contains("מוקדן"), "{}", spoken(&d));
+    let mut call = at_the_passengers_question(with_desk());
+    let d = call.engine.on_agent_turn("שמונה", decide(AgentAction::None, "", None, &[("passengers", "8")]), "");
+    assert!(spoken(&d).contains("מוקדן"), "{}", spoken(&d));
 }

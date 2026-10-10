@@ -154,18 +154,18 @@
     "note": "a word from the caller is not met with \"הבנתי\", \"כמובן\" or a speech",
     "turns": [
       {
-        "caller": "צריך מונית מאלעד לבני ברק",
+        "caller": "צריך מונית מבן זכאי 45 באלעד לרבי עקיבא 10 בבני ברק",
         "scripted": {
           "action": "none",
           "task": "book_ride",
           "fields": [
             {
               "slot": "pickup",
-              "value": "אלעד"
+              "value": "בן זכאי 45, אלעד"
             },
             {
               "slot": "destination",
-              "value": "בני ברק"
+              "value": "רבי עקיבא 10, בני ברק"
             }
           ],
           "say": "כמה נוסעים?",
