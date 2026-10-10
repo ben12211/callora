@@ -171,7 +171,7 @@ impl Session {
     /// and waiting (about a second) would only slow the call.
     pub(super) fn second_hearing_expected(&self, transcript: &str) -> Option<(String, Vec<String>)> {
         self.services.second_hearing.as_ref()?;
-        if self.last_utterance.len() < 8000 / 4 {
+        if !self.business.config.understanding.second_hearing || self.last_utterance.len() < 8000 / 4 {
             return None;
         }
         self.engine.second_hearing_question(transcript)

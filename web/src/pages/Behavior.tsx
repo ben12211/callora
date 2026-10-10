@@ -16,6 +16,7 @@ type View = {
   meta_intents: Record<string, { exact?: string[] | null; phrases?: string[] | null }>;
   silence: Record<string, number | string | null>;
   voice: { tempo: number };
+  understanding: { second_hearing: boolean | null };
   slots: { passengers: { max: number | null } };
   rules: Rule[];
   service_area: string[];
@@ -276,6 +277,24 @@ function NumberEditor({ value, save, can, scale = 1, unit, step = 1, min }: { va
   );
 }
 
+function Toggle({ on, can, save }: { on: boolean; can: boolean; save: (v: boolean) => Promise<boolean> }) {
+  return (
+    <div>
+      <Segmented
+        label="מצב"
+        value={on ? "on" : "off"}
+        options={[
+          { value: "on", label: "פועל" },
+          { value: "off", label: "כבוי" },
+        ]}
+        onChange={(v) => {
+          if (can && (v === "on") !== on) void save(v === "on");
+        }}
+      />
+    </div>
+  );
+}
+
 function AgentSection({ c, save }: { c: Config; save: Save }) {
   const toast = useToast();
   const key = (p: string) => `${p}:${JSON.stringify(c.changed.includes(p))}:${c.changed.length}`;
@@ -424,6 +443,20 @@ function LimitsSection({ c, save }: { c: Config; save: Save }) {
           </Item>
           <Item c={c} path="agent.timeout_ms" label="זמן מקסימלי להחלטת המודל" hint="אחריו הכללים הקבועים מחליטים על התור." save={save}>
             <NumberEditor key={k("t", c.current.agent.timeout_ms)} value={c.current.agent.timeout_ms} scale={1000} step={0.5} min={1} unit="שניות" can={c.saving} save={(v) => save("agent.timeout_ms", v)} />
+          </Item>
+          <Item
+            c={c}
+            path="understanding.second_hearing"
+            label="שמיעה שנייה"
+            hint="רחוב או עיר שזיהוי הדיבור לא תפס נשלחים למודל שמע נוסף עם רשימת השמות. עם סוניקס זה הכניס יותר טעויות משתיקן, הוסיף שנייה המתנה ועלה כ-4 אגורות לשיחה, ולכן כבוי."
+            save={save}
+          >
+            <Toggle
+              key={k("sh", c.current.understanding.second_hearing)}
+              on={c.current.understanding.second_hearing !== false}
+              can={c.saving}
+              save={(v) => save("understanding.second_hearing", v)}
+            />
           </Item>
           <Item c={c} path="voice.tempo" label="מהירות הדיבור" hint="1 הוא הקצב הרגיל של הקול, 1.2 מהיר ב-20%. שינוי מקליט מחדש את המשפטים הקבועים." save={save}>
             <NumberEditor key={k("v", c.current.voice.tempo)} value={c.current.voice.tempo} step={0.05} min={0.7} unit="×" can={c.saving} save={(v) => save("voice.tempo", v)} />

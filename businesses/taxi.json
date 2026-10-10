@@ -642,5 +642,5 @@
     "patient_reprompts": 2,
     "patient_response": "still_waiting"
   },
-  "understanding": { "llm_below_coverage": 0.55, "llm_timeout_ms": 2500, "thinking_filler": "filler_thinking", "filler_after_ms": 600 }
+  "understanding": { "llm_below_coverage": 0.55, "llm_timeout_ms": 2500, "thinking_filler": "filler_thinking", "filler_after_ms": 600, "second_hearing": false }
 }

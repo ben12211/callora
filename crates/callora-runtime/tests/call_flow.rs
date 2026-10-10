@@ -1092,8 +1092,44 @@ async fn speak(ws: &mut Ws, h: &Harness, text: &str) {
     h.stt.say(text).await;
 }
 
+/// The second hearing is off in the business file (with Soniox it put more errors in than it
+/// fixed); its own tests turn it on.
+fn second_hearing_on() {
+    let mut v: serde_json::Value = serde_json::from_str(TAXI).unwrap();
+    v["understanding"]["second_hearing"] = json!(true);
+    BUSINESS.with(|cell| *cell.borrow_mut() = Some(v.to_string()));
+}
+
+#[tokio::test]
+async fn the_second_hearing_is_off_in_the_business_file() {
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.replies.lock().extend([
+        json!({ "say": "איפה באלעד לאסוף?", "action": "none", "task": "book_ride", "asks": ["pickup"],
+                "fields": [{ "slot": "pickup", "value": "אלעד" }] }),
+        json!({ "say": "לאן?", "action": "none", "task": "book_ride", "fields": [] }),
+    ]);
+    let gazetteer = Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t111\tרבי עקיבא\tofficial\n",
+    ));
+    let hearing = Arc::new(ListedHearing::default());
+    let h = start_server_inner(
+        Some(agent.clone()),
+        SessionConfig { tts_gain_db: 0.0, ..SessionConfig::default() },
+        Some((gazetteer, hearing.clone())),
+    )
+    .await;
+    let mut ws = open_call(&h, "CA-no-second-hearing").await;
+    collect(&mut ws, Duration::from_millis(400)).await;
+    speak(&mut ws, &h, "צריך מונית מאלעד").await;
+    while !collect(&mut ws, Duration::from_millis(400)).await.0.is_empty() {}
+    speak(&mut ws, &h, "ב... זה קח ארבעים וחמש").await;
+    collect(&mut ws, Duration::from_millis(600)).await;
+    assert!(hearing.asked.lock().is_empty(), "nothing is heard again");
+}
+
 #[tokio::test]
 async fn a_garbled_street_is_heard_again_against_the_citys_streets() {
+    second_hearing_on();
     // The call of 2026-10-07: "בן זכאי ארבעים וחמש" came out "ב... זה קח ארבעים וחמש". An audio
     // model told the streets of אלעד wrote it right; the agent gets both hearings.
     let agent = Arc::new(ScriptedAgent::default());
@@ -1142,6 +1178,7 @@ async fn a_garbled_street_is_heard_again_against_the_citys_streets() {
 
 #[tokio::test]
 async fn a_street_due_a_second_hearing_is_not_answered_on_the_partial_words() {
+    second_hearing_on();
     // With a recognizer that streams words (Soniox), the agent starts on the partial words at
     // the end of speech; a hit would skip the second hearing of a street the lists do not know.
     let agent = Arc::new(ScriptedAgent::default());
@@ -1455,6 +1492,7 @@ impl callora_runtime::ports::Transcriber for NumberHearing {
 
 #[tokio::test]
 async fn a_passengers_answer_with_no_number_is_heard_again() {
+    second_hearing_on();
     // The call of 18:56: "שתיים" to "כמה נוסעים?" was heard "ביי." and the call hung up.
     let agent = Arc::new(ScriptedAgent::default());
     agent.replies.lock().extend([

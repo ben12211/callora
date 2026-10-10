@@ -898,6 +898,11 @@ pub struct UnderstandingConfig {
     pub thinking_filler: Option<ResponseId>,
     #[serde(default = "default_filler_after")]
     pub filler_after_ms: u64,
+    /// A street or a town the stream did not catch is heard again by an audio model with the
+    /// list of names. It helped the old recognizer; with Soniox it put more errors in than it
+    /// fixed ("בבית שלי" became "בבית 90"), and it costs about a second a turn.
+    #[serde(default = "default_true")]
+    pub second_hearing: bool,
 }
 
 fn default_coverage() -> f32 {
@@ -917,6 +922,7 @@ impl Default for UnderstandingConfig {
             llm_timeout_ms: default_llm_timeout(),
             thinking_filler: None,
             filler_after_ms: default_filler_after(),
+            second_hearing: true,
         }
     }
 }
