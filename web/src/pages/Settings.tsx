@@ -2,6 +2,7 @@ import { useState } from "react";
 import { PhoneForwarded, PhoneOutgoing, Plus, Trash2 } from "lucide-react";
 import { type DeskSettings, type SettingsData, Unauthorized, useApi } from "../api";
 import { Badge, Button, Card, Field, FIELD, Input, PageHeader, Problem, Skeleton, cx, useToast } from "../ui";
+import { AccessCard } from "./AccessCard";
 import { AgentModelCard } from "./AgentModelCard";
 import { PriceBotCard } from "./PriceBot";
 import { VoiceCard } from "./VoiceCard";
@@ -23,7 +24,7 @@ export function Settings() {
   if (watching !== building && settings.data) setWatching(building);
   return (
     <>
-      <PageHeader title="הגדרות" subtitle="המודל והקול של הסוכן, העברה למוקד ובוט המחירים" />
+      <PageHeader title="הגדרות" subtitle="מי יכול להתקשר, המודל והקול של הסוכן, העברה למוקד ובוט המחירים" />
       {settings.error && <Problem>{settings.error}</Problem>}
       {!settings.data && !settings.error ? (
         <div className="grid max-w-3xl gap-6">
@@ -33,6 +34,7 @@ export function Settings() {
       ) : settings.data ? (
         <div className="grid max-w-3xl gap-6">
           {!settings.data.transfers && <Problem>PUBLIC_BASE_URL לא מוגדר בשרת, ולכן העברות למוקד לא יעבדו.</Problem>}
+          <AccessCard />
           {settings.data.agent && (
             <AgentModelCard
               key={JSON.stringify(settings.data.agent.active)}

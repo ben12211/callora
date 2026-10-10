@@ -351,6 +351,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/settings/{business}/voice", axum::routing::put(api_save_voice))
         .route("/api/settings/agent-model", axum::routing::put(api_save_agent_model))
         .route("/api/config/{business}", get(api_config).put(api_save_config))
+        .route("/api/access", get(api_access).put(api_save_access))
         .route("/api/blocked", get(api_blocked))
         .route("/api/blocked/{number}", axum::routing::put(api_block))
         .route("/api/settings/{business}/price-bot/test", post(api_test_price_bot))
@@ -433,9 +434,9 @@ async fn voice(
         tracing::warn!(%to, "call to a number no business answers");
         return xml(twiml_unavailable());
     };
-    if !s.settings.allow_list.is_empty() && !from.as_ref().is_some_and(|f| s.settings.allow_list.contains(f)) {
-        tracing::info!(call = %call_sid, "caller not on the allow list");
-        return xml(twilio::twiml_say_hangup("This number is not available.", "en-US"));
+    if !s.services.settings.access(&s.settings.allow_list).allows(from.as_deref()) {
+        tracing::info!(call = %call_sid, "development: the caller is not on the access list");
+        return xml(twiml_unavailable());
     }
     if from.as_deref().is_some_and(|f| s.services.settings.is_blocked(f)) {
         tracing::info!(call = %call_sid, "a blocked number; rejected");
@@ -1009,6 +1010,47 @@ async fn api_save_config(
     }
     let Some(current) = s.registry().by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
     config_view(&s, &file, &current)
+}
+
+/// Who may call: development (the access list only) or production (anyone).
+async fn api_access(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    access_view(&s)
+}
+
+fn access_view(s: &AppState) -> Response {
+    let access = s.services.settings.access(&s.settings.allow_list);
+    Json(json!({
+        "mode": access.mode,
+        "numbers": access.numbers,
+        "from_deployment": !s.services.settings.access_chosen(),
+        "saving": s.db.is_some(),
+    }))
+    .into_response()
+}
+
+async fn api_save_access(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(access): Json<crate::settings::Access>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let access = access.normalized();
+    let problems = access.problems();
+    if !problems.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "problems": problems }))).into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    tracing::info!(mode = ?access.mode, numbers = access.numbers.len(), "the owner changed who may call");
+    if let Err(e) = s.services.settings.save_access(pool, access).await {
+        tracing::error!(error = %e, "saving who may call failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    access_view(&s)
 }
 
 async fn api_blocked(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {

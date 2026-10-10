@@ -105,6 +105,76 @@ pub struct PriceBotSettings {
     pub chat_name: String,
 }
 
+/// Who may call: in development only the numbers on the access list, in production anyone (a
+/// blocked number never).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessMode {
+    Development,
+    Production,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Access {
+    pub mode: AccessMode,
+    /// E.164 numbers that may call in development.
+    #[serde(default)]
+    pub numbers: Vec<String>,
+}
+
+impl Access {
+    /// Before the owner chose on the settings page: the deployment's `ALLOW_LIST`, development
+    /// when it has numbers.
+    pub fn from_env(allow_list: &[String]) -> Self {
+        let mode = if allow_list.is_empty() { AccessMode::Production } else { AccessMode::Development };
+        Self { mode, numbers: allow_list.to_vec() }
+    }
+
+    pub fn allows(&self, from: Option<&str>) -> bool {
+        self.mode == AccessMode::Production || from.is_some_and(|f| self.numbers.iter().any(|n| n == f))
+    }
+
+    /// The numbers in E.164 ("054-546-0223" is "+972545460223"), each once.
+    pub fn normalized(mut self) -> Self {
+        let mut seen = Vec::new();
+        for n in self.numbers.iter().map(|n| e164(n)) {
+            if !n.is_empty() && !seen.contains(&n) {
+                seen.push(n);
+            }
+        }
+        self.numbers = seen;
+        self
+    }
+
+    pub fn problems(&self) -> Vec<String> {
+        let mut p: Vec<String> =
+            self.numbers.iter().filter(|n| !is_e164(n)).map(|n| format!("{n} אינו מספר טלפון תקין")).collect();
+        if self.numbers.len() > 200 {
+            p.push("עד 200 מספרים".into());
+        }
+        if self.mode == AccessMode::Development && self.numbers.is_empty() {
+            p.push("במצב פיתוח צריך לפחות מספר אחד ברשימה, אחרת אף אחד לא יוכל להתקשר".into());
+        }
+        p
+    }
+}
+
+/// An Israeli number as callers write it ("054-546-0223", "972545460223") in E.164.
+pub fn e164(raw: &str) -> String {
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+    if let Some(rest) = digits.strip_prefix('+') {
+        return format!("+{rest}");
+    }
+    if let Some(rest) = digits.strip_prefix("972") {
+        return format!("+972{rest}");
+    }
+    if let Some(rest) = digits.strip_prefix('0') {
+        return format!("+972{rest}");
+    }
+    digits
+}
+
 #[derive(Default)]
 pub struct SettingsStore {
     desks: RwLock<HashMap<String, DeskSettings>>,
@@ -118,6 +188,8 @@ pub struct SettingsStore {
     /// The owner's changes to each business's configuration, as a patch over its file (see
     /// `owner_config`).
     config_patches: RwLock<HashMap<String, serde_json::Value>>,
+    /// Who may call, as the owner set it on the settings page; none, the deployment's list.
+    access: RwLock<Option<Access>>,
     /// Numbers the owner blocked from the call page (prank callers): their calls are rejected
     /// before anything answers them.
     blocked: RwLock<BTreeSet<String>>,
@@ -165,7 +237,14 @@ impl SettingsStore {
             .flatten()
             .and_then(|r| serde_json::from_value::<BTreeSet<String>>(r.get("value")).ok())
             .unwrap_or_default();
+        let access = sqlx::query("SELECT value FROM callora_v2.app_settings WHERE key = 'access'")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| serde_json::from_value::<Access>(r.get("value")).ok());
         Ok(Self {
+            access: RwLock::new(access),
             desks: RwLock::new(desks),
             price_bots: RwLock::new(price_bots),
             voices: RwLock::new(voices),
@@ -232,6 +311,28 @@ impl SettingsStore {
         } else {
             self.config_patches.write().remove(business_id);
         }
+        Ok(())
+    }
+
+    /// Who may call: the owner's choice, else the deployment's `allow_list`.
+    pub fn access(&self, allow_list: &[String]) -> Access {
+        self.access.read().clone().unwrap_or_else(|| Access::from_env(allow_list))
+    }
+
+    /// Whether the owner chose on the settings page (else the deployment's list holds).
+    pub fn access_chosen(&self) -> bool {
+        self.access.read().is_some()
+    }
+
+    pub async fn save_access(&self, pool: &PgPool, access: Access) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO callora_v2.app_settings (key, value) VALUES ('access', $1)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        )
+        .bind(serde_json::to_value(&access).unwrap_or_default())
+        .execute(pool)
+        .await?;
+        *self.access.write() = Some(access);
         Ok(())
     }
 
@@ -361,5 +462,28 @@ mod tests {
         let custom = DeskSettings { hold_music: "https://example.com/wait.mp3".into(), ..DeskSettings::default() };
         assert_eq!(custom.music_url(), "https://example.com/wait.mp3");
         assert_eq!(DeskSettings { hold_music: "none".into(), ..DeskSettings::default() }.music_url(), "");
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+
+    #[test]
+    fn who_may_call_in_each_mode() {
+        let dev =
+            Access { mode: AccessMode::Development, numbers: vec!["054-546-0223".into(), "+972545460223".into()] }
+                .normalized();
+        assert_eq!(dev.numbers, vec!["+972545460223"], "one number, in E.164");
+        assert!(dev.allows(Some("+972545460223")));
+        assert!(!dev.allows(Some("+972500000000")));
+        assert!(!dev.allows(None), "a hidden number is not on the list");
+        let prod = Access { mode: AccessMode::Production, numbers: vec![] };
+        assert!(prod.allows(Some("+972500000000")) && prod.allows(None));
+        assert!(prod.problems().is_empty());
+        assert!(!Access { mode: AccessMode::Development, numbers: vec![] }.problems().is_empty(), "nobody could call");
+        assert_eq!(Access::from_env(&[]).mode, AccessMode::Production);
+        assert_eq!(Access::from_env(&["+972545460223".into()]).mode, AccessMode::Development);
+        assert_eq!(e164("972 54 546 0223"), "+972545460223");
     }
 }
