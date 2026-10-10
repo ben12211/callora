@@ -426,10 +426,9 @@ async fn a_full_call_greeting_booking_barge_in_and_goodbye() {
     let (frames, _) = collect(&mut ws, Duration::from_millis(1600)).await;
     assert!(frames.len() > 6, "filler and booking confirmation played: {}", frames.len());
 
-    // Done: goodbye, then the agent hangs up once the goodbye has played.
-    h.stt.say("לא, תודה").await;
-    let (frames, _) = collect(&mut ws, Duration::from_millis(1200)).await;
-    assert!(!frames.is_empty(), "goodbye played");
+    // Sent: the confirmation and the goodbye, with no "anything else?", and the agent hangs up
+    // once they have played; the caller says nothing more.
+    collect(&mut ws, Duration::from_millis(1500)).await;
     assert_eq!(h.telephony.hangups.lock().as_slice(), ["CA42"]);
 
     let metrics = h.metrics.render();

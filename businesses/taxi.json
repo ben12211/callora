@@ -377,7 +377,7 @@
       "on_success": "ride_booked",
       "on_failure": "ride_failed",
       "on_unknown": "ride_unconfirmed",
-      "after": "continue"
+      "after": "end"
     },
     "ride_status": {
       "description": "סטטוס נסיעה קיימת",
@@ -533,6 +533,7 @@
     "ask_destination_street_again": { "variants": ["סליחה, לא קלטתי. איזה רחוב ב{city}?"] },
     "ask_pickup_unknown": { "variants": ["לא הכרתי את {heard}. מאיזו עיר לאסוף?"] },
     "ask_destination_unknown": { "variants": ["לא הכרתי את {heard}. לאיזו עיר נוסעים?"] },
+    "personal_place_address": { "variants": ["מה הכתובת של {place}?"] },
     "town_heard_check": { "variants": ["{town}, נכון?"] },
     "street_heard_check": { "variants": ["{street} ב{city}, נכון?"] },
     "street_not_found_suggest": { "variants": ["לא מצאתי את {heard} ב{city}. התכוונת ל{suggestion}?"] },

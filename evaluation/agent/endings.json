@@ -1,6 +1,6 @@
 [
   {
-    "id": "goodbye_after_a_booking_ends_the_call",
+    "id": "a_sent_ride_ends_the_call",
     "turns": [
       {
         "caller": "צריך מונית",
@@ -78,114 +78,16 @@
       },
       {
         "caller": "כן",
-        "scripted": {
-          "action": "submit",
-          "task": "book_ride",
-          "fields": [],
-          "say": "סגור."
-        }
-      },
-      {
-        "caller": "זהו, תודה ביי",
         "expect": {
-          "ended": true
+          "submitted": true,
+          "ended": true,
+          "says_none": [
+            "נוסף"
+          ]
         }
       }
-    ]
-  },
-  {
-    "id": "no_thanks_to_anything_else_ends_the_call",
-    "turns": [
-      {
-        "caller": "צריך מונית",
-        "scripted": {
-          "action": "none",
-          "task": "book_ride",
-          "fields": [],
-          "say": "סבבה, מאיזו עיר לאסוף?"
-        }
-      },
-      {
-        "caller": "מרעננה, הרצל 10",
-        "scripted": {
-          "action": "none",
-          "task": "book_ride",
-          "fields": [
-            {
-              "slot": "pickup",
-              "value": "הרצל 10, רעננה"
-            }
-          ],
-          "say": "לאיזו עיר נוסעים?"
-        }
-      },
-      {
-        "caller": "לתל אביב, דיזנגוף 50",
-        "scripted": {
-          "action": "none",
-          "task": "book_ride",
-          "fields": [
-            {
-              "slot": "destination",
-              "value": "דיזנגוף 50, תל אביב"
-            }
-          ],
-          "say": "כמה נוסעים?"
-        }
-      },
-      {
-        "caller": "שניים",
-        "scripted": {
-          "action": "none",
-          "task": "book_ride",
-          "fields": [
-            {
-              "slot": "passengers",
-              "value": "2"
-            }
-          ],
-          "say": "על שם מי לרשום את ההזמנה?"
-        }
-      },
-      {
-        "caller": "דני כהן",
-        "scripted": {
-          "action": "none",
-          "task": "book_ride",
-          "fields": [
-            {
-              "slot": "customer_name",
-              "value": "דני כהן"
-            }
-          ],
-          "say": "יש משהו שהנהג צריך לדעת?"
-        }
-      },
-      {
-        "caller": "לא, אין",
-        "scripted": {
-          "action": "read_back",
-          "task": "book_ride",
-          "fields": [],
-          "say": "סגור."
-        }
-      },
-      {
-        "caller": "כן",
-        "scripted": {
-          "action": "submit",
-          "task": "book_ride",
-          "fields": [],
-          "say": "סגור."
-        }
-      },
-      {
-        "caller": "לא תודה",
-        "expect": {
-          "ended": true
-        }
-      }
-    ]
+    ],
+    "note": "The owner's call: no \"anything else?\" after the ride (a \"כן\" to it began a new booking); the yes to the read-back sends the ride and the call ends"
   },
   {
     "id": "thanks_mid_booking_does_not_end_the_call",

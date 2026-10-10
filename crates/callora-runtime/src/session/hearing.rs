@@ -211,7 +211,7 @@ impl Session {
             } else if u.noise || self.engine.is_hello(text) {
                 (0, false)
             } else {
-                (text.split_whitespace().count().max(1), false)
+                (self.barge_word_count(text, true), false)
             };
         }
         let (real_words, listening_only) = self.barge_words;
@@ -332,6 +332,31 @@ impl Session {
     /// caller's microphone, and "לאן בבני ברק?" came back as the caller's answer. Three words at
     /// least, begun while the agent spoke, nearly all of them in what it said last ("בני ברק,
     /// רבי עקיבא" to "לאן בבני ברק?" has words of its own and is an answer).
+    /// The words heard over the agent that count toward stopping it: not the agent's own (its
+    /// voice coming back: "צריך" stopped "מה הנהג צריך לדעת?"), not a letter or two, and not
+    /// the last word of a partial result, which may be half a word ("בי" for "ביי").
+    pub(super) fn barge_word_count(&self, text: &str, partial: bool) -> usize {
+        let ours: std::collections::HashSet<String> = self
+            .engine
+            .state
+            .history
+            .iter()
+            .rev()
+            .filter(|t| t.speaker == Speaker::Agent)
+            .take(2)
+            .map(|t| t.text.clone())
+            .chain(self.pending_agent.iter().flat_map(|p| p.spoken.iter().cloned()))
+            .flat_map(|t| callora_core::text::normalize(&t).split_whitespace().map(str::to_string).collect::<Vec<_>>())
+            .collect();
+        let mut heard: Vec<String> =
+            callora_core::text::normalize(text).split_whitespace().map(str::to_string).collect();
+        let ends_whole = text.trim_end().ends_with(['.', ',', '?', '!']);
+        if partial && !ends_whole {
+            heard.pop();
+        }
+        heard.iter().filter(|w| w.chars().count() >= 2 && !ours.contains(*w)).count()
+    }
+
     pub(super) fn is_echo(&self, text: &str) -> bool {
         let said: Vec<String> = self
             .engine
@@ -479,8 +504,10 @@ impl Session {
             // "כן" to a question the call is waiting on is an answer, not a listening sound.
             let real_words = if listening && !self.engine.takes_short_answer(&text) {
                 0
-            } else {
+            } else if self.engine.takes_short_answer(&text) {
                 text.split_whitespace().count().max(1)
+            } else {
+                self.barge_word_count(&text, false)
             };
             let input = BargeInput {
                 voiced_ms: self.voiced_ms,

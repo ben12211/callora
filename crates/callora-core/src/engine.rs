@@ -1064,6 +1064,93 @@ impl Engine {
 
     /// The slot of the current task a phrase asks for: its `ask`, or that ask's street or
     /// city question ("ask_destination_street" asks for the destination).
+    /// A place of the caller's own named for `slot` ("מהבית", "מאמא שלי"): not taken, and its
+    /// address asked in the words the caller used ("מה הכתובת של הבית?"), never "לא הכרתי את
+    /// הבית" or "לא מצאתי את בית באלעד".
+    fn ask_personal_place(&mut self, slot: &str, spoken: &str, notes: &mut Vec<String>, rejected: &mut Vec<String>) {
+        let place = self.personal_place_named(&self.last_caller_words()).unwrap_or_else(|| "המקום".to_string());
+        notes.push(format!(
+            "{slot} \"{spoken}\" is a place of the caller's own ({place}), not an address: it was not taken. The system              asked for its address; pass the address they give"
+        ));
+        if self.business.response("personal_place_address").is_some() {
+            self.state
+                .doubt_confirm
+                .insert(slot.to_string(), vec![prompt("personal_place_address", &[("place", place)])]);
+            rejected.push(slot.to_string());
+        }
+    }
+
+    /// The caller's words of this turn.
+    fn last_caller_words(&self) -> String {
+        self.state
+            .history
+            .iter()
+            .rev()
+            .find(|t| t.speaker == Speaker::Caller)
+            .map(|t| t.text.clone())
+            .unwrap_or_default()
+    }
+
+    /// The place of the caller's own their words name, as the agent says it back: "מהבית" is
+    /// "הבית", "מאמא שלי" is "אמא שלך" (their mother, said to them).
+    pub fn personal_place_named(&self, words: &str) -> Option<String> {
+        const NAMED: &[(&str, &str)] = &[
+            ("בית הספר", "בית הספר"),
+            ("אמא שלי", "אמא שלך"),
+            ("אבא שלי", "אבא שלך"),
+            ("ההורים", "ההורים שלך"),
+            ("הבית", "הבית"),
+            ("בית", "הבית"),
+            ("הביתה", "הבית"),
+            ("ביתי", "הבית"),
+            ("העבודה", "העבודה"),
+            ("עבודה", "העבודה"),
+            ("המשרד", "המשרד"),
+            ("הגן", "הגן"),
+            ("גן", "הגן"),
+            ("אמא", "אמא שלך"),
+            ("אבא", "אבא שלך"),
+            ("סבתא", "סבתא"),
+            ("סבא", "סבא"),
+            ("אחותי", "אחותך"),
+            ("אחי", "אחיך"),
+            ("אשתי", "אשתך"),
+            ("בעלי", "בעלך"),
+            ("החבר", "החבר"),
+            ("חבר", "החבר"),
+            ("החברה", "החברה"),
+            ("חברה", "החברה"),
+        ];
+        let norm = crate::text::normalize(words);
+        let tokens: Vec<&str> = norm.split_whitespace().collect();
+        let bare = |w: &str| -> Vec<String> {
+            let mut forms = vec![w.to_string()];
+            for p in ["מה", "לה", "בה", "מ", "ל", "ב"] {
+                if let Some(rest) = w.strip_prefix(p).filter(|r| r.chars().count() >= 2) {
+                    forms.push(rest.to_string());
+                }
+            }
+            forms
+        };
+        // These, without "ה", start street names too ("מבית דחה 45", "גן העיר"): the caller's own
+        // only followed by "שלי" ("בבית שלי"); "מהבית", "מהגן" are "הבית", "הגן".
+        const BARE_IS_A_STREET: &[&str] = &["בית", "גן", "חבר", "חברה", "עבודה"];
+        for (key, said) in NAMED {
+            let key_words: Vec<&str> = key.split(' ').collect();
+            let found = tokens.windows(key_words.len()).enumerate().any(|(i, w)| {
+                let owned = tokens.get(i + key_words.len()).is_some_and(|n| matches!(*n, "שלי" | "שלנו" | "של"));
+                if BARE_IS_A_STREET.contains(key) && !owned {
+                    return false;
+                }
+                bare(w[0]).iter().any(|f| f == key_words[0]) && w[1..] == key_words[1..]
+            });
+            if found {
+                return Some(said.to_string());
+            }
+        }
+        None
+    }
+
     /// The details a question in the agent's own words asks for, when it did not say (its
     /// `asks` empty): by the words only that detail's questions have ("לאסוף", "על שם",
     /// "לנהג"), taken from the business's own questions. "כמה נוסעים, ועל שם מי לרשום?" with
@@ -1966,9 +2053,16 @@ impl Engine {
             // not answered with "לא הכרתי את הבית. מאיזו עיר לאסוף?": the agent asks where it is,
             // in its own words, and its words are spoken.
             Lookup::NoCity { .. } if (precise || street_once) && self.business.is_personal_place(spoken) => {
-                notes.push(format!(
-                    "{slot} \"{spoken}\" is a place of the caller's own, not an address: it was not taken. Ask where it is                      in one short question of your own, as they named it (\"ואיפה הבית?\", \"ואיפה אמא שלך גרה?\"), and pass                      the address they give"
-                ));
+                self.ask_personal_place(slot, spoken, notes, rejected);
+                return None;
+            }
+            // "בבית שלי" heard again as "בבית 90": a street "בית" the city does not have, and the
+            // caller was told "לא מצאתי את בית באלעד". It is their home: its address is asked.
+            Lookup::NoStreet { ref heard, .. }
+                if self.business.is_personal_place(heard)
+                    && self.personal_place_named(&self.last_caller_words()).is_some() =>
+            {
+                self.ask_personal_place(slot, spoken, notes, rejected);
                 return None;
             }
             // "אפרק": no locality by that name. A place that needs one is not taken as it was
@@ -3356,8 +3450,10 @@ impl Engine {
                 self.say(out, &offer, ctx, true);
                 self.offered_more = true;
             }
-            (AfterPipeline::Continue, _) => self.offer_more(out),
-            (AfterPipeline::End, _) => self.goodbye(out),
+            // A task that ends the call ends it once it is done; after a failure the caller is
+            // still there to try again or ask.
+            (AfterPipeline::End, _) if outcome == "success" => self.goodbye(out),
+            _ => self.offer_more(out),
         }
     }
 

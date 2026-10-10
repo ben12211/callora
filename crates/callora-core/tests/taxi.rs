@@ -1138,7 +1138,11 @@ fn elad() -> Arc<callora_core::gazetteer::Gazetteer> {
 
 /// A ride read back and waiting for the caller's yes.
 fn read_back_ride() -> Call {
-    let (mut call, _) = Call::new(business(&[]));
+    read_back_ride_in(business(&[]))
+}
+
+fn read_back_ride_in(b: Arc<Business>) -> Call {
+    let (mut call, _) = Call::new(b);
     call.engine.set_gazetteer(Some(elad()));
     call.engine.on_agent_turn(
         "בן זכאי 40 אלעד לסוכות ירושלים, שלושה",
@@ -2030,8 +2034,14 @@ fn words_begun_before_the_last_question_are_told_to_the_agent_as_the_previous_an
     assert!(!request.user.contains("OVERLAP"));
 }
 
+/// The taxi business with "anything else?" after a ride (its file ends the call instead).
+fn continuing() -> Arc<Business> {
+    let json = TAXI.replace("\"after\": \"end\"", "\"after\": \"continue\"");
+    Arc::new(Business::from_json(&json, "taxi.json", &|_| None).expect("valid"))
+}
+
 fn booked_ride() -> Call {
-    let mut call = read_back_ride();
+    let mut call = read_back_ride_in(continuing());
     let d = call.engine.on_agent_turn("כן", decide(AgentAction::Submit, "", None, &[]), "");
     let (run_id, _, _) = action(&d).expect("the ride is sent");
     let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "ride_id": "R-1" })));
@@ -3803,22 +3813,37 @@ fn a_name_corrected_at_the_read_back_is_read_back() {
 }
 
 #[test]
-fn a_place_of_the_callers_own_is_asked_about_in_the_agents_words() {
-    // "מהבית לבני ברק" was answered "לא הכרתי את הבית. מאיזו עיר לאסוף?".
+fn a_place_of_the_callers_own_has_its_address_asked() {
+    // "מהבית לבני ברק" was answered "לא הכרתי את הבית. מאיזו עיר לאסוף?", and "בבית שלי" heard
+    // again as "בבית 90" was "לא מצאתי את בית באלעד".
     let (mut call, _) = Call::new(business(&[]));
     call.engine.set_gazetteer(Some(elad()));
     call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "סבבה, מאיפה לאן?", Some("book_ride"), &[]), "");
-    let fields = [("pickup".to_string(), "הבית".to_string())];
-    assert!(!call.engine.rejects_any("מהבית לבני ברק", &fields), "the agent's own words are spoken");
     let d = call.engine.on_agent_turn(
         "מהבית לבני ברק",
-        asking(&["pickup"], decide(AgentAction::None, "סבבה, ואיפה הבית? באיזו עיר?", None, &[("pickup", "הבית")])),
+        asking(&["pickup"], decide(AgentAction::None, "מאיזו עיר לאסוף?", None, &[("pickup", "הבית")])),
         "",
     );
     let said = spoken(&d);
-    assert!(said.contains("ואיפה הבית") && !said.contains("לא הכרתי"), "{said}");
+    assert!(said.contains("מה הכתובת של הבית?") && !said.contains("לא הכרתי"), "{said}");
     assert_eq!(call.slot("pickup"), None, "no address taken");
-    assert!(call.engine.state.agent_notes.iter().any(|n| n.contains("place of the caller's own")));
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "מאלעד לבני ברק",
+        asking(&["pickup"], decide(AgentAction::None, "איפה באלעד לאסוף?", Some("book_ride"), &[("pickup", "אלעד")])),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "בבית שלי.",
+        asking(&["pickup"], decide(AgentAction::None, "", None, &[("pickup", "בית 90, אלעד")])),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("מה הכתובת של הבית?") && !said.contains("לא מצאתי"), "{said}");
+    assert_eq!(call.engine.personal_place_named("מאמא שלי לירושלים").as_deref(), Some("אמא שלך"));
+    assert_eq!(call.engine.personal_place_named("מהגן של הילד").as_deref(), Some("הגן"));
+    assert_eq!(call.engine.personal_place_named("מבן זכאי 45"), None);
 }
 
 #[test]
@@ -3871,4 +3896,15 @@ fn a_city_correction_the_agent_did_not_pass_is_taken() {
         "",
     );
     assert_eq!(call.engine.state.place_cities.get("pickup").map(String::as_str), Some("אלעד"), "{}", spoken(&d));
+}
+
+#[test]
+fn a_sent_ride_ends_the_call_with_no_anything_else() {
+    // Live calls: "אפשר לעזור במשהו נוסף?" after the ride, a "כן" to it, and a new booking began.
+    let mut call = read_back_ride();
+    let d = call.engine.on_agent_turn("כן", decide(AgentAction::Submit, "", None, &[]), "");
+    let (run_id, _, _) = action(&d).expect("the ride is sent");
+    let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "ride_id": "R-1" })));
+    assert!(!spoken(&d).contains("נוסף"), "{}", spoken(&d));
+    assert!(hangs_up(&d), "{d:?}");
 }
