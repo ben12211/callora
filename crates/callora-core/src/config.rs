@@ -262,6 +262,10 @@ pub struct Lexicon {
     /// "שיש לי בולבול גדול" to the drivers as the note.
     #[serde(default)]
     pub abuse: Vec<String>,
+    /// A ride within one town ("נסיעה פנימית", "בתוך העיר", "לאותה עיר"): the other place is in
+    /// the town of the one known.
+    #[serde(default)]
+    pub same_city: Vec<String>,
 }
 
 /// The meta intents the runtime understands. Their *behaviour* is built in; their

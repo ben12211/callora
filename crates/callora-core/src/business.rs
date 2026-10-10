@@ -89,6 +89,7 @@ pub struct Business {
     pub nothing: PhraseSet,
     pub transfer: PhraseSet,
     pub abuse: PhraseSet,
+    pub same_city: PhraseSet,
     pub informal_places: PhraseSet,
     pub personal_places: PhraseSet,
     pub meta: Vec<CompiledMeta>,
@@ -117,6 +118,11 @@ impl Business {
     /// Words with a curse or a sexual word in them ("יא בן זונה", "שיש לי בולבול גדול").
     pub fn is_abusive(&self, text: &str) -> bool {
         self.abuse.find(&crate::text::normalize(text)).is_some()
+    }
+
+    /// Words of a ride within one town ("נסיעה פנימית", "בתוך העיר", "לאותה עיר").
+    pub fn says_same_city(&self, text: &str) -> bool {
+        self.same_city.find(&crate::text::normalize(text)).is_some()
     }
 
     /// Words that announce a transfer to a person ("רגע, מעביר למוקדן"), said only with one.
@@ -196,6 +202,7 @@ impl Business {
         let nothing = phrase("lexicon.nothing".into(), &config.lexicon.nothing, false);
         let transfer = phrase("lexicon.transfer".into(), &config.lexicon.transfer, false);
         let abuse = phrase("lexicon.abuse".into(), &config.lexicon.abuse, true);
+        let same_city = phrase("lexicon.same_city".into(), &config.lexicon.same_city, true);
         let informal_places = phrase("informal_places".into(), &config.informal_places, true);
         let personal_places = phrase("personal_places".into(), &config.personal_places, true);
 
@@ -321,6 +328,7 @@ impl Business {
             nothing,
             transfer,
             abuse,
+            same_city,
             informal_places,
             personal_places,
             meta,

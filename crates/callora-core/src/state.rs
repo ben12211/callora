@@ -305,6 +305,10 @@ pub struct CallState {
     /// Turns with a curse or a sexual word: the second ends the call.
     #[serde(default)]
     pub abuse_strikes: u32,
+    /// The caller said the ride is within one town: the place whose town is not known yet is
+    /// in the other's.
+    #[serde(default)]
+    pub same_city: bool,
     /// How the caller sounded on their last turns with the agent, oldest first.
     #[serde(default)]
     pub moods: Vec<Tone>,
@@ -362,6 +366,7 @@ impl CallState {
             asked_slots: BTreeSet::new(),
             noise_apology_turn: None,
             abuse_strikes: 0,
+            same_city: false,
             moods: Vec::new(),
         }
     }

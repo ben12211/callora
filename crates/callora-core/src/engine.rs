@@ -224,6 +224,7 @@ impl Engine {
         let fields = probe.answer_in_place(transcript, &fields);
         let fields = probe.with_cues(transcript, &fields);
         let fields = probe.with_city_correction(transcript, &fields);
+        let fields = probe.with_same_city(transcript, &fields);
         let rejected = !probe.apply_agent_fields(&fields).1.is_empty();
         // Or a business rule takes the turn over (17 passengers: a person arranges it), or a
         // town said alone is neither place yet ("מבני ברק או לבני ברק?").
@@ -320,6 +321,7 @@ impl Engine {
         let fields = probe.answer_in_place(transcript, &fields);
         let fields = probe.with_cues(transcript, &fields);
         let fields = probe.with_city_correction(transcript, &fields);
+        let fields = probe.with_same_city(transcript, &fields);
         probe.apply_agent_fields(&fields);
         probe.expected_slot().filter(|next| !asks.contains(next))
     }
@@ -615,6 +617,10 @@ impl Engine {
         let fields = self.answer_in_place(transcript, &fields);
         let fields = self.with_cues(transcript, &fields);
         let fields = self.with_city_correction(transcript, &fields);
+        let fields = self.with_same_city(transcript, &fields);
+        if self.says_same_city(transcript) {
+            self.state.same_city = true;
+        }
         let (changed, rejected) = self.apply_agent_fields(&fields);
         // The business's rules, as in a turn without the agent: a live call booked 17
         // passengers in one taxi, though more than 8 go to a person.
@@ -1479,6 +1485,80 @@ impl Engine {
         let mut out = fields.to_vec();
         out.push((slot, town.clone()));
         out
+    }
+
+    /// A ride within one town ("נסיעה פנימית", "בתוך העיר", "לאותה עיר", said now or before):
+    /// the place whose town is not known is in the other's town, so only its street is asked
+    /// ("לאיזה רחוב באלעד?"). "נסיעה פנימית באלעד" with neither place known is that town for
+    /// both. A street said without its town gets it.
+    fn with_same_city(&self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {
+        let (Some(g), Some(run)) = (&self.gazetteer, &self.state.run) else { return fields.to_vec() };
+        if !self.state.same_city && !self.says_same_city(transcript) {
+            return fields.to_vec();
+        }
+        let places: Vec<String> = self
+            .pipeline_of(run)
+            .slots
+            .iter()
+            .filter(|ps| {
+                self.business.config.slots.get(&ps.slot).is_some_and(|c| c.kind == crate::config::SlotKind::Place)
+            })
+            .map(|ps| ps.slot.clone())
+            .take(2)
+            .collect();
+        let [from, to] = places.as_slice() else { return fields.to_vec() };
+        let town_in = |text: &str| g.towns_named(text).into_iter().next();
+        let city_of = |slot: &str| -> Option<String> {
+            fields
+                .iter()
+                .filter(|(s, _)| s == slot)
+                .find_map(|(_, v)| town_in(v))
+                .or_else(|| self.state.place_cities.get(slot).cloned())
+                .or_else(|| {
+                    run.slots.get(slot).and_then(|s| match &s.value {
+                        SlotValue::Place { spoken, address, .. } => town_in(address.as_deref().unwrap_or(spoken)),
+                        _ => None,
+                    })
+                })
+        };
+        let missing: Vec<(&String, String)> = match (city_of(from), city_of(to)) {
+            (Some(c), None) => vec![(to, c)],
+            (None, Some(c)) => vec![(from, c)],
+            (None, None) => {
+                let towns = g.towns_named(transcript);
+                let [town] = towns.as_slice() else { return fields.to_vec() };
+                vec![(from, town.clone()), (to, town.clone())]
+            }
+            _ => return fields.to_vec(),
+        };
+        let mut out = fields.to_vec();
+        for (slot, city) in missing {
+            if run.slots.contains_key(slot) {
+                continue;
+            }
+            tracing::info!(transcript, %slot, %city, "a ride within one town: the place is in it");
+            match out.iter_mut().find(|(s, _)| s == slot) {
+                Some((_, v)) if !v.trim().is_empty() => *v = format!("{}, {city}", v.trim()),
+                Some((_, v)) => *v = city,
+                None => out.push((slot.clone(), city)),
+            }
+        }
+        out
+    }
+
+    /// The business's words of a ride within one town, or "בתוך" and a town ("בתוך בני ברק").
+    fn says_same_city(&self, transcript: &str) -> bool {
+        if self.business.says_same_city(transcript) {
+            return true;
+        }
+        let words = crate::text::normalize(transcript);
+        let Some(g) = &self.gazetteer else { return false };
+        words.split("בתוך ").skip(1).any(|after| {
+            g.towns_named(after).first().is_some_and(|t| {
+                let t = crate::text::normalize(t);
+                after.starts_with(&t) || after.starts_with(t.split(' ').next().unwrap_or(&t))
+            })
+        })
     }
 
     fn with_cues(&self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {

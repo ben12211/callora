@@ -457,5 +457,46 @@
         }
       }
     ]
+  },
+  {
+    "id": "a_ride_within_the_town_asks_only_its_streets",
+    "note": "the owner: \"נסיעה פנימית\", \"בתוך העיר\", \"לאותה עיר\": the destination is in the pickup town",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "מאיפה לאן?"
+        }
+      },
+      {
+        "caller": "נסיעה פנימית באלעד",
+        "expect": {
+          "cities": {
+            "pickup": "אלעד",
+            "destination": "אלעד"
+          },
+          "says_none": [
+            "לאיזו עיר",
+            "מאיזו עיר"
+          ],
+          "ended": false
+        }
+      },
+      {
+        "caller": "מרבי עקיבא 10",
+        "expect": {
+          "says_any": [
+            "באלעד"
+          ],
+          "says_none": [
+            "לאיזו עיר"
+          ],
+          "ended": false
+        }
+      }
+    ]
   }
 ]

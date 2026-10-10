@@ -3939,3 +3939,93 @@ fn a_street_with_a_word_like_a_curse_in_it_is_not_one() {
     assert!(!b.is_abusive("מבית של אמא שלי בזית 4"));
     assert!(!b.is_abusive("רחוב הזית 4 בירושלים"));
 }
+
+fn elad_two_streets() -> Arc<callora_core::gazetteer::Gazetteer> {
+    Arc::new(callora_core::gazetteer::Gazetteer::from_tsv(
+        "1309\tאלעד\t110\tרבן יוחנן בן זכאי\tofficial\n1309\tאלעד\t110\tבן זכאי\tsynonym\n\
+         1309\tאלעד\t120\tרבי עקיבא\tofficial\n3000\tירושלים\t140\tהנביאים\tofficial\n",
+    ))
+}
+
+#[test]
+fn a_ride_within_the_town_asks_only_the_destination_street() {
+    // The owner: "נסיעה פנימית", "בתוך העיר", "לאותה עיר" mean the destination is in the
+    // pickup's town; the street there is asked, never the city.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_two_streets()));
+    call.engine.on_agent_turn(
+        "צריך מונית, נסיעה פנימית באלעד",
+        asking(&["pickup"], decide(AgentAction::None, "איפה באלעד לאסוף?", Some("book_ride"), &[("pickup", "אלעד")])),
+        "",
+    );
+    assert_eq!(call.engine.state.place_cities.get("destination").map(String::as_str), Some("אלעד"));
+    assert_eq!(call.engine.state.place_cities.get("pickup").map(String::as_str), Some("אלעד"));
+
+    // The destination street alone, with the town of the pickup.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_two_streets()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד",
+        asking(
+            &["destination"],
+            decide(AgentAction::None, "לאן נוסעים?", Some("book_ride"), &[("pickup", "בן זכאי 40, אלעד")]),
+        ),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "לרבי עקיבא 5, זה בתוך העיר",
+        asking(&["passengers"], decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "רבי עקיבא 5")])),
+        "",
+    );
+    assert!(place(call.slot("destination")).contains("רבי עקיבא"), "{}", spoken(&d));
+    assert!(!spoken(&d).contains("עיר"), "no city asked: {}", spoken(&d));
+
+    // Said before the destination question: "לאותה עיר" then the street.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_two_streets()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד לאותה עיר",
+        asking(
+            &["destination"],
+            decide(AgentAction::None, "לאן נוסעים?", Some("book_ride"), &[("pickup", "בן זכאי 40, אלעד")]),
+        ),
+        "",
+    );
+    assert_eq!(call.engine.state.place_cities.get("destination").map(String::as_str), Some("אלעד"));
+    call.engine.on_agent_turn(
+        "רבי עקיבא 5",
+        asking(&["passengers"], decide(AgentAction::None, "כמה נוסעים?", None, &[("destination", "רבי עקיבא 5")])),
+        "",
+    );
+    assert!(place(call.slot("destination")).contains("רבי עקיבא"));
+}
+
+#[test]
+fn a_destination_street_without_words_of_one_town_is_not_put_in_the_pickup_town() {
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_two_streets()));
+    call.engine.on_agent_turn(
+        "מבן זכאי 40 באלעד",
+        asking(
+            &["destination"],
+            decide(AgentAction::None, "לאן נוסעים?", Some("book_ride"), &[("pickup", "בן זכאי 40, אלעד")]),
+        ),
+        "",
+    );
+    assert_eq!(call.engine.state.place_cities.get("destination"), None);
+    assert!(!call.engine.state.same_city);
+}
+
+#[test]
+fn a_price_within_the_town_is_asked_from_the_town_to_itself() {
+    let (mut call, _) = Call::new(with_desk());
+    call.engine.set_gazetteer(Some(elad_bnei_brak_jerusalem()));
+    let d = call.engine.on_agent_turn(
+        "כמה עולה נסיעה פנימית בבני ברק?",
+        decide(AgentAction::Submit, "", Some("price_question"), &[("price_from", "בני ברק")]),
+        "",
+    );
+    let (_, name, input) = action(&d).expect("asked at once: {d:?}");
+    assert_eq!(name, "estimate_price");
+    assert_eq!(input["slots"]["price_to"]["spoken"], "בני ברק", "{input}");
+}
