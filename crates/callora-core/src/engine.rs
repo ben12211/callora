@@ -224,8 +224,11 @@ impl Engine {
         let fields = probe.answer_in_place(transcript, &fields);
         let fields = probe.with_cues(transcript, &fields);
         let fields = probe.with_city_correction(transcript, &fields);
+        let agents = fields.clone();
         let fields = probe.with_same_city(transcript, &fields);
-        let rejected = !probe.apply_agent_fields(&fields).1.is_empty();
+        // A place the agent did not pass, put in the other's town: its words were without it.
+        let in_town = fields != agents;
+        let rejected = in_town || !probe.apply_agent_fields(&fields).1.is_empty();
         // Or a business rule takes the turn over (17 passengers: a person arranges it), or a
         // town said alone is neither place yet ("מבני ברק או לבני ברק?").
         rejected || probe.rule_takes_over() || self.lone_city_either_way(transcript, &fields).is_some()
@@ -617,7 +620,15 @@ impl Engine {
         let fields = self.answer_in_place(transcript, &fields);
         let fields = self.with_cues(transcript, &fields);
         let fields = self.with_city_correction(transcript, &fields);
+        let agents = fields.clone();
         let fields = self.with_same_city(transcript, &fields);
+        // A place put in the town of the other: the agent's question was asked without it ("איפה
+        // באלעד לאסוף? ולאן נוסעים?" to "נסיעה פנימית באלעד"), the task's own next one instead.
+        if fields != agents {
+            turn.phrase = None;
+            turn.say.clear();
+            decided = true;
+        }
         if self.says_same_city(transcript) {
             self.state.same_city = true;
         }

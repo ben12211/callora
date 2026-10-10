@@ -4029,3 +4029,20 @@ fn a_price_within_the_town_is_asked_from_the_town_to_itself() {
     assert_eq!(name, "estimate_price");
     assert_eq!(input["slots"]["price_to"]["spoken"], "בני ברק", "{input}");
 }
+
+#[test]
+fn a_ride_within_the_town_holds_the_agents_question_about_the_destination() {
+    // The eval: "נסיעה פנימית באלעד" got "איפה באלעד לאסוף? ולאן נוסעים?".
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad_two_streets()));
+    call.engine.on_agent_turn("צריך מונית", decide(AgentAction::None, "מאיפה לאן?", Some("book_ride"), &[]), "");
+    let fields = vec![("pickup".to_string(), "אלעד".to_string())];
+    assert!(call.engine.rejects_any("נסיעה פנימית באלעד", &fields), "the agent's words are held");
+    let d = call.engine.on_agent_turn(
+        "נסיעה פנימית באלעד",
+        asking(&["pickup"], decide(AgentAction::None, "איפה באלעד לאסוף? ולאן נוסעים?", None, &[("pickup", "אלעד")])),
+        "",
+    );
+    assert!(!spoken(&d).contains("לאן"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("באלעד"), "{}", spoken(&d));
+}
