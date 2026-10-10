@@ -692,21 +692,25 @@ impl BusinessRegistry {
     pub fn new(businesses: Vec<Business>) -> Result<Self, LoadError> {
         let mut reg = Self::default();
         for b in businesses {
-            let b = Arc::new(b);
-            if reg.by_id.insert(b.config.id.clone(), b.clone()).is_some() {
-                return Err(LoadError::DuplicateId(b.config.id.clone()));
-            }
-            for number in &b.phone_numbers {
-                if let Some(prev) = reg.by_number.insert(number.clone(), b.clone()) {
-                    return Err(LoadError::DuplicateNumber {
-                        number: number.clone(),
-                        first: prev.config.id.clone(),
-                        second: b.config.id.clone(),
-                    });
-                }
-            }
+            reg.insert(Arc::new(b))?;
         }
         Ok(reg)
+    }
+
+    fn insert(&mut self, b: Arc<Business>) -> Result<(), LoadError> {
+        if self.by_id.insert(b.config.id.clone(), b.clone()).is_some() {
+            return Err(LoadError::DuplicateId(b.config.id.clone()));
+        }
+        for number in &b.phone_numbers {
+            if let Some(prev) = self.by_number.insert(number.clone(), b.clone()) {
+                return Err(LoadError::DuplicateNumber {
+                    number: number.clone(),
+                    first: prev.config.id.clone(),
+                    second: b.config.id.clone(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Load every `*.json` file in a directory.
@@ -726,6 +730,18 @@ impl BusinessRegistry {
             out.push(Business::from_json(&json, &shown, env)?);
         }
         Self::new(out)
+    }
+
+    /// The same businesses with `business` in place of the one of its id (the owner changed
+    /// its settings on the dashboard): calls that started keep the one they have.
+    pub fn with(&self, business: Business) -> Result<Self, LoadError> {
+        let business = Arc::new(business);
+        let mut reg = Self::default();
+        for b in self.by_id.values().filter(|b| b.config.id != business.config.id) {
+            reg.insert(b.clone())?;
+        }
+        reg.insert(business)?;
+        Ok(reg)
     }
 
     pub fn by_number(&self, number: &str) -> Option<Arc<Business>> {

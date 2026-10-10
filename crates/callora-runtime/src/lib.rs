@@ -6,6 +6,7 @@ pub mod barge;
 pub mod dashboard;
 pub mod desk;
 pub mod metrics;
+pub mod owner_config;
 pub mod ports;
 pub mod pricing;
 pub mod review;

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { ClipboardList, LayoutDashboard, LogOut, MessageCircle, Moon, Phone, Settings, Sun } from "lucide-react";
+import { ClipboardList, LayoutDashboard, LogOut, MessageCircle, Moon, Phone, Settings, SlidersHorizontal, Sun } from "lucide-react";
 import { api, type Session, type Stats, useApi } from "./api";
 import { cx, Loading, ToastProvider } from "./ui";
 import { Login } from "./pages/Login";
@@ -11,6 +11,7 @@ import { Orders } from "./pages/Orders";
 import type { TgOverview } from "./pages/Telegram";
 import { type WaOverview, WhatsApp, whatsappTrouble } from "./pages/WhatsApp";
 import { Settings as SettingsPage } from "./pages/Settings";
+import { Behavior } from "./pages/Behavior";
 
 type Auth = { state: "checking" } | { state: "out" } | { state: "in"; session: Session };
 
@@ -47,6 +48,7 @@ export function App() {
             <Route path="/calls/:id" element={<CallView />} />
             <Route path="/orders" element={<Orders />} />
             <Route path="/whatsapp" element={<WhatsApp />} />
+            <Route path="/behavior" element={<Behavior session={auth.session} />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -63,6 +65,7 @@ const NAV: { to: string; label: string; icon: typeof Phone; end: boolean; badge?
   { to: "/calls", label: "שיחות", icon: Phone, end: false },
   { to: "/orders", label: "הזמנות", icon: ClipboardList, end: false, badge: "verify" },
   { to: "/whatsapp", label: "חשבונות", icon: MessageCircle, end: false, badge: "whatsapp" },
+  { to: "/behavior", label: "התנהגות", icon: SlidersHorizontal, end: false },
   { to: "/settings", label: "הגדרות", icon: Settings, end: false },
 ];
 
@@ -223,7 +226,7 @@ function Shell({ session, onLogout, children }: { session: Session; onLogout: ()
 
       <nav
         aria-label="ניווט"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200/70 bg-white/90 px-1 pt-1.5 backdrop-blur-xl lg:hidden dark:border-white/[0.07] dark:bg-slate-950/85"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-slate-200/70 bg-white/90 px-1 pt-1.5 backdrop-blur-xl lg:hidden dark:border-white/[0.07] dark:bg-slate-950/85"
         style={{ paddingBottom: "max(0.375rem, env(safe-area-inset-bottom))" }}
       >
         {NAV.map(({ to, label, icon: Icon, end, badge: b }) => (

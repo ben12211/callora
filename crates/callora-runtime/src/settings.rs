@@ -115,6 +115,9 @@ pub struct SettingsStore {
     agent_model: RwLock<Option<AgentModelSettings>>,
     /// What changes the agent's model while calls run; set once the server has built it.
     agent_control: RwLock<Option<Arc<AgentControl>>>,
+    /// The owner's changes to each business's configuration, as a patch over its file (see
+    /// `owner_config`).
+    config_patches: RwLock<HashMap<String, serde_json::Value>>,
     /// Numbers the owner blocked from the call page (prank callers): their calls are rejected
     /// before anything answers them.
     blocked: RwLock<BTreeSet<String>>,
@@ -128,8 +131,12 @@ impl SettingsStore {
         let mut desks = HashMap::new();
         let mut price_bots = HashMap::new();
         let mut voices = HashMap::new();
+        let mut config_patches = HashMap::new();
         for r in rows {
             let settings: serde_json::Value = r.get("settings");
+            if settings["config"].as_object().is_some_and(|c| !c.is_empty()) {
+                config_patches.insert(r.get::<String, _>("business_id"), settings["config"].clone());
+            }
             if let Some(voice) = settings["voice"].as_str().filter(|v| !v.is_empty()) {
                 voices.insert(r.get::<String, _>("business_id"), voice.to_string());
             }
@@ -164,6 +171,7 @@ impl SettingsStore {
             voices: RwLock::new(voices),
             agent_model: RwLock::new(agent_model),
             agent_control: RwLock::new(None),
+            config_patches: RwLock::new(config_patches),
             blocked: RwLock::new(blocked),
         })
     }
@@ -196,6 +204,34 @@ impl SettingsStore {
             Some(v) => self.voices.write().insert(business_id.to_string(), v),
             None => self.voices.write().remove(business_id),
         };
+        Ok(())
+    }
+
+    /// The owner's changes to the business's configuration, if any.
+    pub fn config_patch(&self, business_id: &str) -> Option<serde_json::Value> {
+        self.config_patches.read().get(business_id).cloned()
+    }
+
+    /// Saves the owner's changes (an empty patch: back to the file).
+    pub async fn save_config_patch(
+        &self,
+        pool: &PgPool,
+        business_id: &str,
+        patch: serde_json::Value,
+    ) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO callora_v2.business_settings (business_id, settings) VALUES ($1, jsonb_build_object('config', $2::jsonb))
+             ON CONFLICT (business_id) DO UPDATE SET settings = callora_v2.business_settings.settings || jsonb_build_object('config', $2::jsonb), updated_at = now()",
+        )
+        .bind(business_id)
+        .bind(&patch)
+        .execute(pool)
+        .await?;
+        if patch.as_object().is_some_and(|p| !p.is_empty()) {
+            self.config_patches.write().insert(business_id.to_string(), patch);
+        } else {
+            self.config_patches.write().remove(business_id);
+        }
         Ok(())
     }
 

@@ -63,7 +63,11 @@ pub struct VoiceBuild {
 }
 
 pub struct AppState {
-    pub registry: BusinessRegistry,
+    /// The businesses as calls take them: the files with the owner's changes laid over them.
+    /// Swapped whole when the owner changes one; a call keeps the business it started with.
+    registry: parking_lot::RwLock<Arc<BusinessRegistry>>,
+    /// The businesses as their files define them, before the owner's changes.
+    files: HashMap<String, Arc<callora_core::business::Business>>,
     /// Each business's voice library. Swapped whole when the owner switches voices: a call
     /// keeps the library (and so the voice) it started with.
     libraries: parking_lot::RwLock<HashMap<String, Arc<VoiceLibrary>>>,
@@ -101,8 +105,10 @@ impl AppState {
             services.desk =
                 Some(Arc::new(crate::desk::Desk::new(settings.public_base_url.clone(), services.telephony.clone())));
         }
+        let files = registry.all().map(|b| (b.config.id.clone(), b.clone())).collect();
         Arc::new(Self {
-            registry,
+            registry: parking_lot::RwLock::new(Arc::new(registry)),
+            files,
             libraries: parking_lot::RwLock::new(libraries),
             voice_builds: Mutex::new(HashMap::new()),
             services,
@@ -118,6 +124,65 @@ impl AppState {
 }
 
 impl AppState {
+    pub fn registry(&self) -> Arc<BusinessRegistry> {
+        self.registry.read().clone()
+    }
+
+    /// The business as its file defines it, before the owner's changes.
+    pub fn business_file(&self, business_id: &str) -> Option<Arc<callora_core::business::Business>> {
+        self.files.get(business_id).cloned()
+    }
+
+    /// The business from its file with the owner's `patch` laid over it, checked as a file
+    /// is, and put in use for new calls. The problems found when it is refused.
+    pub fn apply_config(&self, business_id: &str, patch: &serde_json::Value) -> Result<(), Vec<String>> {
+        let file = self.business_file(business_id).ok_or_else(|| vec!["unknown business".to_string()])?;
+        let mut config = serde_json::to_value(&file.config).map_err(|e| vec![e.to_string()])?;
+        crate::owner_config::merge(&mut config, patch);
+        let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let business = callora_core::business::Business::from_json(&config.to_string(), "dashboard", &env).map_err(
+            |e| match e {
+                callora_core::business::LoadError::Invalid { issues, .. } => {
+                    issues.iter().map(|i| format!("{}: {}", i.path, i.message)).collect()
+                }
+                other => vec![other.to_string()],
+            },
+        )?;
+        let next = self.registry().with(business).map_err(|e| vec![e.to_string()])?;
+        *self.registry.write() = Arc::new(next);
+        Ok(())
+    }
+
+    /// At start: each business with the owner's saved changes over its file. Returns the
+    /// businesses whose changes need recording (a changed sentence or pace).
+    pub fn apply_saved_configs(self: &Arc<Self>) -> Vec<String> {
+        let mut to_record = Vec::new();
+        for id in self.files.keys().cloned().collect::<Vec<_>>() {
+            let Some(patch) = self.services.settings.config_patch(&id) else { continue };
+            let changed = crate::owner_config::changed(&patch);
+            match self.apply_config(&id, &patch) {
+                Ok(()) => {
+                    tracing::info!(business = %id, ?changed, "the owner's changes are in use");
+                    if changed.iter().any(|p| crate::owner_config::needs_recording(p)) {
+                        to_record.push(id);
+                    }
+                }
+                Err(problems) => {
+                    tracing::error!(business = %id, ?problems, "the owner's saved changes no longer fit the file; the file is used")
+                }
+            }
+        }
+        to_record
+    }
+
+    /// Records what the business's current settings say that its voice library lacks (a
+    /// changed sentence, a new pace), in the voice in use. False when a recording runs.
+    pub fn record_changes(self: &Arc<Self>, business_id: &str) -> bool {
+        let Some(b) = self.registry().by_id(business_id) else { return false };
+        let Some(voice) = self.active_voice(&b) else { return false };
+        self.switch_voice(business_id, voice)
+    }
+
     /// The business's voice library now.
     pub fn library(&self, business_id: &str) -> Arc<VoiceLibrary> {
         self.libraries.read().get(business_id).cloned().unwrap_or_else(|| Arc::new(VoiceLibrary::empty()))
@@ -162,7 +227,7 @@ impl AppState {
     }
 
     async fn build_voice(&self, business_id: &str, voice: &str) -> anyhow::Result<()> {
-        let business = self.registry.by_id(business_id).ok_or_else(|| anyhow::anyhow!("unknown business"))?;
+        let business = self.registry().by_id(business_id).ok_or_else(|| anyhow::anyhow!("unknown business"))?;
         let root = self.settings.library_dir.clone().ok_or_else(|| anyhow::anyhow!("AUDIO_LIBRARY_DIR is not set"))?;
         let tts = self.services.tts.clone().ok_or_else(|| anyhow::anyhow!("no text-to-speech configured"))?;
         let root = callora_audio::library::voice_root(&root, voice, business.voice_id.as_deref());
@@ -200,7 +265,7 @@ impl AppState {
     /// used at once if it was built before, and completed in the background.
     pub fn apply_saved_voices(self: &Arc<Self>) {
         let Some(root) = self.settings.library_dir.clone() else { return };
-        for b in self.registry.all() {
+        for b in self.registry().all() {
             let Some(voice) = self.services.settings.voice(&b.config.id) else { continue };
             if self.active_voice(b).as_deref() == Some(voice.as_str()) {
                 continue;
@@ -285,6 +350,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/settings/{business}/price-bot", axum::routing::put(api_save_price_bot))
         .route("/api/settings/{business}/voice", axum::routing::put(api_save_voice))
         .route("/api/settings/agent-model", axum::routing::put(api_save_agent_model))
+        .route("/api/config/{business}", get(api_config).put(api_save_config))
         .route("/api/blocked", get(api_blocked))
         .route("/api/blocked/{number}", axum::routing::put(api_block))
         .route("/api/settings/{business}/price-bot/test", post(api_test_price_bot))
@@ -333,7 +399,7 @@ async fn health(State(s): State<Arc<AppState>>) -> Response {
         },
     };
     // A down database degrades call history, not calls, so health stays 200.
-    Json(json!({ "status": "ok", "businesses": s.registry.len(), "database": db })).into_response()
+    Json(json!({ "status": "ok", "businesses": s.registry().len(), "database": db })).into_response()
 }
 
 async fn metrics(State(s): State<Arc<AppState>>) -> Response {
@@ -363,7 +429,7 @@ async fn voice(
     let call_sid = params.get("CallSid").cloned().unwrap_or_default();
     let to = params.get("To").cloned().unwrap_or_default();
     let from = params.get("From").cloned().filter(|f| is_e164(f));
-    let Some(business) = s.registry.by_number(&to) else {
+    let Some(business) = s.registry().by_number(&to) else {
         tracing::warn!(%to, "call to a number no business answers");
         return xml(twiml_unavailable());
     };
@@ -490,7 +556,7 @@ async fn media_socket(s: Arc<AppState>, socket: WebSocket) {
         tracing::warn!("media stream rejected: token is for another call");
         return;
     }
-    let Some(business) = s.registry.by_id(&claims.business_id) else { return };
+    let Some(business) = s.registry().by_id(&claims.business_id) else { return };
     let library = s.library(&business.config.id);
     let pending = s.pending.lock().remove(&start.call_sid);
     let (from, to, customer) = match pending {
@@ -708,7 +774,7 @@ async fn api_session(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Resp
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let businesses: Vec<_> = s.registry.all().map(|b| json!({ "id": b.config.id, "name": b.config.name })).collect();
+    let businesses: Vec<_> = s.registry().all().map(|b| json!({ "id": b.config.id, "name": b.config.name })).collect();
     Json(json!({ "businesses": businesses, "database": s.db.is_some() })).into_response()
 }
 
@@ -738,7 +804,7 @@ async fn api_businesses(State(s): State<Arc<AppState>>, headers: HeaderMap) -> R
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let list: Vec<_> = s
-        .registry
+        .registry()
         .all()
         .map(|b| {
             let lib = s.library(&b.config.id).len();
@@ -804,7 +870,7 @@ async fn api_settings(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Res
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let businesses: Vec<_> = s
-        .registry
+        .registry()
         .all()
         .map(|b| {
             json!({
@@ -870,6 +936,81 @@ struct VoiceChange {
 }
 
 /// Switch a business to another voice from its list: saved, then built and swapped in.
+/// The behavior page: each editable item as the file has it and as it is now, which ones the
+/// owner changed, and the agent's whole system prompt as the model gets it.
+async fn api_config(State(s): State<Arc<AppState>>, headers: HeaderMap, Path(business): Path<String>) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (Some(file), Some(current)) = (s.business_file(&business), s.registry().by_id(&business)) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    config_view(&s, &file, &current)
+}
+
+fn config_view(
+    s: &AppState,
+    file: &callora_core::business::Business,
+    current: &callora_core::business::Business,
+) -> Response {
+    let as_json = |b: &callora_core::business::Business| serde_json::to_value(&b.config).unwrap_or_default();
+    let patch = s.services.settings.config_patch(&current.config.id).unwrap_or_else(|| json!({}));
+    Json(json!({
+        "file": crate::owner_config::view(&as_json(file)),
+        "current": crate::owner_config::view(&as_json(current)),
+        "changed": crate::owner_config::changed(&patch),
+        "prompt": current.config.agent.as_ref().map(|_| callora_core::agent::system_prompt(current)),
+        "saving": s.db.is_some(),
+        "recording": s.voice_build(&current.config.id).is_some_and(|v| v.error.is_none()),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct ConfigChange {
+    path: String,
+    /// The new value; absent or null goes back to the file's.
+    #[serde(default)]
+    value: Option<serde_json::Value>,
+}
+
+/// One item changed (or reset) on the behavior page: checked as the file would be, used by new
+/// calls at once, kept across restarts. A changed sentence is recorded in the voice in use.
+async fn api_save_config(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(business): Path<String>,
+    Json(change): Json<ConfigChange>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !crate::owner_config::editable(&change.path) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "problems": ["אי אפשר לשנות את זה מכאן"] }))).into_response();
+    }
+    let Some(file) = s.business_file(&business) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    let mut patch = s.services.settings.config_patch(&business).unwrap_or_else(|| json!({}));
+    let value = change.value.filter(|v| !v.is_null());
+    crate::owner_config::set(&mut patch, &change.path, value);
+    if let Err(problems) = s.apply_config(&business, &patch) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "problems": problems }))).into_response();
+    }
+    if let Err(e) = s.services.settings.save_config_patch(pool, &business, patch).await {
+        tracing::error!(error = %e, "saving the owner's changes failed");
+        // Back to what is saved, so what calls use is what a restart would.
+        let saved = s.services.settings.config_patch(&business).unwrap_or_else(|| json!({}));
+        let _ = s.apply_config(&business, &saved);
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    tracing::info!(business = %business, path = %change.path, "the owner changed the configuration");
+    if crate::owner_config::needs_recording(&change.path) {
+        s.record_changes(&business);
+    }
+    let Some(current) = s.registry().by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
+    config_view(&s, &file, &current)
+}
+
 async fn api_blocked(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -913,7 +1054,7 @@ async fn api_save_voice(
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Some(b) = s.registry.by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(b) = s.registry().by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
     let voice = change.voice_id.trim().to_string();
     let known = b.config.voice.choices.iter().any(|c| c.id == voice) || b.voice_id.as_deref() == Some(voice.as_str());
     if !known {
@@ -949,7 +1090,7 @@ async fn api_save_price_bot(
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if s.registry.by_id(&business).is_none() {
+    if s.registry().by_id(&business).is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
     let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
@@ -982,7 +1123,7 @@ async fn api_test_price_bot(
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Some(b) = s.registry.by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(b) = s.registry().by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
     let Some(action) =
         b.config.actions.iter().find(|(_, a)| {
             a.backends.iter().any(|k| matches!(k, callora_core::config::ActionBackend::PriceBot { .. }))
@@ -1019,7 +1160,7 @@ async fn api_save_settings(
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if s.registry.by_id(&business).is_none() {
+    if s.registry().by_id(&business).is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
     let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };

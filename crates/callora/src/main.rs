@@ -1063,7 +1063,11 @@ async fn serve(dir: &Path) -> anyhow::Result<()> {
     };
     let state = AppState::new(registry, libraries, services, session, settings, db);
     // A voice chosen on the settings page replaces the business's own.
+    let to_record = state.apply_saved_configs();
     state.apply_saved_voices();
+    for id in to_record {
+        state.record_changes(&id);
+    }
     // Orders to WhatsApp, drained in the background at the accounts' pace.
     match (&state.db, &state.whatsapp) {
         (Some(pool), Some(service)) => {
