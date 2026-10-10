@@ -88,6 +88,7 @@ pub struct Business {
     pub hello: PhraseSet,
     pub nothing: PhraseSet,
     pub transfer: PhraseSet,
+    pub abuse: PhraseSet,
     pub informal_places: PhraseSet,
     pub personal_places: PhraseSet,
     pub meta: Vec<CompiledMeta>,
@@ -111,6 +112,11 @@ impl Business {
     /// Whether a place is the caller's own ("הבית", "העבודה של אשתי", "אמא שלי").
     pub fn is_personal_place(&self, name: &str) -> bool {
         self.personal_places.find(&crate::text::normalize(name)).is_some()
+    }
+
+    /// Words with a curse or a sexual word in them ("יא בן זונה", "שיש לי בולבול גדול").
+    pub fn is_abusive(&self, text: &str) -> bool {
+        self.abuse.find(&crate::text::normalize(text)).is_some()
     }
 
     /// Words that announce a transfer to a person ("רגע, מעביר למוקדן"), said only with one.
@@ -189,6 +195,7 @@ impl Business {
         let hello = phrase("lexicon.hello".into(), &config.lexicon.hello, false);
         let nothing = phrase("lexicon.nothing".into(), &config.lexicon.nothing, false);
         let transfer = phrase("lexicon.transfer".into(), &config.lexicon.transfer, false);
+        let abuse = phrase("lexicon.abuse".into(), &config.lexicon.abuse, true);
         let informal_places = phrase("informal_places".into(), &config.informal_places, true);
         let personal_places = phrase("personal_places".into(), &config.personal_places, true);
 
@@ -313,6 +320,7 @@ impl Business {
             hello,
             nothing,
             transfer,
+            abuse,
             informal_places,
             personal_places,
             meta,

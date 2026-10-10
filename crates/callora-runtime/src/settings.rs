@@ -3,7 +3,7 @@
 //! PostgreSQL (`callora_v2.business_settings`) across restarts. A business with no saved
 //! settings uses its `handoff.phone_number_env` number, as before.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -115,6 +115,9 @@ pub struct SettingsStore {
     agent_model: RwLock<Option<AgentModelSettings>>,
     /// What changes the agent's model while calls run; set once the server has built it.
     agent_control: RwLock<Option<Arc<AgentControl>>>,
+    /// Numbers the owner blocked from the call page (prank callers): their calls are rejected
+    /// before anything answers them.
+    blocked: RwLock<BTreeSet<String>>,
 }
 
 impl SettingsStore {
@@ -148,12 +151,20 @@ impl SettingsStore {
             .flatten()
             .and_then(|r| serde_json::from_value::<AgentModelSettings>(r.get("value")).ok())
             .filter(|m| m.problems().is_empty());
+        let blocked = sqlx::query("SELECT value FROM callora_v2.app_settings WHERE key = 'blocked_numbers'")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| serde_json::from_value::<BTreeSet<String>>(r.get("value")).ok())
+            .unwrap_or_default();
         Ok(Self {
             desks: RwLock::new(desks),
             price_bots: RwLock::new(price_bots),
             voices: RwLock::new(voices),
             agent_model: RwLock::new(agent_model),
             agent_control: RwLock::new(None),
+            blocked: RwLock::new(blocked),
         })
     }
 
@@ -185,6 +196,34 @@ impl SettingsStore {
             Some(v) => self.voices.write().insert(business_id.to_string(), v),
             None => self.voices.write().remove(business_id),
         };
+        Ok(())
+    }
+
+    /// Whether calls from this number are rejected.
+    pub fn is_blocked(&self, number: &str) -> bool {
+        self.blocked.read().contains(number)
+    }
+
+    pub fn blocked_numbers(&self) -> Vec<String> {
+        self.blocked.read().iter().cloned().collect()
+    }
+
+    /// Blocks an E.164 number, or lets it call again.
+    pub async fn set_blocked(&self, pool: &PgPool, number: &str, blocked: bool) -> sqlx::Result<()> {
+        let mut next = self.blocked.read().clone();
+        if blocked {
+            next.insert(number.to_string());
+        } else {
+            next.remove(number);
+        }
+        sqlx::query(
+            "INSERT INTO callora_v2.app_settings (key, value) VALUES ('blocked_numbers', $1)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        )
+        .bind(serde_json::to_value(&next).unwrap_or_default())
+        .execute(pool)
+        .await?;
+        *self.blocked.write() = next;
         Ok(())
     }
 

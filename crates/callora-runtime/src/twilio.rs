@@ -97,6 +97,11 @@ pub fn twiml_stream(media_url: &str, token: &str) -> String {
     )
 }
 
+/// A call refused before it is answered: the caller hears a busy line, and it costs nothing.
+pub fn twiml_reject() -> String {
+    r#"<?xml version="1.0" encoding="UTF-8"?><Response><Reject reason="busy"/></Response>"#.to_string()
+}
+
 pub fn twiml_say_hangup(text: &str, language: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><Response><Say language="{}">{}</Say><Hangup/></Response>"#,

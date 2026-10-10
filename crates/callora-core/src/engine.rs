@@ -536,6 +536,9 @@ impl Engine {
             self.goodbye(&mut out);
             return self.finish(out);
         }
+        if self.business.is_abusive(transcript) {
+            return self.on_abuse(transcript);
+        }
         let mut turn = turn;
         if let Some(intent) = turn.phrase.as_deref().and_then(|p| self.refused_wrongly(transcript, p)) {
             tracing::info!(transcript, %intent, "a refusal of what the business does; its task instead");
@@ -2422,6 +2425,9 @@ impl Engine {
         self.state.silence_reprompts = 0;
         self.state.waiting = false;
         self.state.remember(Speaker::Caller, &u.transcript);
+        if self.business.is_abusive(&u.transcript) {
+            return self.on_abuse(&u.transcript);
+        }
         if u.frustrated && self.business.config.voice.deliveries.contains_key("calm") {
             self.state.delivery = Some("calm".into());
         }
@@ -3032,6 +3038,30 @@ impl Engine {
                 }
             }
             None => return Vec::new(),
+        }
+        self.finish(out)
+    }
+
+    /// A curse or a sexual word: nothing in the words is taken (no note, name or place), and
+    /// the agent's own reply is not said. The first time a calm line and the question again;
+    /// the second, the call ends. Prank callers kept a live call going with them.
+    fn on_abuse(&mut self, transcript: &str) -> Vec<Directive> {
+        let mut out = Out::default();
+        self.state.abuse_strikes += 1;
+        let ctx = self.render_ctx(None);
+        if self.state.abuse_strikes >= 2 && self.business.response("abuse_goodbye").is_some() {
+            tracing::warn!(transcript, "a curse again; the call ends");
+            self.say(&mut out, "abuse_goodbye", ctx, true);
+            self.state.phase = Phase::Ending;
+            out.push(Directive::Hangup);
+            return self.finish(out);
+        }
+        tracing::info!(transcript, "a curse; nothing in it is taken");
+        if self.business.response("abuse_warning").is_some() {
+            self.say(&mut out, "abuse_warning", ctx, false);
+        }
+        if let Some(plan) = self.last_question() {
+            out.speak(plan, false);
         }
         self.finish(out)
     }

@@ -270,7 +270,8 @@ impl Session {
             });
         }
         self.services.metrics.llm_calls_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let decided = self.engine.decisive_intent(&transcript).is_some();
+        // A curse: the engine answers it, never the agent's own words ("סבבה." to a lewd note).
+        let decided = self.engine.decisive_intent(&transcript).is_some() || self.business.is_abusive(&transcript);
         self.pending_agent = Some(PendingAgent {
             turn,
             transcript,

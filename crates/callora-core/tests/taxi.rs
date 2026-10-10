@@ -3778,7 +3778,7 @@ fn a_town_only_the_second_hearing_heard_is_asked_about_not_taken() {
         asking(&["pickup"], decide(AgentAction::None, "איפה בג'ת לאסוף?", None, &[("pickup", "ג'ת")])),
         "",
     );
-    assert!(spoken(&d).contains("ג'ת, נכון?"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("לא בטוח ששמעתי טוב. ג'ת?"), "{}", spoken(&d));
     assert_ne!(call.engine.street_focus().as_deref(), Some("ג'ת"), "not taken yet");
     // A town the stream heard is taken as before.
     let (mut call, _) = Call::new(business(&[]));
@@ -3907,4 +3907,35 @@ fn a_sent_ride_ends_the_call_with_no_anything_else() {
     let d = call.engine.on_action_result(run_id, Ok(serde_json::json!({ "ride_id": "R-1" })));
     assert!(!spoken(&d).contains("נוסף"), "{}", spoken(&d));
     assert!(hangs_up(&d), "{d:?}");
+}
+
+#[test]
+fn a_lewd_note_is_not_taken_and_a_second_curse_ends_the_call() {
+    // A live prank call: "שיש לי בולבול גדול" to the driver question became the note, went to
+    // the drivers, and the agent said "סבבה."; a second call ended in "יא בן זונה".
+    let mut call = at_the_driver_question();
+    let d = call.engine.on_agent_turn(
+        "אממ, שיש לי בולבול גדול.",
+        decide(AgentAction::ReadBack, "סבבה.", Some("book_ride"), &[("notes", "שיש לי בולבול גדול")]),
+        "",
+    );
+    assert_eq!(call.slot("notes"), None, "{}", spoken(&d));
+    assert_ne!(call.step(), Some(Step::AwaitingConfirmation), "{}", spoken(&d));
+    assert!(!spoken(&d).contains("סבבה"), "{}", spoken(&d));
+    assert!(spoken(&d).contains("הנהג"), "the question again: {}", spoken(&d));
+    assert!(!hangs_up(&d));
+
+    let d = call.engine.on_agent_turn("יא בן זונה", decide(AgentAction::None, "", None, &[]), "");
+    assert!(hangs_up(&d), "{d:?}");
+    assert!(spoken(&d).contains("מסיים"), "{}", spoken(&d));
+}
+
+#[test]
+fn a_street_with_a_word_like_a_curse_in_it_is_not_one() {
+    let b = business(&[]);
+    assert!(b.is_abusive("לכוס של אמא שלך"));
+    assert!(b.is_abusive("יא בן זונה"));
+    assert!(!b.is_abusive("כוס קפה ליד הבית"));
+    assert!(!b.is_abusive("מבית של אמא שלי בזית 4"));
+    assert!(!b.is_abusive("רחוב הזית 4 בירושלים"));
 }

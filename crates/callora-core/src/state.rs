@@ -302,6 +302,9 @@ pub struct CallState {
     /// not every time noise cuts in.
     #[serde(default)]
     pub noise_apology_turn: Option<u32>,
+    /// Turns with a curse or a sexual word: the second ends the call.
+    #[serde(default)]
+    pub abuse_strikes: u32,
     /// How the caller sounded on their last turns with the agent, oldest first.
     #[serde(default)]
     pub moods: Vec<Tone>,
@@ -358,6 +361,7 @@ impl CallState {
             offered_streets: Vec::new(),
             asked_slots: BTreeSet::new(),
             noise_apology_turn: None,
+            abuse_strikes: 0,
             moods: Vec::new(),
         }
     }

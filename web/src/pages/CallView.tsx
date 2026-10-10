@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowRight, Bot, Cpu, Download, Headset, ThumbsDown, ThumbsUp, TriangleAlert, User, Zap } from "lucide-react";
-import { api, type CallDetail, type Turn, useApi, type Verdict } from "../api";
+import { ArrowRight, Ban, Bot, Cpu, Download, Headset, ThumbsDown, ThumbsUp, TriangleAlert, User, Zap } from "lucide-react";
+import { api, type CallDetail, type Turn, Unauthorized, useApi, type Verdict } from "../api";
 import { ACTIONS, clock, duration, phone, secondsOf, SLOTS, tokens } from "../format";
 import { Badge, Button, Card, cx, Empty, FIELD, Problem, Skeleton, SURFACE, useToast, When } from "../ui";
 import { CallAvatar, OutcomeBadge, VerdictBadge } from "../parts";
@@ -63,6 +63,7 @@ export function CallView() {
               <When iso={c.started_at} />
             </p>
           </div>
+          {c.from && <BlockButton number={c.from} />}
         </div>
         <dl className="mt-5 grid grid-cols-2 gap-3 border-t border-slate-100 pt-5 sm:grid-cols-4 dark:border-white/[0.06]">
           <Fact label="משך השיחה" value={duration(seconds)} />
@@ -310,5 +311,41 @@ function Review({ call }: { call: CallDetail }) {
         </Button>
       </div>
     </Card>
+  );
+}
+
+/** Blocks a prank caller: their next calls hear a busy line, and nothing answers them. */
+function BlockButton({ number }: { number: string }) {
+  const toast = useToast();
+  const list = useApi<{ numbers: string[] }>("/api/blocked");
+  const [busy, setBusy] = useState(false);
+  const blocked = list.data?.numbers.includes(number) ?? false;
+  const change = async (block: boolean) => {
+    setBusy(true);
+    try {
+      await api(`/api/blocked/${encodeURIComponent(number)}`, { method: "PUT", body: JSON.stringify({ blocked: block }) });
+      await list.reload();
+      toast(block ? "המספר נחסם. השיחות הבאות ממנו יקבלו צליל תפוס." : "החסימה הוסרה.", "good");
+    } catch (e) {
+      if (!(e instanceof Unauthorized)) toast("לא נשמר. נסו שוב.", "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!list.data) return null;
+  return blocked ? (
+    <div className="flex items-center gap-2">
+      <Badge tone="bad" dot>
+        חסום
+      </Badge>
+      <Button variant="ghost" onClick={() => change(false)} disabled={busy}>
+        בטל חסימה
+      </Button>
+    </div>
+  ) : (
+    <Button variant="ghost" onClick={() => change(true)} disabled={busy} title="שיחות מהמספר הזה יקבלו צליל תפוס">
+      <Ban className="size-4" aria-hidden />
+      חסום מספר
+    </Button>
   );
 }

@@ -285,6 +285,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/settings/{business}/price-bot", axum::routing::put(api_save_price_bot))
         .route("/api/settings/{business}/voice", axum::routing::put(api_save_voice))
         .route("/api/settings/agent-model", axum::routing::put(api_save_agent_model))
+        .route("/api/blocked", get(api_blocked))
+        .route("/api/blocked/{number}", axum::routing::put(api_block))
         .route("/api/settings/{business}/price-bot/test", post(api_test_price_bot))
         .route("/api/businesses", get(api_businesses))
         .route("/api/calls", get(api_calls))
@@ -368,6 +370,10 @@ async fn voice(
     if !s.settings.allow_list.is_empty() && !from.as_ref().is_some_and(|f| s.settings.allow_list.contains(f)) {
         tracing::info!(call = %call_sid, "caller not on the allow list");
         return xml(twilio::twiml_say_hangup("This number is not available.", "en-US"));
+    }
+    if from.as_deref().is_some_and(|f| s.services.settings.is_blocked(f)) {
+        tracing::info!(call = %call_sid, "a blocked number; rejected");
+        return xml(twilio::twiml_reject());
     }
 
     // Start the customer lookup now: the media stream connects a few hundred ms later,
@@ -864,6 +870,40 @@ struct VoiceChange {
 }
 
 /// Switch a business to another voice from its list: saved, then built and swapped in.
+async fn api_blocked(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(json!({ "numbers": s.services.settings.blocked_numbers() })).into_response()
+}
+
+#[derive(Deserialize)]
+struct BlockChange {
+    blocked: bool,
+}
+
+/// Blocks a caller's number (a prank caller, from the call page), or unblocks it.
+async fn api_block(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(number): Path<String>,
+    Json(change): Json<BlockChange>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let number = number.trim().to_string();
+    if !is_e164(&number) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "problems": ["מספר לא תקין"] }))).into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    if let Err(e) = s.services.settings.set_blocked(pool, &number, change.blocked).await {
+        tracing::error!(error = %e, "saving the blocked numbers failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    Json(json!({ "numbers": s.services.settings.blocked_numbers() })).into_response()
+}
+
 async fn api_save_voice(
     State(s): State<Arc<AppState>>,
     headers: HeaderMap,

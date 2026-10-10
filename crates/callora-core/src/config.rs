@@ -257,6 +257,11 @@ pub struct Lexicon {
     /// the read-back, with no one transferred.
     #[serde(default)]
     pub transfer: Vec<String>,
+    /// Curses and sexual words ("בן זונה", "בולבול"): nothing in words with one is taken, the
+    /// first time the caller hears a calm line, the second the call ends. A live call sent
+    /// "שיש לי בולבול גדול" to the drivers as the note.
+    #[serde(default)]
+    pub abuse: Vec<String>,
 }
 
 /// The meta intents the runtime understands. Their *behaviour* is built in; their

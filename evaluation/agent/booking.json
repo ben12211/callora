@@ -426,6 +426,101 @@
     ]
   },
   {
+    "id": "a_lewd_note_is_not_taken_and_a_second_curse_ends_the_call",
+    "note": "a live prank call: \"שיש לי בולבול גדול\" became the note and went to the drivers",
+    "turns": [
+      {
+        "caller": "צריך מונית",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [],
+          "say": "סבבה, מאיזו עיר לאסוף?"
+        }
+      },
+      {
+        "caller": "מרעננה, הרצל 10",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "pickup",
+              "value": "הרצל 10, רעננה"
+            }
+          ],
+          "say": "לאיזו עיר נוסעים?"
+        }
+      },
+      {
+        "caller": "לתל אביב, דיזנגוף 50",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "destination",
+              "value": "דיזנגוף 50, תל אביב"
+            }
+          ],
+          "say": "כמה נוסעים?"
+        }
+      },
+      {
+        "caller": "שניים",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "passengers",
+              "value": "2"
+            }
+          ],
+          "say": "על שם מי לרשום את ההזמנה?"
+        }
+      },
+      {
+        "caller": "דני כהן",
+        "scripted": {
+          "action": "none",
+          "task": "book_ride",
+          "fields": [
+            {
+              "slot": "customer_name",
+              "value": "דני כהן"
+            }
+          ],
+          "say": "יש משהו שהנהג צריך לדעת?"
+        }
+      },
+      {
+        "caller": "אממ, שיש לי בולבול גדול.",
+        "expect": {
+          "missing": [
+            "notes"
+          ],
+          "says_none": [
+            "סבבה",
+            "אחלה",
+            "לשלוח"
+          ],
+          "says_any": [
+            "קללות",
+            "שפה"
+          ],
+          "ended": false
+        }
+      },
+      {
+        "caller": "יא בן זונה",
+        "expect": {
+          "ended": true
+        }
+      }
+    ]
+  },
+  {
     "id": "a_known_customer_is_not_asked_their_name",
     "customer": {
       "id": "c1",
