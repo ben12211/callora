@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { ClipboardList, LayoutDashboard, LogOut, MessageCircle, Moon, Phone, Settings, SlidersHorizontal, Sun } from "lucide-react";
+import { ClipboardList, LayoutDashboard, LogOut, MessageCircle, Moon, Phone, Settings, SlidersHorizontal, Sun, Wallet } from "lucide-react";
 import { api, type Session, type Stats, useApi } from "./api";
 import { cx, Loading, ToastProvider } from "./ui";
 import { Login } from "./pages/Login";
@@ -12,6 +12,7 @@ import type { TgOverview } from "./pages/Telegram";
 import { type WaOverview, WhatsApp, whatsappTrouble } from "./pages/WhatsApp";
 import { Settings as SettingsPage } from "./pages/Settings";
 import { Behavior } from "./pages/Behavior";
+import { Costs } from "./pages/Costs";
 
 type Auth = { state: "checking" } | { state: "out" } | { state: "in"; session: Session };
 
@@ -48,6 +49,7 @@ export function App() {
             <Route path="/calls/:id" element={<CallView />} />
             <Route path="/orders" element={<Orders />} />
             <Route path="/whatsapp" element={<WhatsApp />} />
+            <Route path="/costs" element={<Costs />} />
             <Route path="/behavior" element={<Behavior session={auth.session} />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -65,6 +67,7 @@ const NAV: { to: string; label: string; icon: typeof Phone; end: boolean; badge?
   { to: "/calls", label: "שיחות", icon: Phone, end: false },
   { to: "/orders", label: "הזמנות", icon: ClipboardList, end: false, badge: "verify" },
   { to: "/whatsapp", label: "חשבונות", icon: MessageCircle, end: false, badge: "whatsapp" },
+  { to: "/costs", label: "עלויות", icon: Wallet, end: false },
   { to: "/behavior", label: "התנהגות", icon: SlidersHorizontal, end: false },
   { to: "/settings", label: "הגדרות", icon: Settings, end: false },
 ];
@@ -226,7 +229,7 @@ function Shell({ session, onLogout, children }: { session: Session; onLogout: ()
 
       <nav
         aria-label="ניווט"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-slate-200/70 bg-white/90 px-1 pt-1.5 backdrop-blur-xl lg:hidden dark:border-white/[0.07] dark:bg-slate-950/85"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-slate-200/70 bg-white/90 px-1 pt-1.5 backdrop-blur-xl lg:hidden dark:border-white/[0.07] dark:bg-slate-950/85"
         style={{ paddingBottom: "max(0.375rem, env(safe-area-inset-bottom))" }}
       >
         {NAV.map(({ to, label, icon: Icon, end, badge: b }) => (
@@ -235,7 +238,7 @@ function Shell({ session, onLogout, children }: { session: Session; onLogout: ()
               <>
                 <span
                   className={cx(
-                    "relative flex h-8 w-14 items-center justify-center rounded-full transition-colors",
+                    "relative flex h-8 w-11 items-center justify-center rounded-full transition-colors sm:w-14",
                     isActive ? "bg-brand-100 text-brand-700 dark:bg-brand-400/20 dark:text-brand-100" : "text-slate-500 dark:text-slate-400",
                   )}
                 >

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ArrowLeft, CheckCircle2, CircleDollarSign, Headset, Hourglass, PhoneCall, PhoneOff, Timer, TriangleAlert, UserCheck } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { type CallRow, type Day, type Order, type Session, type SettingsData, type Stats, useApi } from "../api";
-import { change, dayLabel, dollars, duration, greeting, lastDays, longDate, pct, phone } from "../format";
+import { change, dayLabel, duration, greeting, lastDays, longDate, pct, phone } from "../format";
 import { Ago, Card, Delta, Donut, Empty, PageHeader, Problem, Ring, Segmented, Skeleton, SURFACE, Sparkline, cx } from "../ui";
 import { CallAvatar, OutcomeBadge, Route, detail } from "../parts";
 import { type WaOverview, whatsappTrouble } from "./WhatsApp";
@@ -44,6 +44,7 @@ export function Overview({ session }: { session: Session }) {
   const orders = useApi<Order[]>("/api/orders", 30_000);
   const whatsapp = useApi<WaOverview>("/api/whatsapp", 60_000);
   const settings = useApi<SettingsData>("/api/settings");
+  const costs = useApi<{ rates: { shekels_per_dollar: number }; summary: { average: { total: number }; calls: number } }>("/api/costs?limit=50", 60_000);
   const waTrouble = whatsappTrouble(whatsapp.data);
 
   const s = stats.data;
@@ -167,7 +168,13 @@ export function Overview({ session }: { session: Session }) {
         <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Mini icon={<PhoneOff className="size-4" aria-hidden />} label="ניתקו בלי תוצאה" value={s.nothing_done} sub="לפני שהושלם משהו" tone={s.nothing_done > 0 ? "warn" : undefined} to="/calls?filter=nothing" />
           <Mini icon={<Hourglass className="size-4" aria-hidden />} label="משך שיחה ממוצע" value={duration(s.avg_duration_seconds)} />
-          <Mini icon={<CircleDollarSign className="size-4" aria-hidden />} label="עלות לשיחה" value={dollars(s.cost_per_call)} sub={s.cost == null ? "חסרים מחירים" : `סה״כ ${dollars(s.cost)}`} />
+          <Mini
+            icon={<CircleDollarSign className="size-4" aria-hidden />}
+            label="עלות ממוצעת לשיחה"
+            value={costs.data ? `₪${(costs.data.summary.average.total * costs.data.rates.shekels_per_dollar).toFixed(2)}` : "—"}
+            sub={costs.data ? `${costs.data.summary.calls} השיחות האחרונות` : undefined}
+            to="/costs"
+          />
           <Mini
             icon={<UserCheck className="size-4" aria-hidden />}
             label="בדיקה ידנית"

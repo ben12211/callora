@@ -67,7 +67,8 @@ async fn records_round_trip_through_postgres() {
     });
     pg.record(CallRecord::Utterance { call_id, heard: "צריך מונית".into(), audio: vec![0xFF; 1600] });
     let usage = Usage { model: "gpt-6-sol".into(), input: 3000, cached: 2500, output: 60 };
-    pg.record(CallRecord::Ended { call_id, outcome: "HandedOff".into(), state: json!({ "turns": 1 }), usage });
+    let meter = callora_runtime::ports::Meter { tts_chars: 120, tts_requests: 2, second_hearings: 1 };
+    pg.record(CallRecord::Ended { call_id, outcome: "HandedOff".into(), state: json!({ "turns": 1 }), usage, meter });
     pg.record(CallRecord::Status { call_sid: sid, status: "completed".into(), duration_seconds: Some(42) });
 
     // The writer is asynchronous by design.
@@ -91,6 +92,11 @@ async fn records_round_trip_through_postgres() {
     let row = listed.iter().find(|c| c["id"] == json!(call_id)).expect("listed");
     assert_eq!(row["usage"]["input"], 3000);
     assert_eq!(row["orders"], 0);
+    // What it used, for the costs page.
+    let (costs, _) = store::call_costs(&pool, Some("taxi"), 50).await.unwrap();
+    let (_, used) = costs.iter().find(|(c, _)| c["id"] == json!(call_id)).expect("priced");
+    assert_eq!(used.meter.as_ref().map(|m| m.tts_chars), Some(120));
+    assert_eq!(used.seconds, Some(42.0));
     assert_eq!(call["utterances"][0]["heard"], "צריך מונית");
 
     // The owner's verdict, replaced by a later one; unknown calls are refused.

@@ -482,6 +482,8 @@ pub struct Session {
     filler_turn: Option<u32>,
     /// What the agent's decisions cost in this call.
     usage: Usage,
+    /// Live speech and second hearings in this call.
+    meter: crate::ports::Meter,
 }
 
 impl Session {
@@ -594,6 +596,7 @@ impl Session {
             unfinished_generation: 0,
             filler_turn: None,
             usage: Usage::default(),
+            meter: crate::ports::Meter::default(),
         };
         s.phrase_words = agent::phrases(&s.business).iter().map(|p| agent_turn::words(p)).collect();
         s.services.store.record(CallRecord::Started { info: s.info.clone() });
@@ -706,6 +709,7 @@ impl Session {
             outcome,
             state: serde_json::to_value(&s.engine.state).unwrap_or(Value::Null),
             usage: s.usage.clone(),
+            meter: s.meter.clone(),
         });
         metrics.calls_active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(call = %s.info.call_sid, ?ending, turns = s.engine.state.turns, "call ended");

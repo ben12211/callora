@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod agent_model;
 pub mod barge;
+pub mod costs;
 pub mod dashboard;
 pub mod desk;
 pub mod metrics;

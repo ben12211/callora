@@ -106,14 +106,15 @@ async fn write(pool: &PgPool, record: &CallRecord) -> sqlx::Result<()> {
                 tracing::warn!(error = %e, "handoff not queued for whatsapp");
             }
         }
-        CallRecord::Ended { call_id, outcome, state, usage } => {
+        CallRecord::Ended { call_id, outcome, state, usage, meter } => {
             sqlx::query(
-                "UPDATE callora_v2.calls SET ended_at = COALESCE(ended_at, now()), outcome = $2, final_state = $3, llm_usage = $4 WHERE id = $1",
+                "UPDATE callora_v2.calls SET ended_at = COALESCE(ended_at, now()), outcome = $2, final_state = $3, llm_usage = $4, meter = $5 WHERE id = $1",
             )
             .bind(call_id)
             .bind(outcome)
             .bind(state)
             .bind((usage.input + usage.output > 0).then(|| serde_json::to_value(usage).unwrap_or(Value::Null)))
+            .bind(serde_json::to_value(meter).unwrap_or(Value::Null))
             .execute(pool)
             .await?;
         }
@@ -205,6 +206,58 @@ pub async fn list_calls(pool: &PgPool, business: Option<&str>, limit: i64, offse
             })
         })
         .collect())
+}
+
+/// The latest calls with what they used, for the costs page, and how many calls the last 30
+/// days had (the monthly fees are shared among them).
+pub async fn call_costs(
+    pool: &PgPool,
+    business: Option<&str>,
+    limit: i64,
+) -> sqlx::Result<(Vec<(Value, crate::costs::CallUse)>, i64)> {
+    let rows = sqlx::query(
+        "SELECT c.id, c.from_number, c.started_at, c.outcome,
+                coalesce(c.duration_seconds::float8, extract(epoch FROM c.ended_at - c.started_at)::float8) AS seconds,
+                c.llm_usage, c.meter,
+                (SELECT count(*) FROM callora_v2.call_turns t
+                   WHERE t.call_id = c.id AND coalesce(t.detail->>'second_hearing', '') <> '') AS hearings,
+                (SELECT count(*) FROM callora_v2.orders o WHERE o.call_id = c.id) AS orders
+         FROM callora_v2.calls c
+         WHERE ($1::text IS NULL OR c.business_id = $1)
+         ORDER BY c.started_at DESC LIMIT $2",
+    )
+    .bind(business)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    let month: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM callora_v2.calls
+         WHERE started_at > now() - interval '30 days' AND ($1::text IS NULL OR business_id = $1)",
+    )
+    .bind(business)
+    .fetch_one(pool)
+    .await?;
+    let calls = rows
+        .iter()
+        .map(|r| {
+            let call = serde_json::json!({
+                "id": r.get::<uuid::Uuid, _>("id"),
+                "from": r.get::<Option<String>, _>("from_number"),
+                "started_at": r.get::<chrono::DateTime<chrono::Utc>, _>("started_at"),
+                "outcome": r.get::<Option<String>, _>("outcome"),
+                "seconds": r.get::<Option<f64>, _>("seconds"),
+                "orders": r.get::<i64, _>("orders"),
+            });
+            let used = crate::costs::CallUse {
+                seconds: r.get("seconds"),
+                usage: r.get::<Option<Value>, _>("llm_usage").and_then(|v| serde_json::from_value(v).ok()),
+                meter: r.get::<Option<Value>, _>("meter").and_then(|v| serde_json::from_value(v).ok()),
+                second_hearings_in_turns: u32::try_from(r.get::<i64, _>("hearings")).unwrap_or(0),
+            };
+            (call, used)
+        })
+        .collect();
+    Ok((calls, month))
 }
 
 /// One call, reduced to what the numbers on the calls page need.

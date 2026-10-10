@@ -190,6 +190,8 @@ pub struct SettingsStore {
     config_patches: RwLock<HashMap<String, serde_json::Value>>,
     /// Who may call, as the owner set it on the settings page; none, the deployment's list.
     access: RwLock<Option<Access>>,
+    /// The prices the costs page counts with.
+    cost_rates: RwLock<crate::costs::Rates>,
     /// Numbers the owner blocked from the call page (prank callers): their calls are rejected
     /// before anything answers them.
     blocked: RwLock<BTreeSet<String>>,
@@ -243,8 +245,16 @@ impl SettingsStore {
             .ok()
             .flatten()
             .and_then(|r| serde_json::from_value::<Access>(r.get("value")).ok());
+        let cost_rates = sqlx::query("SELECT value FROM callora_v2.app_settings WHERE key = 'cost_rates'")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| serde_json::from_value::<crate::costs::Rates>(r.get("value")).ok())
+            .unwrap_or_default();
         Ok(Self {
             access: RwLock::new(access),
+            cost_rates: RwLock::new(cost_rates),
             desks: RwLock::new(desks),
             price_bots: RwLock::new(price_bots),
             voices: RwLock::new(voices),
@@ -311,6 +321,22 @@ impl SettingsStore {
         } else {
             self.config_patches.write().remove(business_id);
         }
+        Ok(())
+    }
+
+    pub fn cost_rates(&self) -> crate::costs::Rates {
+        self.cost_rates.read().clone()
+    }
+
+    pub async fn save_cost_rates(&self, pool: &PgPool, rates: crate::costs::Rates) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO callora_v2.app_settings (key, value) VALUES ('cost_rates', $1)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+        )
+        .bind(serde_json::to_value(&rates).unwrap_or_default())
+        .execute(pool)
+        .await?;
+        *self.cost_rates.write() = rates;
         Ok(())
     }
 

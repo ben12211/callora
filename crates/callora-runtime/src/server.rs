@@ -352,6 +352,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/settings/agent-model", axum::routing::put(api_save_agent_model))
         .route("/api/config/{business}", get(api_config).put(api_save_config))
         .route("/api/access", get(api_access).put(api_save_access))
+        .route("/api/costs", get(api_costs))
+        .route("/api/costs/rates", axum::routing::put(api_save_cost_rates))
         .route("/api/blocked", get(api_blocked))
         .route("/api/blocked/{number}", axum::routing::put(api_block))
         .route("/api/settings/{business}/price-bot/test", post(api_test_price_bot))
@@ -1010,6 +1012,87 @@ async fn api_save_config(
     }
     let Some(current) = s.registry().by_id(&business) else { return StatusCode::NOT_FOUND.into_response() };
     config_view(&s, &file, &current)
+}
+
+#[derive(Deserialize)]
+struct CostsQuery {
+    limit: Option<i64>,
+    business: Option<String>,
+}
+
+/// What the latest calls cost, each by part, their average, and the rates counted with.
+async fn api_costs(State(s): State<Arc<AppState>>, headers: HeaderMap, Query(q): Query<CostsQuery>) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let (calls, month) = match crate::store::call_costs(pool, q.business.as_deref(), limit).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "call costs failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let rates = s.services.settings.cost_rates();
+    let calls: Vec<serde_json::Value> = calls
+        .into_iter()
+        .map(|(mut call, used)| {
+            call["cost"] = crate::costs::price(&used, &rates);
+            call
+        })
+        .collect();
+    // The average of the calls that were answered and ended (a ring with no call is no cost).
+    let priced: Vec<&serde_json::Value> =
+        calls.iter().filter(|c| c["seconds"].as_f64().is_some_and(|s| s > 0.0)).collect();
+    let n = priced.len().max(1) as f64;
+    let avg = |part: &str| priced.iter().filter_map(|c| c["cost"][part].as_f64()).sum::<f64>() / n;
+    let minutes: f64 = priced.iter().filter_map(|c| c["seconds"].as_f64()).sum::<f64>() / 60.0;
+    let total: f64 = priced.iter().filter_map(|c| c["cost"]["total"].as_f64()).sum();
+    Json(json!({
+        "rates": rates,
+        "defaults": crate::costs::Rates::default(),
+        "calls": calls,
+        "summary": {
+            "calls": priced.len(),
+            "minutes": minutes,
+            "total": total,
+            "average": {
+                "total": avg("total"),
+                "phone": avg("phone"),
+                "stream": avg("stream"),
+                "stt": avg("stt"),
+                "llm": avg("llm"),
+                "second_hearing": avg("second_hearing"),
+                "tts": avg("tts"),
+            },
+            "per_minute": if minutes > 0.0 { Some(total / minutes) } else { None },
+            "calls_last_30_days": month,
+            "fixed_per_call": if month > 0 { Some(rates.monthly_fixed / month as f64) } else { None },
+        },
+        "saving": true,
+    }))
+    .into_response()
+}
+
+async fn api_save_cost_rates(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(rates): Json<crate::costs::Rates>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let problems = rates.problems();
+    if !problems.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "problems": problems }))).into_response();
+    }
+    let Some(pool) = &s.db else { return (StatusCode::SERVICE_UNAVAILABLE, "no database").into_response() };
+    if let Err(e) = s.services.settings.save_cost_rates(pool, rates).await {
+        tracing::error!(error = %e, "saving the cost rates failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// Who may call: development (the access list only) or production (anyone).

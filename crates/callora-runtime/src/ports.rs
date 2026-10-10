@@ -107,6 +107,19 @@ impl Usage {
     }
 }
 
+/// What a call used beyond the agent's tokens and its minutes, for the costs page.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Meter {
+    /// Characters said in live speech (not from the voice library or the cache).
+    #[serde(default)]
+    pub tts_chars: u64,
+    #[serde(default)]
+    pub tts_requests: u32,
+    /// Second hearings asked (an audio model each).
+    #[serde(default)]
+    pub second_hearings: u32,
+}
+
 /// Resolves to the reply's [`Usage`] once its stream has ended; closed when the provider
 /// reports none.
 pub type UsageReceiver = tokio::sync::oneshot::Receiver<Usage>;
@@ -248,6 +261,9 @@ pub enum CallRecord {
         /// What the agent's decisions cost in the call.
         #[serde(default)]
         usage: Usage,
+        /// Live speech and second hearings.
+        #[serde(default)]
+        meter: Meter,
     },
     /// An utterance's audio and what the stream heard, from a sampled number only.
     Utterance {

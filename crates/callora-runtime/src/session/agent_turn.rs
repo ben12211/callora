@@ -98,6 +98,7 @@ impl Session {
             (self.second_hearing_expected(&transcript), self.services.second_hearing.clone())
         {
             self.second_ids += 1;
+            self.meter.second_hearings += 1;
             let id = self.second_ids;
             let audio = self.last_utterance.clone();
             let language = self.business.config.language.clone();

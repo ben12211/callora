@@ -136,6 +136,8 @@ impl Session {
                 let (tx, rx) = mpsc::channel(64);
                 self.enqueue(PlayItem { id, source: Source::Stream(rx), gain_db: plan.gain_db });
                 let tempo = self.business.config.voice.tempo;
+                self.meter.tts_chars += request.text.chars().count() as u64;
+                self.meter.tts_requests += 1;
                 spawn_tts(tts, request, key, tx, self.services.tts_cache.clone(), self.events.clone(), tempo);
             }
         }
