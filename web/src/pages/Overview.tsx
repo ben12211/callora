@@ -72,7 +72,7 @@ export function Overview({ session }: { session: Session }) {
   if (s && s.to_verify > 0) {
     alerts.push({ key: "verify", tone: "warn", to: "/orders?verify=1", text: s.to_verify === 1 ? "הזמנה אחת שלא ידוע אם נקלטה. כדאי לבדוק." : `${s.to_verify} הזמנות שלא ידוע אם נקלטו. כדאי לבדוק.` });
   }
-  if (waTrouble) alerts.push({ key: "wa", tone: "bad", to: "/whatsapp", text: `${waTrouble}. ההזמנות נשמרות בתור עד שזה יסתדר.` });
+  if (waTrouble) alerts.push({ key: "wa", tone: "bad", to: "/whatsapp?app=whatsapp", text: `${waTrouble}. ההזמנות נשמרות בתור עד שזה יסתדר.` });
   const desk = settings.data?.businesses[0]?.desk;
   if (desk && desk.numbers.length === 0) {
     alerts.push({ key: "desk", tone: "warn", to: "/settings", text: "לא הוגדר מספר למוקד. מתקשר שמבקש נציג ישמע שאין מוקדן פנוי." });

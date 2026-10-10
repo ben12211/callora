@@ -351,6 +351,9 @@ export class TelegramAccounts {
     const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, "he");
     // Bots first: the price-list bot is one.
     contacts.sort((a, b) => Number(b.bot) - Number(a.bot) || byName(a, b));
+    // The account's own Saved Messages, first: orders sent there are seen at once on the
+    // owner's phone, before any group is set up.
+    contacts.unshift({ id: "me", name: "הודעות שמורות (אני)", number: "", bot: false });
     return { groups: groups.sort(byName), contacts };
   }
 

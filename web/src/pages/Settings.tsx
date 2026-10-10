@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Headphones, PhoneForwarded, PhoneIncoming, PhoneOutgoing, Plus, Trash2, UserRoundCheck } from "lucide-react";
+import { PhoneForwarded, PhoneOutgoing, Plus, Trash2 } from "lucide-react";
 import { type DeskSettings, type SettingsData, Unauthorized, useApi } from "../api";
 import { Badge, Button, Card, Field, FIELD, Input, PageHeader, Problem, Skeleton, cx, useToast } from "../ui";
 import { AgentModelCard } from "./AgentModelCard";
@@ -15,12 +15,6 @@ const MUSIC: Record<string, string> = {
   none: "בלי מוזיקה (שקט)",
 };
 
-const STEPS = [
-  { icon: PhoneIncoming, title: "המתקשר מבקש נציג", text: "או שהסוכן לא מצליח לעזור." },
-  { icon: Headphones, title: "הוא שומע מוזיקה", text: "וכל מספרי המוקד מצלצלים יחד." },
-  { icon: UserRoundCheck, title: "הראשון שעונה מקבל אותו", text: "אחרי סיכום קצר של השיחה." },
-];
-
 export function Settings() {
   const [watching, setWatching] = useState(false);
   // While a voice is being recorded, the page follows it until it is in use.
@@ -29,7 +23,7 @@ export function Settings() {
   if (watching !== building && settings.data) setWatching(building);
   return (
     <>
-      <PageHeader title="הגדרות" subtitle="המודל והקול של הסוכן, העברה למוקד, ומאיפה הסוכן יודע מחירים" />
+      <PageHeader title="הגדרות" subtitle="המודל והקול של הסוכן, העברה למוקד ובוט המחירים" />
       {settings.error && <Problem>{settings.error}</Problem>}
       {!settings.data && !settings.error ? (
         <div className="grid max-w-3xl gap-6">
@@ -39,22 +33,6 @@ export function Settings() {
       ) : settings.data ? (
         <div className="grid max-w-3xl gap-6">
           {!settings.data.transfers && <Problem>PUBLIC_BASE_URL לא מוגדר בשרת, ולכן העברות למוקד לא יעבדו.</Problem>}
-          <ol className="grid gap-3 sm:grid-cols-3">
-            {STEPS.map(({ icon: Icon, title, text }, i) => (
-              <li key={title} className="flex gap-3 rounded-2xl bg-brand-50/70 p-4 ring-1 ring-inset ring-brand-100 dark:bg-brand-400/[0.07] dark:ring-brand-400/15">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-white text-brand-600 shadow-sm dark:bg-white/10 dark:text-brand-200">
-                  <Icon className="size-[18px]" aria-hidden />
-                </span>
-                <div className="text-sm">
-                  <div className="font-semibold text-slate-900 dark:text-white">
-                    <span className="num me-1 text-brand-500">{i + 1}.</span>
-                    {title}
-                  </div>
-                  <div className="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-slate-300">{text}</div>
-                </div>
-              </li>
-            ))}
-          </ol>
           {settings.data.agent && (
             <AgentModelCard
               key={JSON.stringify(settings.data.agent.active)}
@@ -92,11 +70,10 @@ export function Settings() {
 function DeskCard({ id, name, desk, music, canSave }: { id: string; name: string; desk: DeskSettings; music: string[]; canSave: boolean }) {
   const toast = useToast();
   const [numbers, setNumbers] = useState<string[]>(desk.numbers.length ? desk.numbers : [""]);
-  const custom = !music.includes(desk.hold_music);
-  const [musicChoice, setMusicChoice] = useState(custom ? "custom" : desk.hold_music);
-  const [musicUrl, setMusicUrl] = useState(custom ? desk.hold_music : "");
+  // Music set earlier as a link of its own stays a choice, so saving keeps it.
+  const choices = music.includes(desk.hold_music) ? music : [...music, desk.hold_music];
+  const [musicChoice, setMusicChoice] = useState(desk.hold_music);
   const [wait, setWait] = useState(desk.max_wait_seconds);
-  const [callerId, setCallerId] = useState(desk.caller_id ?? "");
   const [problems, setProblems] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -110,9 +87,9 @@ function DeskCard({ id, name, desk, music, canSave }: { id: string; name: string
     setProblems([]);
     const body = {
       numbers: numbers.map((n) => n.trim()).filter(Boolean),
-      hold_music: musicChoice === "custom" ? musicUrl.trim() : musicChoice,
+      hold_music: musicChoice,
       max_wait_seconds: Number(wait),
-      caller_id: callerId.trim() || null,
+      caller_id: desk.caller_id ?? null,
     };
     try {
       const res = await fetch(`/api/settings/${encodeURIComponent(id)}`, {
@@ -152,14 +129,10 @@ function DeskCard({ id, name, desk, music, canSave }: { id: string; name: string
           העברה למוקד שירות{name ? ` · ${name}` : ""}
         </span>
       }
+      subtitle="כשמתקשר מבקש נציג הוא שומע מוזיקה, כל המספרים מצלצלים יחד, והראשון שעונה מקבל אותו."
       action={active ? <Badge tone="good" dot>פעיל</Badge> : <Badge tone="warn" dot>לא מוגדר</Badge>}
     >
       <div className="grid gap-7">
-        <label className="grid gap-2 text-sm">
-          מספר זיהוי יוצא למוקד
-          <Input type="tel" dir="ltr" value={callerId} onChange={(e) => edited(setCallerId)(e.target.value)} placeholder="+972501234567" />
-          <span className="text-slate-500">מספר מאושר ב-Twilio. ריק: מספר העסק שאליו התקשרו.</span>
-        </label>
         <fieldset className="grid gap-2.5">
           <legend className="mb-1 text-sm font-medium">מספרי המוקד</legend>
           {numbers.map((n, i) => (
@@ -192,21 +165,15 @@ function DeskCard({ id, name, desk, music, canSave }: { id: string; name: string
         </fieldset>
 
         <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="מוזיקת המתנה" hint={musicChoice === "custom" ? "קישור מלא לקובץ שמע, שמתחיל ב-https://" : "מה המתקשר שומע עד שמישהו עונה."}>
+          <Field label="מוזיקת המתנה" hint="מה המתקשר שומע עד שמישהו עונה.">
             {(fid) => (
-              <>
-                <select id={fid} value={musicChoice} onChange={(e) => edited(setMusicChoice)(e.target.value)} className={cx(FIELD, "cursor-pointer")}>
-                  {music.map((m) => (
-                    <option key={m} value={m}>
-                      {MUSIC[m] ?? m}
-                    </option>
-                  ))}
-                  <option value="custom">קובץ משלי (קישור https)</option>
-                </select>
-                {musicChoice === "custom" && (
-                  <Input type="url" dir="ltr" aria-label="קישור לקובץ המוזיקה" placeholder="https://…/music.mp3" value={musicUrl} onChange={(e) => edited(setMusicUrl)(e.target.value)} />
-                )}
-              </>
+              <select id={fid} value={musicChoice} onChange={(e) => edited(setMusicChoice)(e.target.value)} className={cx(FIELD, "cursor-pointer")}>
+                {choices.map((m) => (
+                  <option key={m} value={m}>
+                    {MUSIC[m] ?? "קובץ משלי"}
+                  </option>
+                ))}
+              </select>
             )}
           </Field>
 

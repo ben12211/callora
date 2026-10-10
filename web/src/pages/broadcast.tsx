@@ -1,5 +1,6 @@
 // The parts of an account's page that WhatsApp and Telegram share: the groups and contacts it
-// sends orders to (its "תפוצה"), its pace, its queue and the log of messages.
+// sends orders to (its "תפוצה"), its queue and the log of messages. The pace keeps the
+// service's defaults (8–15 seconds apart, 60 an hour).
 
 import { useEffect, useMemo, useState } from "react";
 import { Check, Plus, Search, Send, User, Users, X } from "lucide-react";
@@ -85,21 +86,13 @@ export function QueueSummary({ account: a }: { account: BroadcastAccount }) {
   );
 }
 
-/** A connected account's body: where it sends orders, and how fast. */
+/** A connected account's body: where it sends orders. */
 export function Broadcast({ account: a, onChange }: { account: BroadcastAccount; onChange: () => Promise<void> }) {
-  const [tab, setTab] = useState<"targets" | "pace">("targets");
   return (
     <>
-      <Segmented
-        label="אזור"
-        value={tab}
-        options={[
-          { value: "targets", label: `תפוצה (${a.targets?.length ?? 0})` },
-          { value: "pace", label: "קצב שליחה" },
-        ]}
-        onChange={setTab}
-      />
-      <div className="mt-5">{tab === "targets" ? <Targets account={a} onChange={onChange} /> : <PaceForm account={a} onChange={onChange} />}</div>
+      <h3 className="mb-1 font-semibold">לאן נשלחות ההזמנות</h3>
+      <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">כל נסיעה שהוזמנה נשלחת לכל יעד ברשימה.</p>
+      <Targets account={a} onChange={onChange} />
     </>
   );
 }
@@ -293,64 +286,6 @@ function Picker({ accountId, taken, onClose, onPick }: { accountId: string; take
             הוסף לתפוצה
           </Button>
         </footer>
-      </div>
-    </div>
-  );
-}
-
-function PaceForm({ account: a, onChange }: { account: BroadcastAccount; onChange: () => Promise<void> }) {
-  const [p, setP] = useState<Pace>(a.settings);
-  const [status, setStatus] = useState<string | null>(null);
-  const set = <K extends keyof Pace>(k: K, v: Pace[K]) => {
-    setP((old) => ({ ...old, [k]: v }));
-    setStatus(null);
-  };
-  const save = async () => {
-    setStatus("שומר…");
-    try {
-      await api(`/api/whatsapp/accounts/${a.id}/settings`, { method: "PUT", body: JSON.stringify(p) });
-      setStatus("נשמר");
-      await onChange();
-    } catch {
-      setStatus("לא נשמר: בדקו את הערכים");
-    }
-  };
-  const num = (k: keyof Pace, label: string, hint: string, min: number, max: number) => (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-sm font-medium">{label}</span>
-      <input type="number" min={min} max={max} value={p[k] as number} onChange={(e) => set(k, Number(e.target.value) as never)} className={cx(inputClass, "tabular-nums")} />
-      <span className="text-xs text-slate-500">{hint}</span>
-    </label>
-  );
-  return (
-    <div className="flex flex-col gap-6">
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        {num("min_delay_s", "המתנה מינימלית בין הודעות (שניות)", "ההמתנה נבחרת באקראי בין המינימום למקסימום", 3, 600)}
-        {num("max_delay_s", "המתנה מקסימלית בין הודעות (שניות)", "ברירת מחדל 8–15", 3, 900)}
-        {num("per_hour", "מקסימום הודעות לשעה", "מעבר לזה ההודעות מחכות בתור", 1, 500)}
-        {num("per_day", "מקסימום הודעות ליום", "נספר מחצות, שעון ישראל", 1, 5000)}
-        {num("warmup_days", "ימי חימום למספר חדש", "בימים האלה המכסות בחצי", 0, 30)}
-      </div>
-      <div className="flex flex-col gap-4 border-t border-slate-100 pt-5 dark:border-slate-800">
-        <label className="flex items-center gap-3 text-sm">
-          <input type="checkbox" checked={p.typing} onChange={(e) => set("typing", e.target.checked)} className="size-4 accent-brand-700" />
-          ״מקליד…״ לפני כל הודעה (1–3 שניות)
-        </label>
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <label className="flex items-center gap-3">
-            <input type="checkbox" checked={p.quiet} onChange={(e) => set("quiet", e.target.checked)} className="size-4 accent-brand-700" />
-            שעות שקטות, בלי שליחה בין
-          </label>
-          <input type="time" value={p.quiet_from} onChange={(e) => set("quiet_from", e.target.value)} disabled={!p.quiet} className={cx(inputClass, "w-32")} aria-label="מתחילות ב" />
-          <span>ל-</span>
-          <input type="time" value={p.quiet_to} onChange={(e) => set("quiet_to", e.target.value)} disabled={!p.quiet} className={cx(inputClass, "w-32")} aria-label="נגמרות ב" />
-        </div>
-      </div>
-      <div className="flex items-center gap-3">
-        <Button variant="primary" onClick={save}>
-          שמור קצב
-        </Button>
-        {status && <span className="text-sm text-slate-500">{status}</span>}
       </div>
     </div>
   );

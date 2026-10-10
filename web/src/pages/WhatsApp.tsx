@@ -29,11 +29,11 @@ export function whatsappTrouble(o: WaOverview | null): string | null {
   return null;
 }
 
-/** The accounts the business sends and asks from: WhatsApp (orders, and the price bot if it is
- * there) and Telegram (the price bot), each signed in by QR. */
+/** The accounts the business sends orders and asks prices from, Telegram and WhatsApp, each
+ * signed in by QR. Telegram first: it is the one in use. */
 export function WhatsApp() {
   const [params, setParams] = useSearchParams();
-  const app = params.get("app") === "telegram" ? "telegram" : "whatsapp";
+  const app = params.get("app") === "whatsapp" ? "whatsapp" : "telegram";
   return (
     <>
       <div className="mb-6">
@@ -41,10 +41,10 @@ export function WhatsApp() {
           label="אפליקציה"
           value={app}
           options={[
-            { value: "whatsapp", label: "וואטסאפ" },
             { value: "telegram", label: "טלגרם" },
+            { value: "whatsapp", label: "וואטסאפ" },
           ]}
-          onChange={(v) => setParams(v === "telegram" ? { app: "telegram" } : {})}
+          onChange={(v) => setParams(v === "whatsapp" ? { app: "whatsapp" } : {})}
         />
       </div>
       {app === "telegram" ? <Telegram /> : <WhatsAppAccounts />}

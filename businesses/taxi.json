@@ -24,11 +24,7 @@
     },
     "choices": [
       { "id": "MdUyhrq6mEf75Uyrnebu", "name": "ישראלי (A)", "description": "חם, מהיר וטבעי, נוצר במיוחד לקלורה", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/24b45bc1ba244c41ab2d05a6fddd8d63/voices/MdUyhrq6mEf75Uyrnebu/5d4c6b84-429b-41d1-a0a2-2ac39c495ca8.mp3" },
-      { "id": "JIxTgeeS5w0UQyBxEnrl", "name": "איתי", "description": "צעיר, מהיר ואנרגטי, קצב תל אביבי", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/JIxTgeeS5w0UQyBxEnrl/7za3GB1n0lALVe2bYQkU.mp3" },
-      { "id": "MYMo3evefjv7byQxnv3K", "name": "ליאם", "description": "הקול המשובט הקודם" },
-      { "id": "k77ZRVqAFg9Hd0ltAuON", "name": "עומר", "description": "עמוק ובטוח, קול של פרסומת", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/k77ZRVqAFg9Hd0ltAuON/XqZX8EK3EsTgG8ogXuKc.mp3" },
-      { "id": "yGpVFXFoImvRvaURKypy", "name": "תומר", "description": "רגוע ועמוק, קצב מדוד", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/yGpVFXFoImvRvaURKypy/8F4UV5JfF9FBLm9O842M.mp3" },
-      { "id": "uwHajH4FhtzVp6X17pr7", "name": "עמית", "description": "רגוע ולא ממהר, קריין", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/uwHajH4FhtzVp6X17pr7/uNnAXIfyJz5HoqUKjOEh.mp3" }
+      { "id": "JIxTgeeS5w0UQyBxEnrl", "name": "איתי", "description": "הקול הקודם: צעיר, מהיר ואנרגטי", "preview": "https://storage.googleapis.com/eleven-public-prod/database/workspace/1da06ea679a54975ad96a2221fe6530d/voices/JIxTgeeS5w0UQyBxEnrl/7za3GB1n0lALVe2bYQkU.mp3" }
     ]
   },
 
