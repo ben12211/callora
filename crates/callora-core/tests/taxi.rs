@@ -3820,3 +3820,55 @@ fn a_place_of_the_callers_own_is_asked_about_in_the_agents_words() {
     assert_eq!(call.slot("pickup"), None, "no address taken");
     assert!(call.engine.state.agent_notes.iter().any(|n| n.contains("place of the caller's own")));
 }
+
+#[test]
+fn a_question_with_no_asks_is_read_from_its_words() {
+    // An eval run: "כמה נוסעים, ועל שם מי לרשום?" with no `asks` went past the open street.
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(elad()));
+    call.engine.on_agent_turn(
+        "צריך מונית מאלעד",
+        asking(&["pickup"], decide(AgentAction::None, "איפה באלעד לאסוף?", Some("book_ride"), &[("pickup", "אלעד")])),
+        "",
+    );
+    let asks = call.engine.asks_in("כמה נוסעים, ועל שם מי לרשום?");
+    assert!(asks.contains(&"passengers".to_string()) && asks.contains(&"customer_name".to_string()), "{asks:?}");
+    assert!(call.engine.asks_in("סגור.").is_empty(), "no question, nothing asked");
+    let d = call.engine.on_agent_turn(
+        "אנחנו שלושה",
+        decide(AgentAction::None, "כמה נוסעים, ועל שם מי לרשום?", None, &[("passengers", "3")]),
+        "",
+    );
+    let said = spoken(&d);
+    assert!(said.contains("באלעד") && !said.contains("על שם"), "the street first: {said}");
+}
+
+#[test]
+fn a_city_correction_the_agent_did_not_pass_is_taken() {
+    // An eval run: to "איפה באילת לאסוף?" the caller said "אלעד, לא אלת." and the agent passed
+    // nothing; the street of אילת was asked again.
+    let gazetteer = callora_core::gazetteer::Gazetteer::from_tsv(
+        "2600\tאילת\t1\tאלול\tofficial\n1309\tאלעד\t110\tרבי עקיבא\tofficial\n6100\tבני ברק\t825\tעזרא\tofficial\n",
+    );
+    let (mut call, _) = Call::new(business(&[]));
+    call.engine.set_gazetteer(Some(Arc::new(gazetteer)));
+    call.engine.on_agent_turn(
+        "מאילת לבני ברק.",
+        asking(
+            &["pickup"],
+            decide(
+                AgentAction::None,
+                "איפה באילת לאסוף?",
+                Some("book_ride"),
+                &[("pickup", "אילת"), ("destination", "בני ברק")],
+            ),
+        ),
+        "",
+    );
+    let d = call.engine.on_agent_turn(
+        "אלעד, לא אלת.",
+        asking(&["pickup"], decide(AgentAction::None, "סליחה, לא קלטתי. איפה באילת לאסוף?", None, &[])),
+        "",
+    );
+    assert_eq!(call.engine.state.place_cities.get("pickup").map(String::as_str), Some("אלעד"), "{}", spoken(&d));
+}

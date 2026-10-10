@@ -223,6 +223,7 @@ impl Engine {
         let fields = probe.with_patterns(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
         let fields = probe.with_cues(transcript, &fields);
+        let fields = probe.with_city_correction(transcript, &fields);
         let rejected = !probe.apply_agent_fields(&fields).1.is_empty();
         // Or a business rule takes the turn over (17 passengers: a person arranges it), or a
         // town said alone is neither place yet ("מבני ברק או לבני ברק?").
@@ -318,6 +319,7 @@ impl Engine {
         let fields = probe.with_patterns(transcript, &fields);
         let fields = probe.answer_in_place(transcript, &fields);
         let fields = probe.with_cues(transcript, &fields);
+        let fields = probe.with_city_correction(transcript, &fields);
         probe.apply_agent_fields(&fields);
         probe.expected_slot().filter(|next| !asks.contains(next))
     }
@@ -609,6 +611,7 @@ impl Engine {
         let fields = self.with_patterns(transcript, &fields);
         let fields = self.answer_in_place(transcript, &fields);
         let fields = self.with_cues(transcript, &fields);
+        let fields = self.with_city_correction(transcript, &fields);
         let (changed, rejected) = self.apply_agent_fields(&fields);
         // The business's rules, as in a turn without the agent: a live call booked 17
         // passengers in one taxi, though more than 8 go to a person.
@@ -714,6 +717,20 @@ impl Engine {
             let mut asks = turn.asks.clone();
             if let Some(slot) = turn.phrase.as_deref().and_then(|p| self.slot_asked_by(p)) {
                 asks.push(slot);
+            }
+            // No `asks`: read from its words, held only when it goes past a question asked and
+            // still unanswered ("כמה נוסעים, ועל שם מי לרשום?" with the street open).
+            if asks.is_empty() {
+                let inferred = self.asks_in(&turn.say);
+                if !inferred.is_empty() && self.moves_on(&turn.fields, &inferred).is_some() {
+                    tracing::info!(
+                        transcript,
+                        ?inferred,
+                        "a question in the agent's words goes past an open one; asking it"
+                    );
+                    self.next_question(&mut out);
+                    return self.finish(out);
+                }
             }
             if !asks.is_empty() {
                 if let Some(next) = self.expected_slot().filter(|next| !asks.contains(next)) {
@@ -1047,6 +1064,47 @@ impl Engine {
 
     /// The slot of the current task a phrase asks for: its `ask`, or that ask's street or
     /// city question ("ask_destination_street" asks for the destination).
+    /// The details a question in the agent's own words asks for, when it did not say (its
+    /// `asks` empty): by the words only that detail's questions have ("לאסוף", "על שם",
+    /// "לנהג"), taken from the business's own questions. "כמה נוסעים, ועל שם מי לרשום?" with
+    /// no `asks` went past an open street question in an eval run.
+    pub fn asks_in(&self, say: &str) -> Vec<String> {
+        let Some(run) = self.state.run.as_ref() else { return Vec::new() };
+        if !say.trim_end().ends_with('?') {
+            return Vec::new();
+        }
+        let words_of = |text: &str| -> std::collections::BTreeSet<String> {
+            crate::text::tokens(&crate::text::normalize(text))
+                .into_iter()
+                .filter(|w| w.chars().count() >= 2 && !w.contains('{') && !w.contains('}'))
+                .map(str::to_string)
+                .collect()
+        };
+        let mut per_slot: Vec<(String, std::collections::BTreeSet<String>)> = Vec::new();
+        for ps in &self.pipeline_of(run).slots {
+            let Some(ask) = ps.ask.as_deref() else { continue };
+            let mut words = std::collections::BTreeSet::new();
+            for id in [ask.to_string(), format!("{ask}_again"), format!("{ask}_street"), format!("{ask}_city")] {
+                if let Some(r) = self.business.response(&id) {
+                    for v in &r.variants {
+                        words.extend(words_of(v));
+                    }
+                }
+            }
+            per_slot.push((ps.slot.clone(), words));
+        }
+        let said = words_of(say);
+        per_slot
+            .iter()
+            .filter(|(slot, words)| {
+                words.iter().any(|w| {
+                    said.contains(w) && per_slot.iter().all(|(other, theirs)| other == slot || !theirs.contains(w))
+                })
+            })
+            .map(|(slot, _)| slot.clone())
+            .collect()
+    }
+
     pub fn slot_asked_by(&self, phrase: &str) -> Option<String> {
         let run = self.state.run.as_ref()?;
         self.pipeline_of(run)
@@ -1309,6 +1367,30 @@ impl Engine {
     /// something else, without those words: a mishearing of that answer, not the detail.
     /// Only while details are collected; a caller's first sentence ("לירושלים, שלושה") and a
     /// detail added to the answer ("לעזריאלי, שניים") are taken as they are.
+    /// Another town named while a place's street is asked, which the agent did not pass: the
+    /// caller corrects that place's city ("אלעד, לא אלת." to "איפה באילת לאסוף?"; in an eval
+    /// run the agent passed nothing and the street of אילת was asked again).
+    fn with_city_correction(&self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {
+        let (Some(g), Some(city)) = (&self.gazetteer, self.street_focus()) else { return fields.to_vec() };
+        let Some(slot) = self.state.last_asks.iter().find(|s| self.state.place_cities.get(*s) == Some(&city)).cloned()
+        else {
+            return fields.to_vec();
+        };
+        if fields.iter().any(|(s, _)| *s == slot) {
+            return fields.to_vec();
+        }
+        let towns: Vec<String> = g.towns_named(transcript).into_iter().filter(|t| *t != city).collect();
+        let [town] = towns.as_slice() else { return fields.to_vec() };
+        // A street of the city named like a town stays the street ("בן זכאי" in אלעד).
+        if matches!(g.resolve_within(town, &city), Some(Lookup::Found(a)) if a.street.is_some()) {
+            return fields.to_vec();
+        }
+        tracing::info!(transcript, %slot, from = %city, to = %town, "another town while its street is asked: the city corrected");
+        let mut out = fields.to_vec();
+        out.push((slot, town.clone()));
+        out
+    }
+
     fn with_cues(&self, transcript: &str, fields: &[(String, String)]) -> Vec<(String, String)> {
         let Some(run) = &self.state.run else { return fields.to_vec() };
         let answered = fields.iter().any(|(s, v)| self.state.last_asks.contains(s) && !v.trim().is_empty());
@@ -1885,7 +1967,7 @@ impl Engine {
             // in its own words, and its words are spoken.
             Lookup::NoCity { .. } if (precise || street_once) && self.business.is_personal_place(spoken) => {
                 notes.push(format!(
-                    "{slot} \"{spoken}\" is a place of the caller's own, not an address: it was not taken. Ask where it is                      in your own words, as they named it (\"ואיפה הבית? באיזו עיר?\", \"איפה אמא שלך גרה?\"), and pass                      the address they give"
+                    "{slot} \"{spoken}\" is a place of the caller's own, not an address: it was not taken. Ask where it is                      in one short question of your own, as they named it (\"ואיפה הבית?\", \"ואיפה אמא שלך גרה?\"), and pass                      the address they give"
                 ));
                 return None;
             }

@@ -300,6 +300,22 @@ impl Session {
         if p.hold_say {
             return;
         }
+        // A question in its own words with no `asks`: what it asks is read from its words, and
+        // one that goes past a detail still missing is held like any other.
+        if p.asks.is_empty() && p.spoken.is_empty() {
+            let asks = self.engine.asks_in(&sentence);
+            if !asks.is_empty() {
+                let held = self.engine.moves_on(&p.fields, &asks);
+                if let Some(slot) = held {
+                    tracing::info!(call = %self.info.call_sid, %slot, ?asks, said = %sentence, "a question in the agent's words moves on past an open one; held");
+                    if let Some(p) = self.pending_agent.as_mut() {
+                        p.hold_say = true;
+                        p.held_for = Some(slot);
+                    }
+                    return;
+                }
+            }
+        }
         // The phrase said it already: its words again, or a second question.
         if p.phrase.as_deref().is_some_and(|id| !agent::say_after_phrase(&self.business, id, &sentence)) {
             tracing::info!(call = %self.info.call_sid, said = %sentence, "dropped: the recorded phrase already asked");
