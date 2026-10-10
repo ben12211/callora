@@ -64,6 +64,18 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, telegram.password(id, String(b.password ?? "")));
       }
       if (action === "chats" && method === "GET") return send(res, 200, await telegram.chats(id));
+      if (action === "bot" && method === "POST") {
+        const b = await body(req);
+        return send(res, 200, await telegram.setBot(id, String(b.token ?? "")));
+      }
+      if (action === "sender" && method === "POST") {
+        const b = await body(req);
+        return send(res, 200, await telegram.setSender(id, b.via_bot === true));
+      }
+      if (action === "group" && method === "POST") {
+        const b = await body(req);
+        return send(res, 201, await telegram.createGroup(id, String(b.name ?? "")));
+      }
       if (action === "send" && method === "POST") {
         const b = await body(req);
         const text = String(b.text ?? "");

@@ -6,6 +6,10 @@
 // The list of accounts lives in /data/telegram/accounts.json, each one's login (a session
 // string) in /data/telegram/<id>.session, so a restart needs no new scan. Ids start with
 // "tg-": the Callora server tells a Telegram account from a WhatsApp one by it.
+//
+// An account may also have a bot (its token from @BotFather): orders then go out from the bot,
+// through Telegram's Bot API, while prices are still asked by the account. The account makes
+// the orders group (only its admins write there) and adds the bot to it as an admin.
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -52,7 +56,60 @@ function peerOf(chatId: string): string | number {
 export const telegramConfigured = API_ID > 0 && API_HASH.length > 0;
 
 type Status = "starting" | "qr" | "password" | "ready" | "disconnected" | "failed";
-type Stored = { id: string; name: string; created_at: string; first_ready_at: string | null };
+type Bot = { token: string; id: string; username: string };
+type Group = { id: string; name: string; link: string };
+type Stored = {
+  id: string;
+  name: string;
+  created_at: string;
+  first_ready_at: string | null;
+  /** The bot orders may go out from. Its token never leaves this service. */
+  bot?: Bot;
+  /** Orders go out from the bot rather than from the account. */
+  via_bot?: boolean;
+  /** The groups this account made for orders, with their invite links. */
+  groups?: Group[];
+};
+
+/** Telegram's Bot API said no. */
+class BotRefused extends Error {
+  constructor(
+    public code: number,
+    description: string,
+  ) {
+    super(description);
+  }
+}
+
+/** One Bot API call. The token is in the address, so errors are told without it. */
+async function botCall<T>(token: string, method: string, params: Record<string, unknown>): Promise<T> {
+  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(15_000),
+  }).catch(() => {
+    throw new OutcomeUnknown("outcome_unknown");
+  });
+  const v = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: T; error_code?: number; description?: string };
+  if (!v.ok) throw new BotRefused(v.error_code ?? res.status, v.description ?? "");
+  return v.result as T;
+}
+
+/** Members may read, react and invite; only admins (the account and its bot) write. */
+const READ_ONLY = new Api.ChatBannedRights({
+  untilDate: 0,
+  sendMessages: true,
+  sendMedia: true,
+  sendStickers: true,
+  sendGifs: true,
+  sendGames: true,
+  sendInline: true,
+  embedLinks: true,
+  sendPolls: true,
+  changeInfo: true,
+  pinMessages: true,
+});
 
 function log(id: string, ...what: unknown[]) {
   console.log(JSON.stringify({ at: new Date().toISOString(), telegram: id, message: what.map(String).join(" ") }));
@@ -238,6 +295,9 @@ class Account {
       me: this.me,
       hint: this.status === "password" ? this.hint : null,
       error: this.status === "ready" ? null : this.error,
+      bot: this.stored.bot ? { username: this.stored.bot.username } : null,
+      via_bot: Boolean(this.stored.via_bot && this.stored.bot),
+      groups: this.stored.groups ?? [],
     };
   }
 }
@@ -264,7 +324,8 @@ export class TelegramAccounts {
 
   private async save() {
     const tmp = `${LIST}.tmp`;
-    await writeFile(tmp, JSON.stringify([...this.accounts.values()].map((a) => a.stored), null, 2));
+    // Bot tokens are in it: readable by this service alone.
+    await writeFile(tmp, JSON.stringify([...this.accounts.values()].map((a) => a.stored), null, 2), { mode: 0o600 });
     await rename(tmp, LIST);
   }
 
@@ -319,6 +380,74 @@ export class TelegramAccounts {
     };
   }
 
+  /** The bot orders may go out from (a token from @BotFather), or none for an empty token. It
+   * is checked with Telegram first, then made an admin of the account's orders groups. */
+  async setBot(id: string, token: string) {
+    const a = this.get(id);
+    token = token.trim();
+    if (!token) {
+      delete a.stored.bot;
+      a.stored.via_bot = false;
+      await this.save();
+      return a.view();
+    }
+    if (!/^\d+:[\w-]{30,}$/.test(token)) throw new NotAllowed("bad_token");
+    const me = await botCall<{ id: number; username?: string; is_bot?: boolean }>(token, "getMe", {}).catch(() => {
+      throw new NotAllowed("bad_token");
+    });
+    if (!me.is_bot || !me.username) throw new NotAllowed("bad_token");
+    a.stored.bot = { token, id: String(me.id), username: me.username };
+    await this.save();
+    if (a.status === "ready") {
+      for (const g of a.stored.groups ?? []) await this.addBot(a, g.id).catch(() => undefined);
+    }
+    log(id, "bot set", me.username);
+    return a.view();
+  }
+
+  /** Orders from the bot, or from the account. */
+  async setSender(id: string, viaBot: boolean) {
+    const a = this.get(id);
+    if (viaBot && !a.stored.bot) throw new NotAllowed("no_bot");
+    a.stored.via_bot = viaBot;
+    await this.save();
+    return a.view();
+  }
+
+  /** A new group for orders: the account makes it and is its owner, members may only read, and
+   * the account's bot (if it has one) is made an admin so it can write there too. */
+  async createGroup(id: string, title: string) {
+    const a = this.get(id);
+    const client = a.ready();
+    const name = title.trim().slice(0, 100) || "נסיעות";
+    const made = (await client
+      .invoke(new Api.channels.CreateChannel({ megagroup: true, title: name, about: "נסיעות שהוזמנו. רק המערכת כותבת כאן." }))
+      .catch((e: unknown) => a.failed(e))) as Api.Updates;
+    const channel = made.chats.find((c): c is Api.Channel => c instanceof Api.Channel);
+    if (!channel) throw new Error("group_not_made");
+    await client.invoke(new Api.messages.EditChatDefaultBannedRights({ peer: channel, bannedRights: READ_ONLY }));
+    const invite = (await client.invoke(new Api.messages.ExportChatInvite({ peer: channel }))) as Api.ChatInviteExported;
+    const group: Group = { id: `-100${channel.id.toString()}`, name, link: invite.link };
+    a.stored.groups = [...(a.stored.groups ?? []), group];
+    await this.save();
+    if (a.stored.bot) await this.addBot(a, group.id).catch((e: unknown) => log(id, "bot not added", e instanceof Error ? e.message : String(e)));
+    log(id, "group made", group.id);
+    return group;
+  }
+
+  private async addBot(a: Account, groupId: string) {
+    const bot = a.stored.bot;
+    if (!bot) return;
+    await a.ready().invoke(
+      new Api.channels.EditAdmin({
+        channel: peerOf(groupId),
+        userId: `@${bot.username}`,
+        adminRights: new Api.ChatAdminRights({ deleteMessages: true, pinMessages: true, inviteUsers: true, other: true }),
+        rank: "",
+      }),
+    );
+  }
+
   password(id: string, password: string) {
     this.get(id).givePassword(password);
     return this.get(id).view();
@@ -357,9 +486,30 @@ export class TelegramAccounts {
     return { groups: groups.sort(byName), contacts };
   }
 
-  /** Sends one message to a group, channel, person or bot. Orders go out through this, to the
-   * groups an account picked on the dashboard. */
+  /** Sends an order (or a test) to one of the account's targets: from its bot when it was
+   * switched to it, else from the account. */
   async send(id: string, chatId: string, text: string, typingMs: number) {
+    const bot = this.get(id).stored;
+    if (bot.via_bot && bot.bot) return this.sendAsBot(bot.bot, chatId, text);
+    return this.sendAsAccount(id, chatId, text, typingMs);
+  }
+
+  private async sendAsBot(bot: Bot, chatId: string, text: string) {
+    // A bot writes only where it was added: not to the account's Saved Messages or to people.
+    if (!/^-\d+$/.test(chatId)) throw new NotAllowed("not_allowed_to_write");
+    try {
+      const m = await botCall<{ message_id: number }>(bot.token, "sendMessage", { chat_id: chatId, text });
+      return { id: String(m.message_id) };
+    } catch (e) {
+      if (!(e instanceof BotRefused)) throw e;
+      log(bot.username, "bot send refused", e.code, e.message);
+      if (e.code === 429) throw new Error("flood_wait");
+      throw new NotAllowed("not_allowed_to_write");
+    }
+  }
+
+  /** Sends one message to a group, channel, person or bot, as the account. */
+  private async sendAsAccount(id: string, chatId: string, text: string, typingMs: number) {
     const account = this.get(id);
     const client = account.ready();
     const peer = await client.getInputEntity(peerOf(chatId)).catch(async (e: unknown) => {
@@ -432,7 +582,7 @@ export class TelegramAccounts {
     });
     const timer = setTimeout(finish, Math.min(a.timeoutMs, MAX_ASK_MS));
     try {
-      await this.send(id, a.chatId, a.text, a.typingMs ?? 0);
+      await this.sendAsAccount(id, a.chatId, a.text, a.typingMs ?? 0);
       await finished;
     } finally {
       stop();

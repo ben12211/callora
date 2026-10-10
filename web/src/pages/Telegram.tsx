@@ -1,14 +1,15 @@
 // Telegram accounts: signed in by scanning a QR code from the Telegram app (and the two-step
 // password, when the account has one), like WhatsApp's. They ask the price-list bot, which
 // answers on Telegram only, and, like WhatsApp accounts, send every new order to the groups and
-// contacts picked here, at a human pace.
+// contacts picked here, at a human pace. An account can make an orders group (only it and its
+// bot write there) and hand the sending of orders to a bot of its own.
 
 import { useEffect, useMemo, useState } from "react";
-import { KeyRound, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
+import { Bot, Copy, KeyRound, Plus, RefreshCw, Send, Trash2, Users } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, Unauthorized, useApi } from "../api";
 import { phone } from "../format";
-import { Badge, Button, Card, Empty, Input, Loading, PageHeader, Problem } from "../ui";
+import { Badge, Button, Card, Empty, Input, Loading, PageHeader, Problem, Segmented, useToast } from "../ui";
 import { Broadcast, type BroadcastAccount, Log, QueueSummary } from "./broadcast";
 
 export type TgAccount = {
@@ -19,6 +20,9 @@ export type TgAccount = {
   hint: string | null;
   error: string | null;
   first_ready_at: string | null;
+  bot?: { username: string } | null;
+  via_bot?: boolean;
+  groups?: { id: string; name: string; link: string }[];
 } & Partial<Pick<BroadcastAccount, "settings" | "warming_up" | "targets" | "queue">>;
 export type TgOverview = { service: boolean; reachable?: boolean; configured?: boolean; max?: number; accounts?: TgAccount[] };
 
@@ -227,6 +231,7 @@ function AccountCard({ account: a, onChange }: { account: TgAccount; onChange: (
       <div className="p-5">
         {a.status === "ready" ? (
           <>
+            <Sending account={a} onChange={onChange} />
             {isBroadcast(a) ? (
               <Broadcast account={a} onChange={onChange} />
             ) : (
@@ -245,6 +250,141 @@ function AccountCard({ account: a, onChange }: { account: TgAccount; onChange: (
         )}
       </div>
     </section>
+  );
+}
+
+/** Where orders go and who sends them: a group of its own (members only read), and a bot that
+ * may send instead of the account. */
+function Sending({ account: a, onChange }: { account: TgAccount; onChange: () => Promise<void> }) {
+  const toast = useToast();
+  const [groupName, setGroupName] = useState("נסיעות");
+  const [making, setMaking] = useState(false);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const groups = a.groups ?? [];
+
+  const makeGroup = async () => {
+    setMaking(true);
+    try {
+      await api(`/api/telegram/accounts/${a.id}/group`, { method: "POST", body: JSON.stringify({ name: groupName.trim() || "נסיעות" }) });
+      toast("הקבוצה נוצרה, וכל נסיעה תישלח אליה. שלחו את קישור ההצטרפות למי שצריך לראות.", "good");
+      await onChange();
+    } catch (e) {
+      if (!(e instanceof Unauthorized)) toast("הקבוצה לא נוצרה. נסו שוב.", "bad");
+    } finally {
+      setMaking(false);
+    }
+  };
+  const saveBot = async (value: string) => {
+    setBusy(true);
+    try {
+      await api(`/api/telegram/accounts/${a.id}/bot`, { method: "POST", body: JSON.stringify({ token: value }) });
+      setToken("");
+      toast(value ? "הבוט חובר, ונוסף כמנהל לקבוצות הנסיעות." : "הבוט הוסר.", "good");
+      await onChange();
+    } catch (e) {
+      if (!(e instanceof Unauthorized)) toast(e instanceof Error && e.message === "403" ? "הטוקן לא תקין. העתיקו אותו שוב מ-@BotFather." : "לא נשמר. נסו שוב.", "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const setSender = async (viaBot: boolean) => {
+    try {
+      await api(`/api/telegram/accounts/${a.id}/sender`, { method: "POST", body: JSON.stringify({ via_bot: viaBot }) });
+      await onChange();
+    } catch (e) {
+      if (!(e instanceof Unauthorized)) toast("לא נשמר. נסו שוב.", "bad");
+    }
+  };
+  const copy = (link: string) =>
+    navigator.clipboard.writeText(link).then(
+      () => toast("הקישור הועתק", "good"),
+      () => toast(link, "neutral"),
+    );
+
+  return (
+    <div className="mb-6 grid gap-6 border-b border-slate-100 pb-6 dark:border-slate-800">
+      <div>
+        <h3 className="mb-1 flex items-center gap-2 font-semibold">
+          <Users className="size-4 text-sky-600" aria-hidden />
+          קבוצת נסיעות
+        </h3>
+        <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">קבוצה חדשה שרק המערכת כותבת בה. כל נסיעה שהוזמנה נשלחת אליה, ומי שמצטרף רק קורא.</p>
+        {groups.length > 0 && (
+          <ul className="mb-3 grid gap-2">
+            {groups.map((g) => (
+              <li key={g.id} className="flex flex-wrap items-center gap-3 rounded-xl bg-slate-50 px-3.5 py-2.5 text-sm dark:bg-white/[0.04]">
+                <span className="font-medium">{g.name}</span>
+                <a href={g.link} target="_blank" rel="noreferrer" className="ltr min-w-0 truncate text-brand-700 hover:underline dark:text-brand-300">
+                  {g.link}
+                </a>
+                <Button variant="ghost" onClick={() => copy(g.link)} title="העתק קישור הצטרפות" className="ms-auto">
+                  <Copy className="size-4" aria-hidden />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <Input aria-label="שם הקבוצה" value={groupName} onChange={(e) => setGroupName(e.target.value)} className="max-w-56" />
+          <Button variant="primary" onClick={makeGroup} disabled={making}>
+            <Plus className="size-4" aria-hidden />
+            {making ? "יוצר…" : "צור קבוצה חדשה"}
+          </Button>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="mb-1 flex items-center gap-2 font-semibold">
+          <Bot className="size-4 text-sky-600" aria-hidden />
+          בוט שליחה
+        </h3>
+        {a.bot ? (
+          <div className="grid gap-3">
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span>
+                מחובר: <b className="ltr">@{a.bot.username}</b>
+              </span>
+              <Button variant="ghost" onClick={() => saveBot("")} disabled={busy}>
+                הסר בוט
+              </Button>
+            </div>
+            <Segmented
+              label="מי שולח את הנסיעות"
+              value={a.via_bot ? "bot" : "account"}
+              options={[
+                { value: "account", label: "החשבון" },
+                { value: "bot", label: `הבוט @${a.bot.username}` },
+              ]}
+              onChange={(v) => void setSender(v === "bot")}
+            />
+            {a.via_bot && <p className="text-xs text-slate-500 dark:text-slate-400">בוט שולח רק לקבוצות שהוא מנהל בהן. לקבוצות שנוצרו כאן הוא נוסף לבד.</p>}
+          </div>
+        ) : (
+          <>
+            <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">
+              אפשר שהנסיעות יישלחו מבוט במקום מהחשבון. צרו בוט ב-<span dir="ltr">@BotFather</span>, והדביקו כאן את הטוקן שלו.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <Input
+                type="password"
+                autoComplete="off"
+                dir="ltr"
+                aria-label="הטוקן של הבוט"
+                placeholder="123456789:AA…"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && token.trim() && void saveBot(token.trim())}
+                className="max-w-80"
+              />
+              <Button onClick={() => saveBot(token.trim())} disabled={busy || !token.trim()}>
+                {busy ? "בודק…" : "חבר בוט"}
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

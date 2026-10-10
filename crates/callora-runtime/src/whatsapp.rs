@@ -683,6 +683,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/telegram/accounts/{id}/restart", post(telegram_restart))
         .route("/api/telegram/accounts/{id}/qr", get(telegram_qr))
         .route("/api/telegram/accounts/{id}/password", post(telegram_password))
+        .route("/api/telegram/accounts/{id}/bot", post(telegram_bot))
+        .route("/api/telegram/accounts/{id}/sender", post(telegram_sender))
+        .route("/api/telegram/accounts/{id}/group", post(telegram_group))
         .route("/api/whatsapp/outbox/{id}/retry", post(retry))
 }
 
@@ -932,6 +935,93 @@ async fn telegram_password(
     match service.call(reqwest::Method::POST, &format!("/telegram/sessions/{}/password", enc(&id)), Some(body)).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => service_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TelegramBot {
+    token: String,
+}
+
+/// The bot an account's orders may go out from: its token goes to the service, which checks it
+/// with Telegram and keeps it; the page only ever sees the bot's @name.
+async fn telegram_bot(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(b): Json<TelegramBot>,
+) -> Response {
+    let (service, _) = match check(&s, &headers) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    let body = json!({ "token": b.token.trim() });
+    match service.call(reqwest::Method::POST, &format!("/telegram/sessions/{}/bot", enc(&id)), Some(body)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => service_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TelegramSender {
+    via_bot: bool,
+}
+
+/// Orders from the account's bot, or from the account itself.
+async fn telegram_sender(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(b): Json<TelegramSender>,
+) -> Response {
+    let (service, _) = match check(&s, &headers) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    let body = json!({ "via_bot": b.via_bot });
+    match service.call(reqwest::Method::POST, &format!("/telegram/sessions/{}/sender", enc(&id)), Some(body)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => service_error(e),
+    }
+}
+
+/// A new orders group, made by the account (only it and its bot write there), and at once a
+/// target of every order.
+async fn telegram_group(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(b): Json<NewAccount>,
+) -> Response {
+    let (service, pool) = match check(&s, &headers) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    let name: String = b.name.trim().chars().take(100).collect();
+    let group = match service
+        .call(reqwest::Method::POST, &format!("/telegram/sessions/{}/group", enc(&id)), Some(json!({ "name": name })))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => return service_error(e),
+    };
+    let (Some(chat), Some(title)) = (group["id"].as_str(), group["name"].as_str()) else {
+        return service_error(ServiceError::Unavailable("the group came back without an id".into()));
+    };
+    let target = sqlx::query(
+        "INSERT INTO callora_v2.whatsapp_targets (account_id, chat_id, chat_name, kind, events)
+         SELECT $1, $2, $3, 'group', $4
+         WHERE NOT EXISTS (SELECT 1 FROM callora_v2.whatsapp_targets WHERE account_id = $1 AND chat_id = $2)",
+    )
+    .bind(&id)
+    .bind(chat)
+    .bind(title)
+    .bind(vec!["order".to_string(), "order_verify".to_string()])
+    .execute(pool)
+    .await;
+    match target {
+        Ok(_) => (StatusCode::CREATED, Json(group)).into_response(),
+        Err(e) => db_error(e),
     }
 }
 
